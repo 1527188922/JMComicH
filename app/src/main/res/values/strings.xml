@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HaruhiBox</string>
+
+    <!-- 通知渠道（计划 §9.5：只展示系统授权状态，不伪装成可控制的开关） -->
+    <string name="notification_channel_download">下载进度</string>
+    <string name="notification_channel_download_desc">显示正在进行的下载任务进度</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_pause">暂停</string>
+    <string name="action_resume">继续</string>
+
+    <!-- P0 占位页文案；P2 接入开屏选择后连同该界面一起删除 -->
+    <string name="p0_placeholder_hint">工程骨架已就绪，功能页面按计划阶段接入</string>
+</resources>

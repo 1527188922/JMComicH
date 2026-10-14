@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络：JM 与 B站接口、以及文件下载 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 长下载用前台服务常驻通知（计划 §8「下载」一行） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 通知需要运行时权限；App 在用户首次需要后台任务时按场景申请（§9.1） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 下载期间避免 CPU 休眠；请求忽略电池优化由用户在系统设置里操作 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      「打开文件夹」要跳到系统的文件管理器（DocumentsUI 或第三方文件管理器）。
+      Android 11+ 有**软件包可见性**过滤：不声明这一段的话，系统会把文件管理器
+      判定成"看不见的应用"，startActivity 直接抛 ActivityNotFoundException
+      （模拟器实测：`AppsFilter: interaction ... documentsui BLOCKED`，
+      表现成"点了没反应，只弹一句没有可以打开文件夹的应用"）。
+      这只是"允许查找"，**不需要任何存储权限**——读目录的是文件管理器自己。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="vnd.android.document/directory" />
+        </intent>
+        <!-- 打开单个成品（zip / pdf）时用的两个 MIME 也一并声明 -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/zip" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/pdf" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/zip" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="application/pdf" />
+        </intent>
+    </queries>
+
+
+    <application
+        android:name=".HaruhiBoxApp"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HaruhiBox.CardWhite"
+        tools:targetApi="34">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.HaruhiBox.CardWhite"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 分享 B站 链接给 App：系统分享面板里出现（计划 §8「深链」、§9 第 11 条） -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- bilibili.com / b23.tv 链接直接打开 App（App Links 校验在 P5 配置） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="www.bilibili.com" android:pathPrefix="/video" />
+                <data android:scheme="https" android:host="bilibili.com" android:pathPrefix="/video" />
+                <data android:scheme="https" android:host="m.bilibili.com" android:pathPrefix="/video" />
+                <data android:scheme="https" android:host="b23.tv" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          下载前台服务：长下载的常驻通知与进度（计划 §8）。
+          exported=false：只由应用内部拉起，不接受外部 Intent。
+          foregroundServiceType=dataSync：manifest 里显式声明，Android 14+ 必需
+          （对应 FOREGROUND_SERVICE_DATA_SYNC 权限）。
+        -->
+        <service
+            android:name=".core.download.DownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+
+</manifest>

@@ -1,0 +1,36 @@
+version: "1.0"
+name: 构建
+displayName: 构建
+stages:
+- name: 构建
+  displayName: 构建
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@android
+    name: build_debug
+    displayName: Android debug 构建（可选发布）
+    jdkVersion: "21"
+    gradleVersion: "9.0"
+    buildToolsVersion: 35.0.1
+    ndkVersion: 28.2.13676358
+    commands:
+    - sh tools/ci/gitee-build.sh
+    artifacts:
+    - name: BUILD_ARTIFACT
+      path:
+      - ./app/build/outputs/apk/debug
+      type: .tar.gz
+    caches:
+    - "~/.gradle/caches"
+    - "~/.gradle/wrapper"
+    strategy:
+      retry: "0"
+      resource:
+        cpu: "2"
+        memory: "4"
+triggers:
+  trigger: manual
+notify: []
+strategy:
+  blocking: true

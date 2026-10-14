@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  Android 12+ 的备份 / 换机规则。
+
+  与 backup_rules.xml 同一原则：**白名单**，只列允许备份的内容。
+  `sharedpref/secrets.xml`（Keystore 加密的凭据）、`files/tmp`、`files/export`、
+  `files/crash` 都不在白名单里，因此不会被备份——
+  凭据即使备份过去也解不开（Keystore 密钥随应用卸载销毁），只会制造困惑。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="." />
+        <include domain="sharedpref" path="settings_global.xml" />
+        <include domain="sharedpref" path="settings_jm.xml" />
+        <include domain="sharedpref" path="settings_bili.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="." />
+        <include domain="sharedpref" path="settings_global.xml" />
+        <include domain="sharedpref" path="settings_jm.xml" />
+        <include domain="sharedpref" path="settings_bili.xml" />
+    </device-transfer>
+</data-extraction-rules>

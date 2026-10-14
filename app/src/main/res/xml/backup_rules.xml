@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  Android 11 及以下的自动备份规则。
+
+  原则（计划 §D.2 第 6 条）：**敏感凭据不进默认备份**。
+
+  这份清单是"白名单"：只列允许备份的内容，其余（包括
+  `sharedpref/secrets.xml` 里的凭据、`files/tmp`、`files/export`、`files/crash`）
+  一律不备份。这样比"全量 include + 逐项 exclude"更安全——
+  将来新增的敏感文件默认就是被排除的。
+-->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="sharedpref" path="settings_global.xml" />
+    <include domain="sharedpref" path="settings_jm.xml" />
+    <include domain="sharedpref" path="settings_bili.xml" />
+</full-backup-content>

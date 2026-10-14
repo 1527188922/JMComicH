@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+  instrumented test APK 的清单。
+
+  **为什么要把权限清空**：
+  测试 APK 会继承被测应用的 `uses-permission`。在 MIUI / HyperOS 上安装带运行时权限的 APK
+  时，系统会尝试用 `INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS` 一次性授予，
+  而普通 `adb install` 不具备 `android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS`
+  这个特权，安装直接失败：
+
+    java.lang.SecurityException: You need the android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS
+      permission to use the PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS flag
+
+  测试进程不需要 INTERNET / 通知 / 前台服务这些权限，所以这里逐个移除，
+  让 `connectedAndroidTest` 在 MIUI 上也能跑。
+
+  注意：主清单里每新增一个 `uses-permission`，这里都要同步补一条 `tools:node="remove"`；
+  漏了的话在 MIUI 上会重新触发上面的安装失败。
+  这里不用 `tools:node="removeAll"`（它不允许再带 `android:name` 属性）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" tools:node="remove" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" tools:node="remove" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:node="remove" />
+
+</manifest>
