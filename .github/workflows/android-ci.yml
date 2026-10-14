@@ -29,12 +29,17 @@ jobs:
 
       # CI 上的两处准备：
       # 1) 没有本机固定路径的 JDK：清掉 org.gradle.java.home，让 Gradle 用 JAVA_HOME；
+      #    注意：这之后守护进程 JDK 由 gradle/gradle-daemon-jvm.properties 决定，该文件
+      #    （updateDaemonJvm 生成，钉 toolchainVersion=25 + foojay 下载地址）必须不存在，
+      #    否则 Gradle 9 会去下载一整个 JDK——国内构建机上直接失败（见 docs/p0/README.md D-4）。
+      #    仓库里已删除，这里再兜底删一次；
       # 2) gradlew 在仓库里是 100644（Windows 提交的，没有可执行位），Linux runner 上
       #    直接 ./gradlew 会 Permission denied。永久修法是 `git update-index --chmod=+x gradlew`
       #    并提交；这里再补一句 chmod 兜底。
       - name: Prepare for CI
         run: |
           sed -i '/org.gradle.java.home/d' gradle.properties
+          rm -f gradle/gradle-daemon-jvm.properties
           chmod +x gradlew
 
       - name: Unit tests

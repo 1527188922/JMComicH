@@ -94,6 +94,43 @@
 - `gradle.properties` 固定 `org.gradle.java.home=D:\Environment\jdk-21.0.4`；
 - CI 里用 `sed` 删掉这一行，让 Gradle 用 `JAVA_HOME`（见 `.github/workflows/android-ci.yml`）。
 
+**2026-10-15 复发（Gitee Go）**：上面四条只做到一半——foojay resolver 确实从
+`settings.gradle.kts` 去掉了，但 `gradle/gradle-daemon-jvm.properties`
+（`toolchainVersion=25` + 10 条 `toolchainUrl.*`）从 init 提交起就一直留在仓库里。
+本地不发作是两个原因叠加：`org.gradle.java.home` 优先，且本机
+`GRADLE_USER_HOME/jdks` 里已经躺着当年下载下来的 `eclipse_adoptium-25`；CI 上
+`sed` 删掉了前一行、容器里又没有 JDK 25，守护进程 JDK 就按这个文件要 25，而 Gradle 9
+的工具链自动配置**不需要 foojay 插件**（内置默认仓库就是 api.foojay.io），于是又去拉
+JDK 25 并失败：
+
+```
+Unable to download toolchain matching the requirements
+({languageVersion=25, vendor=any vendor, ...}) from
+'https://api.foojay.io/disco/v3.0/ids/fa1e318c.../redirect'
+```
+
+**修复（2026-10-15）**
+
+1. `git rm gradle/gradle-daemon-jvm.properties` —— 真正的修复：把"要 JDK 25"这个要求本身去掉。
+   不要再运行 `gradlew updateDaemonJvm`，它会把文件重新生成出来；
+2. `gradle.properties` 加 `org.gradle.java.installations.auto-download=false` —— 安全网，不是修复：
+   以后再有谁请求本机没有的 JDK，得到的是一条明确的
+   `Cannot find a Java installation ... matching: {languageVersion=...}`（下面已验证），
+   而不是静默去下载一整个 JDK 把 CI 卡死；
+3. 两个 CI 脚本（`tools/ci/gitee-build.sh`、`.github/workflows/android-ci.yml`）在删
+   `org.gradle.java.home` 之后顺手 `rm -f gradle/gradle-daemon-jvm.properties` 兜底；
+4. `.gitignore` 忽略该文件，避免再次被提交上来。
+
+**验证**（本机、干净 worktree、按 CI 的 `gradle.properties` 删掉固定 JDK 那一行）：把
+`GRADLE_USER_HOME/jdks`（含 adoptium 25）暂时移开，复现 CI 的"没有 JDK 25"条件，
+跑 `./gradlew --no-daemon help`：
+
+- 文件在：`Cannot find a Java installation on your machine (...) matching:
+  {languageVersion=25, vendor=any vendor, ...}. Toolchain auto-provisioning is not enabled.`
+  —— 要 JDK 25 的正是这个文件；
+- 文件删掉：`BUILD SUCCESSFUL`，全程没有任何工具链请求；
+- 同配置下 `:app:assembleDebug` 也能出包（见 `tools/ci/gitee-build.sh` 的 CI 命令）。
+
 ### D-5　`unitTests.isReturnDefaultValues` 必须保持 `false`
 
 AGP 的 `testOptions.unitTests.isReturnDefaultValues = true` 会把 `android.jar` 换成

@@ -26,6 +26,13 @@ echo "==> 1/4 准备构建环境"
 # 构建机是 Linux，没有本机那个固定路径的 JDK：删掉 org.gradle.java.home 让 Gradle 用 JAVA_HOME
 # （与 .github/workflows/android-ci.yml 的处理一致）
 sed -i '/org.gradle.java.home/d' gradle.properties
+# 上面删掉固定 JDK 后，守护进程 JDK 就由 gradle/gradle-daemon-jvm.properties 决定；那个文件
+# （`gradlew updateDaemonJvm` 生成）把版本钉在 25 并带 api.foojay.io 的下载地址，Gradle 9 会照着
+# 去拉一整个 JDK → 国内构建机拉不动，报
+#   Unable to download toolchain matching the requirements ({languageVersion=25, ...})
+# 后失败（2026-10-15 的失败就是这个）。仓库里已删除该文件，这里再兜底删一次，防止有人本地
+# 跑过 updateDaemonJvm 后又把它提交上来。
+rm -f gradle/gradle-daemon-jvm.properties
 # gradlew 在仓库里没有可执行位（Windows 提交的）
 chmod +x gradlew
 # 构建容器只有 4GB 内存：Gradle 守护进程 3GB + Kotlin/KSP 编译进程默认还要 2GB，

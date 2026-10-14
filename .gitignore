@@ -31,3 +31,8 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+
+# Gradle 守护进程 JDK 条件文件（`gradlew updateDaemonJvm` 生成）：它把守护进程 JDK 钉在某个
+# 版本并带 api.foojay.io 的下载地址，国内 CI 会因此去下载一整个 JDK 并失败。
+# 见 docs/p0/README.md D-4：永远不要提交这个文件。
+gradle/gradle-daemon-jvm.properties
