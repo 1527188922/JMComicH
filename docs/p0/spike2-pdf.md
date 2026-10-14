@@ -118,10 +118,10 @@ PDFBox 的 AES 走 BouncyCastle，于是**任何需要 AES 的路径在 Robolect
 ## 6. 复现方式
 
 ```powershell
-cd D:\Project\HaruhiBox
+cd D:\Project\JMComicH
 
 # 结构类用例（开发机，Robolectric）
-.\gradlew.bat :app:testDebugUnitTest --tests "com.haruhi.haruhibox.core.codec.PdfWriterSpikeTest"
+.\gradlew.bat :app:testDebugUnitTest --tests "com.haruhi.jmcomic.core.codec.PdfWriterSpikeTest"
 
 # 加密类用例（需要在设备上；先确认 adb devices 能看到设备）
 .\gradlew.bat :app:connectedDebugAndroidTest

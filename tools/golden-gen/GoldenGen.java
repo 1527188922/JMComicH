@@ -1,5 +1,4 @@
 import com.alibaba.fastjson.JSONObject;
-import com.haruhi.botserver.features.bilibili.support.BilibiliIdConverter;
 import com.haruhi.botserver.features.jmcomic.client.model.Album;
 import com.haruhi.botserver.features.jmcomic.client.model.Chapter;
 import com.haruhi.botserver.features.jmcomic.client.model.Series;
@@ -161,20 +160,6 @@ public class GoldenGen {
         List<String> imageList = new ArrayList<>(List.of(images));
         List<String> sortedImages = JmcomicService.sortImageFiles(imageList);
         out.append("G5I|").append(String.join(",", sortedImages)).append('\n');
-
-        // ---------- G6 BV <-> AV ----------
-        out.append("# G6 BilibiliIdConverter\n");
-        String[] bvs = {"BV1xx411c7mD", "BV17x411w7KC", "BV1ZsaB6HE2U", "BV1bK4y1L7Zq", "BV1is421M7Yt"};
-        for (String bv : bvs) {
-            long av = BilibiliIdConverter.bvid2aid(bv);
-            String back = BilibiliIdConverter.aid2bvid(av);
-            out.append("G6|").append(bv).append('|').append(av).append('|').append(back).append('\n');
-        }
-        long[] avs = {1L, 2L, 170001L, 99999999L, 1234567890L};
-        for (long av : avs) {
-            String bv = BilibiliIdConverter.aid2bvid(av);
-            out.append("G6A|").append(av).append('|').append(bv).append('|').append(BilibiliIdConverter.bvid2aid(bv)).append('\n');
-        }
 
         // ---------- G7 解扰 ----------
         out.append("# G7 stitchImg golden images\n");

@@ -4,14 +4,14 @@
     <!-- ============================================================
         默认主题：浅色 + 无 ActionBar
         ============================================================ -->
-    <style name="Theme.HaruhiBox" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.JMComicH" parent="android:Theme.Material.Light.NoActionBar" />
 
 
     <!-- ============================================================
          深色主题：深色背景 + 浅色文字 + 无 ActionBar
          —— 夜间模式、暗色模式首选
          ============================================================ -->
-    <style name="Theme.HaruhiBox.Dark" parent="android:Theme.Material.NoActionBar" />
+    <style name="Theme.JMComicH.Dark" parent="android:Theme.Material.NoActionBar" />
 
 
     <!-- ============================================================
@@ -20,7 +20,7 @@
          —— 注意：你现在是 NoActionBar，如果想看到 ActionBar 效果，
             需要 App 里用的是系统 ActionBar 而不是自绘 Toolbar
          ============================================================ -->
-    <style name="Theme.HaruhiBox.DarkActionBar"
+    <style name="Theme.JMComicH.DarkActionBar"
         parent="android:Theme.Material.Light.DarkActionBar" />
 
 
@@ -28,7 +28,7 @@
          浅色 + 全屏（隐藏状态栏）
          —— 会盖住状态栏区域，适合启动页 / 视频播放页
          ============================================================ -->
-    <style name="Theme.HaruhiBox.Fullscreen"
+    <style name="Theme.JMComicH.Fullscreen"
         parent="android:Theme.Material.Light.NoActionBar.Fullscreen" />
 
 
@@ -37,7 +37,7 @@
          —— 状态栏、导航栏半透明，内容延伸到系统栏后面
          —— 通常配合 fitsSystemWindows / WindowInsets 使用
          ============================================================ -->
-    <style name="Theme.HaruhiBox.Translucent"
+    <style name="Theme.JMComicH.Translucent"
         parent="android:Theme.Material.Light.NoActionBar.TranslucentDecor" />
 
 
@@ -46,7 +46,7 @@
          —— 把 Activity 做成"对话框"外观，窗口不铺满全屏
          —— 适合分享弹窗、快速设置这类页面
          ============================================================ -->
-    <style name="Theme.HaruhiBox.Dialog"
+    <style name="Theme.JMComicH.Dialog"
         parent="android:Theme.Material.Light.Dialog.NoActionBar" />
 
 
@@ -58,7 +58,7 @@
          —— 内容区底色：浅灰 #F5F5F5
          —— 状态栏 / 导航栏：白底 + 深色图标
          ============================================================ -->
-    <style name="Theme.HaruhiBox.CardWhite"
+    <style name="Theme.JMComicH.CardWhite"
         parent="android:Theme.Material.Light.NoActionBar">
 
         <!-- ① 顶栏 / Toolbar / ActionBar 默认背景 → 白 -->

@@ -11,7 +11,7 @@
     ANSI, so non-ASCII characters here break parsing (hit twice already).
 
 .EXAMPLE
-    powershell -File tools/device-tests/run-one.ps1 -Class com.haruhi.haruhibox.core.database.MigrationsTest
+    powershell -File tools/device-tests/run-one.ps1 -Class com.haruhi.jmcomic.core.database.MigrationsTest
     powershell -File tools/device-tests/run-one.ps1 -Class "com.x.Y#method" -TimeoutSec 60
 #>
 [CmdletBinding()]
@@ -21,15 +21,15 @@ param(
     [string]$Adb = "D:\Environment\Android\Sdk\platform-tools\adb.exe",
     # Always pass this explicitly: PowerShell 5.1 leaves $PSScriptRoot empty for -File,
     # so deriving it here is not reliable.
-    [string]$ProjectRoot = 'D:\Project\HaruhiBox'
+    [string]$ProjectRoot = 'D:\Project\JMComicH'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $appApk = Join-Path $ProjectRoot 'app\build\outputs\apk\debug\app-debug.apk'
 $testApk = Join-Path $ProjectRoot 'app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk'
-$testPackage = 'com.haruhi.haruhibox.debug.test'
-$targetPackage = 'com.haruhi.haruhibox.debug'
+$testPackage = 'com.haruhi.jmcomic.debug.test'
+$targetPackage = 'com.haruhi.jmcomic.debug'
 
 foreach ($f in @($appApk, $testApk)) {
     if (-not (Test-Path $f)) { throw "missing APK: $f (run :app:assembleDebug :app:assembleDebugAndroidTest first)" }

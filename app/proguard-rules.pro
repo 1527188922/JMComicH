@@ -1,4 +1,4 @@
-# HaruhiBox 的 R8 / ProGuard 规则。
+# JMComicH 的 R8 / ProGuard 规则。
 #
 # release 构建开启了 minify + shrinkResources（见 app/build.gradle.kts）。
 # 这里只写**确实必要**的规则；能靠 R8 自动推断的一律不写。

@@ -47,7 +47,7 @@ grep distributionUrl gradle/wrapper/gradle-wrapper.properties
 
 # 依赖也走国内镜像：dl.google.com / plugins.gradle.org 在国内拉不动。
 # settings.gradle.kts 里这个变量为 1 时才把阿里云镜像排在官方仓库前面（本地/GitHub 不受影响）。
-export HARUHIBOX_USE_CN_MIRROR=1
+export JMCOMICH_USE_CN_MIRROR=1
 
 # Gitee 构建镜像自带一个全局 init 脚本 /root/.gradle/init.gradle，它会给**每个模块**
 # 注入一个 maven 仓库；而本工程的 settings.gradle.kts 是 FAIL_ON_PROJECT_REPOS
@@ -152,7 +152,7 @@ TAG="${RELEASE_TAG:-}"
 if [ -z "$TAG" ]; then
   TAG="v1.0.${GITEE_PIPELINE_BUILD_NUMBER}-debug"
 fi
-OUT="HaruhiBox-${TAG}.apk"
+OUT="JMComicH-${TAG}.apk"
 cp "$APK" "$OUT"
 ls -lh "$OUT"
 
@@ -176,7 +176,7 @@ if [ -z "$RELEASE_ID" ]; then
   RELEASE_ID=$(curl -s -X POST "${API}/releases" \
     --data-urlencode "access_token=${TOKEN}" \
     --data-urlencode "tag_name=${TAG}" \
-    --data-urlencode "name=HaruhiBox ${TAG}" \
+    --data-urlencode "name=JMComicH ${TAG}" \
     --data-urlencode "body=$(git log -1 --pretty=%s)" \
     --data-urlencode "target_commitish=$(git rev-parse HEAD)" \
     --data-urlencode "prerelease=true" \

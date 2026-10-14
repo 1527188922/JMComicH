@@ -3,7 +3,7 @@
 > 目标：把「不确定的技术选型」在写业务代码之前钉死，并留下一份可复现的记录。
 > 对应计划 `docs/android-app-plan.md` 第 10 节 P0。
 >
-> 记录日期：2026-10-07　工程：`D:\Project\HaruhiBox`
+> 记录日期：2026-10-07　工程：`D:\Project\JMComicH`
 
 ---
 
@@ -20,7 +20,7 @@
 | Java/Kotlin target | 21 | `compileOptions` + `kotlin.compilerOptions.jvmTarget` |
 | compileSdk / targetSdk | 37 | 本机已装 `platforms/android-37.0` + `build-tools/36.0.0` |
 | minSdk | 26 | Android 8.0；理由是 `BitmapRegionDecoder`、现代 WebP 解码、通知渠道语义稳定 |
-| applicationId | `com.haruhi.haruhibox` | |
+| applicationId | `com.haruhi.jmcomic` | |
 
 固定版本组合的升级门槛：**升级 AGP / Kotlin / KSP 任一版本前，先跑**
 `gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`。
@@ -114,7 +114,7 @@ Caused by: java.security.NoSuchAlgorithmException:
   at org.conscrypt.OpenSSLX509Certificate.verifyOpenSSL(...)
 ```
 
-表现为 `JmCryptoGoldenTest` 单独跑全绿、和 `DescramblerGoldenTest` 一起跑就集体失败。
+表现为 `CryptoGoldenTest` 单独跑全绿、和 `DescramblerGoldenTest` 一起跑就集体失败。
 
 结论：`testOptions.unitTests.all { it.forkEvery = 1 }`，每个测试类一个 JVM。
 测试量级小（约 50 个用例）时代价可接受；用例变多后应把 Robolectric 用例拆到
@@ -156,7 +156,7 @@ base64 则无法表达"空串 vs 缺失"且对 1 字符长度有填充歧义。
 4. Base64 解码要按 commons-codec 的宽松模式（允许缺 `=` 填充），
    已用 `decryptData normalises base64 without padding` 用例锁定。
 
-测试：`app/src/test/java/com/haruhi/haruhibox/core/jm/JmCryptoGoldenTest.kt`
+测试：`app/src/test/java/com/haruhi/jmcomic/core/protocol/CryptoGoldenTest.kt`
 
 ## 4. Spike 2：PDF 方案选型　✅ 通过（选 B1：pdfbox-android）
 
@@ -213,7 +213,7 @@ PDFBox 的 AES 走 BouncyCastle，因此**任何 AES 路径在 Robolectric 下�
 - 内存策略仍然必须做（`rgb565` 会掉色，只在阅读预览用；解扰与导出保持 ARGB_8888
   并串行执行），这是 P3 的实现约束，不是 P0 的结论。
 
-测试：`app/src/test/java/com/haruhi/haruhibox/core/codec/DescramblerGoldenTest.kt`
+测试：`app/src/test/java/com/haruhi/jmcomic/core/codec/DescramblerGoldenTest.kt`
 
 ## 6. P0 验收清单
 

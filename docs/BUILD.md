@@ -3,7 +3,7 @@
 ## 快速命令
 
 ```powershell
-cd D:\Project\HaruhiBox
+cd D:\Project\JMComicH
 
 # 日常验证（提交前必跑）
 .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
@@ -21,7 +21,7 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 # 设备上的 instrumented test（PDF 加密等）
 .\gradlew.bat :app:runDeviceTests
 # 只跑某个测试类
-.\gradlew.bat :app:runDeviceTests "-PclassFilter=com.haruhi.haruhibox.core.codec.PdfEncryptionInstrumentedTest"
+.\gradlew.bat :app:runDeviceTests "-PclassFilter=com.haruhi.jmcomic.core.codec.PdfEncryptionInstrumentedTest"
 ```
 
 > **不要用 `:app:connectedDebugAndroidTest`**（在小米机型上）：
@@ -43,11 +43,11 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 
 | | debug | release |
 |---|---|---|
-| applicationId | `com.haruhi.haruhibox.debug` | `com.haruhi.haruhibox` |
+| applicationId | `com.haruhi.jmcomic.debug` | `com.haruhi.jmcomic` |
 | 体积 | ~33 MB | ~4.4 MB |
 | 混淆/裁剪 | 关闭 | R8 minify + resource shrink |
 | 私有目录 | 各自的 `filesDir`（applicationId 不同，天然隔离） | 同左 |
-| 签名 | Android 调试密钥 | `haruhibox-release.jks`（本地） |
+| 签名 | Android 调试密钥 | `haruhibox-release.jks`（本地，文件名沿用改造前的名字） |
 
 因为 applicationId 不同，**两个包可以同时装在一台设备上、互不覆盖**，
 不需要每次切换都卸载。代价是桌面出现两个图标、数据不互通。
@@ -66,6 +66,10 @@ keyAlias=...
 keyPassword=...
 ```
 
+> 文件名与别名沿用了工程改名前的 `haruhibox`：那个 `.jks` 是**本机已有的、不在版本库里的**
+> 资产，改名只会让签名配置失效。给新环境重新生成时用 `jmcomic-release.jks` 之类的名字也完全可以
+> ——只要 `keystore.properties` 里的四项和实际文件对得上。
+
 - 文件与 `*.jks` 都在 `.gitignore` 里，**不会进版本库**；
 - 没有这个文件时 release 包**不签名**（CI 与只跑单测不受影响）；
 - **务必备份 keystore**：丢了就无法对已安装的应用做覆盖升级。
@@ -74,10 +78,10 @@ keyPassword=...
 
 ```powershell
 & "D:\Environment\jdk-21.0.4\bin\keytool.exe" -genkeypair -v `
-  -keystore haruhibox-release.jks -alias haruhibox `
+  -keystore jmcomic-release.jks -alias jmcomic `
   -keyalg RSA -keysize 2048 -validity 10000 `
   -storepass <口令> -keypass <口令> `
-  -dname "CN=HaruhiBox, OU=Personal, O=HaruhiBox, L=Local, ST=Local, C=CN"
+  -dname "CN=JMComicH, OU=Personal, O=JMComicH, L=Local, ST=Local, C=CN"
 ```
 
 ## 体积优化记录（33 MB → 4.4 MB）
@@ -152,7 +156,7 @@ java.lang.RuntimeException: Unable to get provider androidx.startup.Initializati
 
 ```powershell
 powershell -File tools\device-tests\run-one.ps1 `
-  -Class com.haruhi.haruhibox.core.database.MigrationsTest -TimeoutSec 90
+  -Class com.haruhi.jmcomic.core.codec.PdfEncryptionInstrumentedTest -TimeoutSec 90
 # 退出码：0 通过 / 1 失败 / 2 超时（卡住）/ 3 结果未知
 ```
 
@@ -174,7 +178,7 @@ powershell -File tools\device-tests\run-one.ps1 `
 因此**仓库里不保留 Compose UI 测试**：留一个跑不了的测试比没有更糟，
 它会让人以为界面有回归保护。界面验证改为：
 
-1. 界面背后的**展示逻辑**用不依赖屏幕的单测覆盖（`JmDisplayLogicTest`：
+1. 界面背后的**展示逻辑**用不依赖屏幕的单测覆盖（`DisplayLogicTest`：
    状态文案、章节状态判定、体积格式、错误文案）；
 2. 交互观感由人工在设备上确认。
 
@@ -186,7 +190,7 @@ powershell -File tools\device-tests\run-one.ps1 `
 |---|---|---|
 | `Requested internal only, but not enough space` | 设备 `/data` 空间不足（实测可用 226 MB 时失败） | 清理设备存储，或用 4.4 MB 的 release 包 |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match` | 已装的是另一种签名的包 | `adb uninstall <包名>` 后重装 |
-| `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（切换到 `.debug` 之前装的旧包） | 旧包 applicationId 没有 `.debug` 后缀 | `adb uninstall com.haruhi.haruhibox` |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（切换到 `.debug` 之前装的旧包） | 旧包 applicationId 没有 `.debug` 后缀 | `adb uninstall com.haruhi.jmcomic` |
 | `SecurityException: ...INSTALL_GRANT_RUNTIME_PERMISSIONS...` | 小米机型 + `adb install -g` | 见上一节 |
 | 安装成功但启动即退 | R8 规则问题，看 `adb logcat -d \| Select-String FATAL` | 见 `packageScope` 一节 |
 
@@ -200,24 +204,27 @@ adb shell df -h /data
 
 **症状**：用 `Get-Content -Raw` + `Set-Content`（哪怕显式写了 `-Encoding utf8`）改一个含中文的
 `.kt` / `.md`，文件里的中文会全部变成 `锛? 鐨? 涓?` 这种乱码，而且**换行会被吞掉**
-（多行注释和下一行代码挤成一行）。这次就是这样把 `JmModeRoot.kt` 弄坏的，
+（多行注释和下一行代码挤成一行）。曾经这样弄坏过一次 `ModeRoot.kt`，
 只能用 `git checkout` 回滚重做。
 
-**原因**：这个环境里 PowerShell 读写文本时用的编码与控制台编码不一致，
-`Get-Content` 按 GBK 解码 UTF-8 字节，再以 UTF-8 写回，乱码就被"固化"进文件。
-`Set-Content -Encoding utf8` 不能阻止这件事，因为在**读**的那一步信息就已经丢了。
+**原因**：Windows PowerShell 5.1 的 `Get-Content` 默认按 ANSI（本机是 GBK）解码，
+UTF-8 字节在**读**的那一步就已经错了，`Set-Content -Encoding utf8` 只能把错误结果固化。
+（PowerShell 7+ 默认 UTF-8，不会有这个问题；但脚本可能被 5.1 执行，别赌。）
 
 **正确做法**：
 
 - 改文件一律用编辑工具（或 IDE），不要用 shell 文本重写；
-- 确实要用 shell 处理字节时，走 .NET API 并显式指定两端编码，例如：
+- 确实要用 shell 批量替换时，走 .NET API 并显式指定两端编码（**`pwsh` 下这样是安全的**，
+  已用于本工程的大规模改名）：
 
   ```powershell
-  $utf8 = New-Object System.Text.UTF8Encoding($false)
-  $text = $utf8.GetString([System.IO.File]::ReadAllBytes($path))
-  # ……处理 $text……
-  [System.IO.File]::WriteAllBytes($path, $utf8.GetBytes($text))
+  $utf8 = New-Object System.Text.UTF8Encoding($false)   # $false = 不写 BOM
+  $raw  = [System.IO.File]::ReadAllText($path)          # .NET 默认按 UTF-8 读
+  $new  = $raw.Replace('old', 'new')
+  [System.IO.File]::WriteAllText($path, $new, $utf8)    # 保留原有 LF
   ```
+
+  注意 `WriteAllText` 不会动行尾，所以 LF 仓库不会被改成 CRLF。
 
 - 写完立刻自查（0 表示干净）：
 

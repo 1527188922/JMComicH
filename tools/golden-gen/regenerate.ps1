@@ -35,7 +35,7 @@ if (-not (Test-Path (Join-Path $ReferenceRoot "target\classes"))) {
     throw "参考工程未构建：$ReferenceRoot\target\classes 不存在，请先 mvn -DskipTests package"
 }
 
-$work = Join-Path ([System.IO.Path]::GetTempPath()) "haruhibox-golden"
+$work = Join-Path ([System.IO.Path]::GetTempPath()) "jmcomic-golden"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $cpFile = Join-Path $work "reference-classpath.txt"
 

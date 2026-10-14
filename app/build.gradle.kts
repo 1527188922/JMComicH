@@ -21,13 +21,13 @@ val keystoreProperties = Properties().apply {
 val hasReleaseSigning = keystoreProperties.getProperty("storeFile") != null
 
 android {
-    namespace = "com.haruhi.haruhibox"
+    namespace = "com.haruhi.jmcomic"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.haruhi.haruhibox"
+        applicationId = "com.haruhi.jmcomic"
         // minSdk 26：JM 阅读器需要 BitmapRegionDecoder + 现代 WebP 解码，
         // 且 Android 8 起前台服务/通知渠道语义稳定。
         minSdk = 26
@@ -197,7 +197,7 @@ android {
 // 这个任务自己装 APK 自己跑 instrumentation，在任何 ROM 上都能用。
 // 用法：
 //     .\gradlew.bat :app:runDeviceTests
-//     .\gradlew.bat :app:runDeviceTests -PclassFilter=com.haruhi.haruhibox.core.codec.PdfEncryptionInstrumentedTest
+//     .\gradlew.bat :app:runDeviceTests -PclassFilter=com.haruhi.jmcomic.core.codec.PdfEncryptionInstrumentedTest
 // ---------------------------------------------------------------------------
 val instrumentationClassFilter: String? = providers.gradleProperty("classFilter").orNull
 
@@ -209,7 +209,7 @@ tasks.register<Exec>("runDeviceTests") {
     val adbExecutable = androidComponents.sdkComponents.adb.get().asFile.absolutePath
     val appApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
     val testApk = layout.buildDirectory.file("outputs/apk/androidTest/debug/app-debug-androidTest.apk").get().asFile
-    val testPackage = "com.haruhi.haruhibox.debug.test"
+    val testPackage = "com.haruhi.jmcomic.debug.test"
     val script = rootProject.file("tools/device-tests/run-instrumented-tests.ps1")
 
     commandLine(

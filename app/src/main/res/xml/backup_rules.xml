@@ -12,5 +12,4 @@
     <include domain="database" path="." />
     <include domain="sharedpref" path="settings_global.xml" />
     <include domain="sharedpref" path="settings_jm.xml" />
-    <include domain="sharedpref" path="settings_bili.xml" />
 </full-backup-content>

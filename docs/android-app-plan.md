@@ -1,5 +1,22 @@
 # 安卓单机版「JM漫画 + B站视频」App 实施计划
 
+> ## ⚠ 已失效的部分（2026-10 改造后）
+>
+> 这份文档记录的是**最初的双模式设计**，保留原貌作为历史依据（参考实现的移植路径、
+> JM 协议细节、黄金用例来源等仍然有效）。但下面这些内容**已不再适用**：
+>
+> - **B站视频模式整体删除**：本工程现在是纯漫画软件。所有 B站相关的接口（WBI 签名、
+>   playurl、GenWebTicket）、`t_bilibili_video` 表、`BILI_VIDEO` 任务类型、B站设置作用域、
+>   B站深链 intent-filter、视频下载与播放（Media3）都不存在了；P5 阶段取消。
+> - **「模式切换 / 开屏选择」取消**：没有 JM / B站 两个模式了，只有漫画。
+>   对应的 `g_start_mode` / `g_last_mode` 设置项一并删除。
+> - **工程坐标与包名变更**：`HaruhiBox` → **JMComicH**，包名 `com.haruhi.haruhibox` →
+>   `com.haruhi.jmcomic`，数据库文件 `haruhibox.db` → `jmcomic.db`。
+> - **内部包结构重规划**：`core/jm` → `core/protocol`，`feature/jm/{api,data,ui}` →
+>   `feature/{api,data,ui}`，同时去掉了冗余的 `Jm*` 类名前缀。
+>
+> 改动详情见 `docs/PROGRESS.md` 的「改造：纯漫画版」一节与 `README.md`。
+
 > 本文档供**新会话**直接执行。新会话没有历史上下文，请先完整读完第 0～3 节再动手。
 
 ---
@@ -609,7 +626,7 @@ interface StreamMuxer { suspend fun mux(video: File, audio: File, out: File) }
 
 | 源（Java） | 目标（Kotlin） |
 |---|---|
-| `JmcomicService`（接口+签名+解密） | `feature-jm/.../JmApiClient.kt` |
+| `JmcomicService`（接口+签名+解密） | `feature-jm/.../ApiClient.kt` |
 | `JmcomicService`（下载/解扰/zip/pdf） | `feature-jm/.../JmDownloader.kt` + `core/codec/ImageCodec.kt` + `ArchiveWriter.kt` + `PdfWriter.kt` |
 | `JmTaskQueue` + `JmTaskContext` + `JmTaskPushService` | `core/taskqueue/JmTaskQueue.kt`（+ Flow 进度） |
 | `JmcomicSqliteServiceImpl` + 4 个 entity + mapper xml | `core/database/...`（Room Entity/Dao/Repository） |
