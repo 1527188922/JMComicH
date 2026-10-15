@@ -58,6 +58,18 @@ export JMCOMICH_USE_CN_MIRROR=1
 export ANDROID_HOME=/root/android-sdk
 export ANDROID_SDK_ROOT=/root/android-sdk
 
+echo "===== platforms 目录 ====="
+ls -la /root/android-sdk/platforms/
+
+echo "===== android-37.0/source.properties ====="
+cat /root/android-sdk/platforms/android-37.0/source.properties 2>&1
+
+echo "===== android-37.0/package.xml (前 30 行) ====="
+head -30 /root/android-sdk/platforms/android-37.0/package.xml 2>&1
+
+echo "===== 是否有残留 -2 目录 ====="
+ls -la /root/android-sdk/platforms/ | grep -- '-2' || echo "(无)"
+
 # Gitee 构建镜像自带一个全局 init 脚本 /root/.gradle/init.gradle，它会给**每个模块**
 # 注入一个 maven 仓库；而本工程的 settings.gradle.kts 是 FAIL_ON_PROJECT_REPOS
 # （禁止模块级仓库），两者冲突时 Gradle 直接失败：
