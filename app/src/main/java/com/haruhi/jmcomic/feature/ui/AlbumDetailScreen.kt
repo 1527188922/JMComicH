@@ -604,7 +604,7 @@ fun AlbumDetailScreen(
         )
     }
 
-    // 导出密码框：默认预填配置里的密码，支持显示/隐藏，保留 [确认] / [不设密码]
+    // 导出密码框：预填设置里的默认密码（设置里留空就是空框），保留 [确认] / [不设密码]
     state.exportFormat?.let { format ->
         ExportPasswordDialog(
             format = format,
@@ -839,7 +839,9 @@ private fun ExportedFileRow(
 /**
  * 导出密码框（计划 §9 第 7 条）。
  *
- * - 默认**预填**该格式的密码（来自凭据存储，没设过就用参考实现的默认值）；
+ * - 默认**预填**该格式的密码（来自凭据存储里设置页那一项）；
+ *   **设置里留空/没设过就是空串**——不留任何参考实现的默认值兜底
+ *   （用户 2026-10-15 反馈：设置里清空后这里不该再默认填上密码）；
  * - 有显示/隐藏切换；
  * - 底部是 **[确认] / [不设密码]**，留空等同不加密；
  * - 同名成品已存在时，用橙色提醒"会被覆盖"（用户要求第 5 点）；
@@ -855,7 +857,7 @@ private fun ExportPasswordDialog(
     onDismiss: () -> Unit,
 ) {
     var password by remember(format) { mutableStateOf(defaultPassword) }
-    var visible by remember(format) { mutableStateOf(false) }
+//    var visible by remember(format) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,

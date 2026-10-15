@@ -17,7 +17,13 @@ object Defaults {
     /** 封面兜底域名，参考实现 `JmcomicService.COVER_DOMAIN`（主域名失败后重试）。 */
     const val COVER_DOMAIN = "cdn-msp3.18comic.vip"
 
-    /** zip/pdf 默认密码，参考实现 `JM_DEFAULT_PASSWORD`。 */
+    /**
+     * 参考实现里的 zip/pdf 默认密码 `JM_DEFAULT_PASSWORD`。
+     *
+     * **只作参考实现的对齐记录用，不再当"用户没设过密码"时的预填兜底**
+     * （用户 2026-10-15 反馈：设置里留空就该预填空，不该冒出 1234）。
+     * 常量本身留着，供协议常量对照测试（`CryptoGoldenTest`）核对。
+     */
     const val DEFAULT_EXPORT_PASSWORD = "1234"
 
     /** JM /search 每页固定返回 80 条。 */

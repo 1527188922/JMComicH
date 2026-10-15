@@ -664,6 +664,7 @@ app/src/main/java/com/haruhi/jmcomic/
 |---|---|---|---|
 | Z1 | 设置页「导出」里的 ZIP / PDF 密码框：**最多 30 个字符**，并**去掉首尾空格与字符中的换行回车** | 上限抽成 `SettingLimits.EXPORT_PASSWORD_MAX_CHARS = 30`（UI 校验常量统一放这里，不在页面里再写一份字面量）。净化拆成两半，都是在 `SettingsScreen.kt` 里的纯函数：<br>① `filterExportPasswordInput` = `filterNot { it == '\n' \|\| it == '\r' }.take(30)`，放在 `onValueChange` 里，**打字与粘贴走同一道**（`singleLine` 只是挡住键盘回车，粘多行文本照样进得来）；<br>② `sanitizeExportPassword` = 前者 + `.trim()`，**点「保存」时**用，并且把净化后的值**写回输入框**——不然框里会留着那颗已经被 trim 掉的空格，看起来像"没保存成功"。<br>为什么不在 `onValueChange` 里直接 trim：边打字边 trim 会让**中间的空格永远打不出来**（"a" + 空格被吃掉 → 再打 "b" 就成了 "ab"），而 `a b` 是合法密码。折中办法是加 `Modifier.onFocusChanged`：**离开输入框时补一次 trim**，不点保存也不会一直挂着一串空格。<br>ViewModel 的 `saveZipPassword` / `savePdfPassword` 也换成同一个 `sanitizeExportPassword`（原来各自 `trim()` 一份），框里显示的和实际存进去的是同一个值 | 代码（按要求没有跑测试，等你打 debug 包确认）。设备上这样核对：粘贴一段带换行的 40 字符文本 → 框里只剩前 30 个且没有换行；打 `a b` 空格能打出来；打 ` abc ` 后点旁边那颗**保存** → 空格消失、弹「…已保存」；再进这一页显示的是存下来的那个值 |
 | Z2 | 密码**直接明文显示**；「显示 / 隐藏」按钮**改成「保存」**，下面 Row 里那颗保存按钮**去掉** | 导出那两个框不再复用代理密码用的 `PasswordField`（那个仍是圆点 + 「显示 / 隐藏」），新建 `ExportPasswordEditor`：不传 `visualTransformation`（Compose 默认 `VisualTransformation.None`），`trailingIcon` 里那颗文字按钮直接写「保存」，原来 `Row(Arrangement.End) { Button("保存") }` 整段删除 | 同上：两个框里直接看到密码原文，右边只有一颗「保存」按钮，下方不再有第二颗 |
+| Z3 | （Z1 的连带 bug）设置里把 ZIP/PDF 默认密码**清空**后，详情页点「导出 ZIP/PDF」的密码框**仍然预填着密码** | 根因在 `AlbumDetailViewModel.defaultPasswordFor`：`secrets.get(key)?.takeIf { it.isNotEmpty() } ?: Defaults.DEFAULT_EXPORT_PASSWORD`——只要读出来是空（或根本没有），就**兜底成参考实现的 `1234`**。而 `SecretStore.put(key, "")` 的语义是**删掉这一项**（见 `SecretStore` 注释），所以"用户清空过"与"从来没设过"在存储层是同一个状态，兜底必然命中；更要紧的是**设置页显示的从来不兜底**（`SettingsViewModel.reload` 里只 `orEmpty()`），于是"设置里看见空的、导出时冒出 1234"。<br>改法：`defaultPasswordFor` 直接 `secrets.get(key).orEmpty()`，**去掉兜底**——设置里留空/没设过 = 预填空串 = 不加密（合上设置页 hint 那句"留空表示不加密"）。`Defaults.DEFAULT_EXPORT_PASSWORD` 常量**保留**（协议常量对照测试 `CryptoGoldenTest` 仍要核它），只在 KDoc 里写明它不再当预填兜底；`ViewModels.kt` 里那个因此空掉的 `Defaults` import 一并删掉。顺带把 `AlbumDetailScreen` 里"支持显示/隐藏"这类过期注释写回现状 | 代码（按要求没有跑测试，等你打 debug 包确认）。设备上这样核对：设置里两个密码都清空 → 详情页点「导出 ZIP」→ 密码框**是空的**（`导出 PDF` 同样）→ 直接点「确认」→ 任务提示与成品都是未加密（无密码可打开）；再在设置里填个密码 → 再点导出 → 密码框预填的就是刚填的那个值 |
 
 ## P4 明细（JM 导出 zip / pdf）
 
@@ -675,7 +676,7 @@ app/src/main/java/com/haruhi/jmcomic/
 | 导出编排（复用任务表、进度进任务页、取消、去重） | ✅ | `feature/data/ExportManager.kt` |
 | 密码不进数据库 | ✅ | 密码只存在内存的 `passwords` 表里；payload 只有 albumId/folderName/format |
 | 成品交付到系统目录 | ✅ | `core/storage/ExportPublisher.kt`（API 29+ 走 MediaStore 下载目录） |
-| 导出前的密码框（预填 + 显示/隐藏 + [确认]/[不设密码]） | ✅ 代码 | `ExportPasswordDialog` |
+| 导出前的密码框（预填设置里的密码，留空即空框 + [确认]/[不设密码]） | ✅ 代码 | `ExportPasswordDialog` |
 | **缺图预检**（列明缺哪几话、缺多少张，先补下载） | ✅ | `ExportManager.precheck` + 详情页对话框 |
 | 导出不支持续做：只给取消，不给重试 | ✅ | `TaskRow.isExport` 关掉暂停/继续/重试 |
 
@@ -690,7 +691,7 @@ app/src/main/java/com/haruhi/jmcomic/
 
 | 步骤 | 结果 |
 |---|---|
-| 已下载的本子 → ⋮ → 「导出 ZIP」 | ✅ 弹出密码框，**预填默认密码**、有显示/隐藏、[不设密码]/[取消]/[确认] |
+| 已下载的本子 → ⋮ → 「导出 ZIP」 | ✅ 弹出密码框，**预填设置里那个默认密码**（设置里留空时框里也是空的）、[不设密码]/[取消]/[确认] |
 | 点「确认」 | ✅ 提示"已开始导出 ZIP"，任务页出现导出任务 |
 | ZIP 结果 | ✅ 日志 `zip 完成：12 个条目，加密=true`；`/sdcard/Download/JMComicH/<本子名>_JM377531.zip`（12.4 MB） |
 | 点「导出 PDF」→「不设密码」 | ✅ 日志 `pdf 完成：12 页 / 1 话（切片 0 张），加密=false`；同目录下 20.8 MB 的 PDF |

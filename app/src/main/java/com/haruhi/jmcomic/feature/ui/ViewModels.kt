@@ -7,7 +7,6 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.database.entity.SearchHistoryEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
-import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.toUserMessage
@@ -1266,7 +1265,7 @@ data class AlbumDetailUiState(
 
     /** 用户点了哪个导出（决定密码框的标题与默认密码）。 */
     val exportFormat: ExportFormat? = null,
-    /** 该格式的默认密码（来自设置/凭据存储），密码框预填它。 */
+    /** 该格式的默认密码（来自设置/凭据存储），密码框预填它；**空串 = 设置里留空，框里就是空的**。 */
     val exportDefaultPassword: String = "",
     /**
      * 目标文件（系统下载目录里的同名 zip/pdf）**已经存在**。
@@ -1975,13 +1974,24 @@ class AlbumDetailViewModel(
 
     fun cancelExport() = _state.update { it.copy(exportFormat = null, exportTargetExists = false) }
 
-    /** 默认密码来自凭据存储；没设过就用参考实现的默认值。 */
+    /**
+     * 导出密码框的**预填值** = 设置页那个「默认密码」的原文（凭据存储里读出来的）。
+     *
+     * **设置里没设过或者被清空 = 预填空串**（用户 2026-10-15 反馈的 bug：原来这里会兜底成
+     * 参考实现的 `Defaults.DEFAULT_EXPORT_PASSWORD`，于是"设置里明明留空、点导出却又冒出个 1234"）。
+     *
+     * 不能兜底还有一个结构上的原因：`SecretStore.put(key, "")` 是**删掉这一项**
+     * （见该类的注释），所以"用户清空过"和"从来没设过"在存储里是同一个状态，分不出来。
+     *
+     * 设置页显示的也是同一个值（`SettingsViewModel.reload` 里同样只 `orEmpty()` 不兜底），
+     * 两边必须一致，否则又会变成"设置里看到的和导出时预填的不是一个值"。
+     */
     private fun defaultPasswordFor(format: ExportFormat): String {
         val key = when (format) {
             ExportFormat.ZIP -> SettingKeys.SECRET_JM_ZIP_PASSWORD
             ExportFormat.PDF -> SettingKeys.SECRET_JM_PDF_PASSWORD
         }
-        return secrets.get(key)?.takeIf { it.isNotEmpty() } ?: Defaults.DEFAULT_EXPORT_PASSWORD
+        return secrets.get(key).orEmpty()
     }
 
     /**
