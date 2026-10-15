@@ -10,10 +10,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -51,14 +50,18 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * 任务 tab 的图标（含角标）。
+ * 带任务角标的底栏图标。
+ *
+ * 任务从底栏搬进「更多」之后，**"有东西在下"这件事全靠这个角标兜住**：
+ * 所以角标挂在「更多」而不是「任务」上（「任务」已经不在底栏了），
+ * 保证在任何一个 tab 上都看得见。
  *
  * 计划 §9 第 9 条：**角标只统计排队/执行任务**，失败另用提示点。
  * 所以"有失败但没有排队任务"时画一个空角标当提示点，不把失败数加进数字里。
  */
 @Composable
-private fun TaskTabIcon(badgeCount: Int, hasFailure: Boolean, icon: ImageVector) {
-    val content: @Composable () -> Unit = { Icon(icon, contentDescription = "任务") }
+private fun TaskBadgeIcon(badgeCount: Int, hasFailure: Boolean, icon: ImageVector) {
+    val content: @Composable () -> Unit = { Icon(icon, contentDescription = "更多") }
     when {
         badgeCount > 0 -> BadgedBox(badge = { Badge { Text(badgeCount.toString()) } }) { content() }
         hasFailure -> BadgedBox(badge = { Badge {} }) { content() }
@@ -72,6 +75,23 @@ object Routes {
     const val DISCOVER = "jm/discover"
     const val FAVORITES = "jm/favorites"
     const val TASKS = "jm/tasks"
+
+    /**
+     * 「更多」tab（用户 2026-10-15 定的底栏第 4 项）。
+     *
+     * 底栏固定为 **书库 / 发现 / 收藏 / 更多**；「最近浏览」「下载任务」「应用设置」
+     * 都收在这一页里，所以底栏不因为它们变长。
+     */
+    const val MORE = "jm/more"
+
+    /**
+     * 应用设置页（「更多」→ 应用设置）。
+     *
+     * **设置入口只有这一处**：模式首页不再单独挂顶栏齿轮（底栏已经能到设置，
+     * 再挂一个齿轮是重复入口）。阅读器控制栏里的那个小齿轮**保留**——
+     * 它和这个页面读写的是同一份 `Jm.READING_*` 偏好，两处入口、一份存储。
+     */
+    const val SETTINGS = "jm/settings"
     const val FAVORITE_ALBUMS = "jm/favorites/{favoriteId}?name={name}"
     const val DETAIL = "jm/album/{albumId}"
     const val READER = "jm/read/{albumId}?chapterId={chapterId}"
@@ -113,20 +133,22 @@ object Routes {
 }
 
 /**
- * 底部导航的五个 tab。
+ * 底部导航的四个 tab（用户 2026-10-15 定的顺序：书库 / 发现 / 收藏 / 更多）。
  *
  * **声明顺序就是底栏顺序**，也是页面切换动画方向的依据（见 [Tab.indexOfRoute]）。
  *
+ * 「最近浏览」与「下载任务」**不在这里**：它们收进了「更多」页当二级页，
+ * 底栏因此从 5 项减到 4 项。代价是任务不再常驻底栏，靠 [TaskBadgeIcon] 的角标补可见性。
+ *
  * 图标只能用 `material-icons-core` 里有的：本工程**不引入 `material-icons-extended`**
- * （体积代价，见 `libs.versions.toml`）。所以"最近"用日历（`DateRange`，
- * 表达"按时间翻过的记录"），"任务"用清单（`List`，表达"一批待办的事"）。
+ * （体积代价，见 `libs.versions.toml`）。"更多"用竖排三点（`MoreVert`），
+ * 表示"还有别的东西收在这里面"。
  */
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     LIBRARY(Routes.LIBRARY, "书库", Icons.Default.Home),
-    RECENT(Routes.RECENT, "最近", Icons.Default.DateRange),
     DISCOVER(Routes.DISCOVER, "发现", Icons.Default.Search),
     FAVORITES(Routes.FAVORITES, "收藏", Icons.Default.Favorite),
-    TASKS(Routes.TASKS, "任务", Icons.AutoMirrored.Filled.List),
+    MORE(Routes.MORE, "更多", Icons.Default.MoreVert),
     ;
 
     companion object {
@@ -141,11 +163,11 @@ private const val PAGE_TRANSITION_MS = 260
 /**
  * 漫画模式的导航壳。
  *
- * 底部导航：**书库 / 最近 / 发现 / 收藏 / 任务**
- * （计划 §9 第 2 条的底栏「书库 / 发现 / 收藏 / 任务」，加上用户要求的"最近浏览"）。
+ * 底部导航：**书库 / 发现 / 收藏 / 更多**（用户 2026-10-15 定的底栏）。
+ * 「最近浏览」「下载任务」「应用设置」都收在「更多」页里当二级页。
  *
- * 详情页与阅读器隐藏底栏（§9 第 2 条：阅读器/全屏播放器隐藏主导航）。
- * 顶部齿轮进当前模式设置在 P6 接，按 §9.5「未实现的功能不展示空页面或占位开关」暂不占位。
+ * 详情页、阅读器以及「更多」下面的二级页都隐藏底栏
+ * （§9 第 2 条：阅读器/全屏播放器隐藏主导航；二级页自带返回按钮，靠系统返回或按钮回上一级）。
  */
 @Composable
 fun ModeRoot(
@@ -200,8 +222,8 @@ fun ModeRoot(
                                     }
                                 },
                                 icon = {
-                                    if (tab == Tab.TASKS) {
-                                        TaskTabIcon(
+                                    if (tab == Tab.MORE) {
+                                        TaskBadgeIcon(
                                             badgeCount = taskState.badgeCount,
                                             hasFailure = taskState.failedCount > 0,
                                             icon = tab.icon,
@@ -284,11 +306,26 @@ fun ModeRoot(
                     )
                 }
 
+                composable(Routes.MORE) { entry ->
+                    val vm: MoreViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val recentCount by vm.recentCount.collectAsStateWithLifecycle()
+                    // 本页自己没有 Snackbar 宿主，也不产生一次性提示，所以不需要 MessageEffect
+                    MoreScreen(
+                        recentCount = recentCount,
+                        taskState = taskState,
+                        onOpenRecent = { navController.navigate(Routes.RECENT) },
+                        onOpenTasks = { navController.navigate(Routes.TASKS) },
+                        onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                    )
+                }
+
                 composable(Routes.RECENT) { entry ->
                     val vm: RecentViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
                     RecentScreen(
                         state = state,
+                        // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+                        onBack = { navController.popBackStack() },
                         onOpenAlbum = { navController.navigate(Routes.detail(it)) },
                         onClearAll = vm::clearAll,
                         onRemoveAlbum = vm::remove,
@@ -406,6 +443,8 @@ fun ModeRoot(
                     )
                     TaskScreen(
                         state = taskState,
+                        // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+                        onBack = { navController.popBackStack() },
                         onToggleExpanded = taskViewModel::toggleExpanded,
                         onPause = taskViewModel::pause,
                         onResume = taskViewModel::resume,
@@ -427,6 +466,36 @@ fun ModeRoot(
                             }
                         },
                         onDeleteOutput = taskViewModel::deleteOutput,
+                    )
+                }
+
+                composable(Routes.SETTINGS) { entry ->
+                    val vm: SettingsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
+                    SettingsScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        // 阅读与显示：阅读背景与亮度放在阅读器的设置面板里（跟着环境变，进阅读器再改）
+                        onSetReadingMode = vm::setReadingMode,
+                        onSetReadingDirection = vm::setReadingDirection,
+                        onSetKeepScreenOn = vm::setKeepScreenOn,
+                        // 下载
+                        onSetDownloadThreads = vm::setDownloadThreads,
+                        onSetDownloadNetwork = vm::setDownloadNetwork,
+                        // 导出默认密码（原文写进加密凭据存储，页面上默认用圆点遮住）
+                        onSaveZipPassword = vm::saveZipPassword,
+                        onSavePdfPassword = vm::savePdfPassword,
+                        // 网络与线路
+                        onSetNetworkOverride = vm::setNetworkOverride,
+                        onSetTimeoutSeconds = vm::setTimeoutSeconds,
+                        onSaveProxy = vm::saveProxy,
+                        onSaveApiDomains = vm::saveApiDomains,
+                        onSaveImageDomains = vm::saveImageDomains,
+                        // 高级
+                        onSetRetry = vm::setRetry,
+                        // 恢复默认：只重置漫画作用域，不动全局、不动书库与文件、不动凭据
+                        onResetSettings = vm::resetSettings,
                     )
                 }
 
@@ -747,6 +816,12 @@ class ViewModelFactory(
 
         modelClass.isAssignableFrom(TaskViewModel::class.java) ->
             TaskViewModel(container.downloadTasks, container.jmDownloads, container.jmExports) as T
+
+        modelClass.isAssignableFrom(MoreViewModel::class.java) ->
+            MoreViewModel(container.jmRepository) as T
+
+        modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
+            SettingsViewModel(container.settings, container.secrets) as T
 
         modelClass.isAssignableFrom(ReaderViewModel::class.java) ->
             ReaderViewModel(

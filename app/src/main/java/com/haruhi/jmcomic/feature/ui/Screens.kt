@@ -702,6 +702,8 @@ private fun ContinueReadingCardRow(
 @Composable
 fun RecentScreen(
     state: RecentUiState,
+    /** 返回上一级（本页是「更多」下面的二级页，底栏在这一层隐藏，所以需要可见的返回按钮）。 */
+    onBack: () -> Unit,
     onOpenAlbum: (Long) -> Unit,
     onClearAll: () -> Unit,
     /** 长按单条"从最近浏览移除"（用户第九轮要求第 3 点：删记录时按书库情况处理封面）。 */
@@ -716,13 +718,20 @@ fun RecentScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 8.dp, top = 12.dp)
+                // 左边留 8dp：IconButton 自带 48dp 触控区，再叠 16dp 会让标题明显右移
+                .padding(start = 8.dp, end = 8.dp, top = 12.dp)
                 // 内容区不低于按钮最小高度：按钮不存在时整行不塌缩，标题留白与底边位置保持不变
                 .defaultMinSize(minHeight = ButtonDefaults.MinHeight),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("最近浏览", style = MaterialTheme.typography.titleMedium)
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                "最近浏览",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
             if (state.albums.isNotEmpty()) {
                 TextButton(onClick = { showClearDialog = true }) { Text("清空") }
             }

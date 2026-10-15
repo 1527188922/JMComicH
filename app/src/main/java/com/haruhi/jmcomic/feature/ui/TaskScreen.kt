@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ButtonDefaults
@@ -61,6 +62,8 @@ import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 @Composable
 fun TaskScreen(
     state: TaskUiState,
+    /** 返回上一级（本页是「更多」下面的二级页，底栏在这一层隐藏，所以需要可见的返回按钮）。 */
+    onBack: () -> Unit,
     onToggleExpanded: (Long) -> Unit,
     onPause: (Long) -> Unit,
     onResume: (Long) -> Unit,
@@ -85,13 +88,20 @@ fun TaskScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 8.dp, top = 12.dp)
+                // 左边留 8dp：IconButton 自带 48dp 触控区，再叠 16dp 会让标题明显右移
+                .padding(start = 8.dp, end = 8.dp, top = 12.dp)
                 // 内容区不低于按钮最小高度：按钮不存在时整行不塌缩，标题留白与底边位置保持不变
                 .defaultMinSize(minHeight = ButtonDefaults.MinHeight),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text("下载任务", style = MaterialTheme.typography.titleMedium)
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Text(
+                "下载任务",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
             if (state.finished.isNotEmpty()) {
                 TextButton(onClick = onClearFinished) { Text("清空完成记录") }
             }
