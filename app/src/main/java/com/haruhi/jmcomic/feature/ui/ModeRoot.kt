@@ -198,7 +198,10 @@ fun ModeRoot(
     // （用户要求第 8 点：加载过的封面优先读本地）
     CompositionLocalProvider(LocalImageLoader provides container.imageLoader) {
         Scaffold(
-            modifier = modifier.fillMaxSize(),
+            // 「点输入框以外的地方就失焦、收起软键盘」挂在**根节点**上，一处覆盖所有页面
+            // （实现与两条踩坑约束见 `FocusOnTap.kt`）。挂根节点而不是喂给每个输入框，
+            // 是为了让以后新增的页面/输入框自动具备这个行为，不用每处再挂一次。
+            modifier = modifier.fillMaxSize().clearFocusOnTap(),
             // Scaffold 默认容器色是 `colorScheme.background`（本主题下是 #F5F5F5 灰）。
             // 但状态栏那条（topBar 槽为空、由 contentWindowInsets 让出来）画的正是这个颜色，
             // 必须是纯白才能和底栏 NavigationBar（surfaceContainer = #FFFFFF）一致。
