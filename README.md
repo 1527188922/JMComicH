@@ -20,7 +20,7 @@ app/src/main/java/com/haruhi/jmcomic/
     network/                 OkHttp 工厂、错误分类、超时重试
     database/                Room 实体 / Dao / 数据库
     download/                下载引擎、任务仓库、前台服务
-    settings/                设置（全局 / 漫画两个作用域）+ Keystore 凭据存储
+    settings/                设置（唯一的漫画作用域）+ Keystore 凭据存储
     storage/                 目录规划、文件名清洗与排序、导出交付
     di/                      手写依赖注入容器
   feature/

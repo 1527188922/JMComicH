@@ -98,19 +98,15 @@ data class SettingsUiState(
     // 下载
     /** 0 = 自动，1～8 = 固定图片并发数。 */
     val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO,
-    /** 0 = 跟随全局，1 = 仅 Wi-Fi，2 = 允许移动网络（UI 用，存储值是 -1/0/1）。 */
-    val downloadNetworkChoice: Int = 0,
 
     // 导出默认密码：原文存进加密凭据存储，页面上默认以圆点显示，点"显示"才看得到
     val zipPassword: String = "",
     val pdfPassword: String = "",
 
     // 网络与线路
-    /** 是否「本模式自定义」（false = 跟随全局，此时下面的值仅供展示，不生效）。 */
-    val networkOverridden: Boolean = false,
-    /** 覆盖生效时的请求超时（秒）。 */
-    val timeoutSeconds: Int = SettingDefaults.REQUEST_TIMEOUT_SECONDS,
-    /** 覆盖生效时的代理设置（密码存在加密凭据存储里，读出来只用于这一页的显示）。 */
+    /** 请求超时（秒）。 */
+    val timeoutSeconds: Int = SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS,
+    /** 代理设置（密码存在加密凭据存储里，读出来只用于这一页的显示）。 */
     val proxyType: ProxyType = ProxyType.NONE,
     val proxyHost: String = "",
     val proxyPort: String = "",
@@ -120,7 +116,7 @@ data class SettingsUiState(
     /** 接口线路 / 图片线路：换行分隔的域名列表，第一项是当前线路。 */
     val apiDomains: String = "",
     val imageDomains: String = "",
-    /** 解析好的有效值（跟随全局时也带上，用来显示「跟随全局：仅 Wi-Fi」这类文案）。 */
+    /** 当前生效的网络配置：下载网络那一行的"当前生效"文案用它。 */
     val resolved: ResolvedNetworkConfig? = null,
 
     // 高级
@@ -184,18 +180,14 @@ class SettingsViewModel(
         val threads = settings
             .jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO)
             .first()
-        val networkChoice = storedToChoice(
-            settings.jmInt(SettingKeys.Jm.DOWNLOAD_NETWORK, SettingDefaults.NETWORK_FOLLOW_GLOBAL).first(),
-        )
-        val overridden = settings.jmInt(SettingKeys.Jm.NETWORK_OVERRIDE, 0).first() != 0
         val proxyType = ResolvedNetworkConfig.proxyTypeOf(
-            settings.jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.PROXY_NONE).first(),
+            settings.jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.Jm.PROXY_NONE).first(),
         )
         val retryAlbum = settings.jmInt(SettingKeys.Jm.RETRY_ALBUM, SettingDefaults.Jm.RETRY).first()
         val retrySearch = settings.jmInt(SettingKeys.Jm.RETRY_SEARCH, SettingDefaults.Jm.RETRY).first()
         val retryChapter = settings.jmInt(SettingKeys.Jm.RETRY_CHAPTER, SettingDefaults.Jm.RETRY).first()
         val timeout = settings
-            .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.REQUEST_TIMEOUT_SECONDS)
+            .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS)
             .first()
         val proxyHost = settings.jmString(SettingKeys.Jm.PROXY_HOST).first()
         val proxyPort = settings.jmInt(SettingKeys.Jm.PROXY_PORT, 0).first()
@@ -217,10 +209,8 @@ class SettingsViewModel(
                 readingDirection = direction,
                 keepScreenOn = keepScreenOn,
                 downloadThreads = threads,
-                downloadNetworkChoice = networkChoice,
                 zipPassword = zipPassword,
                 pdfPassword = pdfPassword,
-                networkOverridden = overridden,
                 timeoutSeconds = timeout,
                 proxyType = proxyType,
                 proxyHost = proxyHost,
@@ -277,12 +267,11 @@ class SettingsViewModel(
         viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.DOWNLOAD_THREADS, value) }
     }
 
-    /** [choice]：0 = 跟随全局，1 = 仅 Wi-Fi，2 = 允许移动网络。 */
-    fun setDownloadNetwork(choice: Int) {
-        val value = choiceToStored(choice)
-        _state.update { it.copy(downloadNetworkChoice = choice.coerceIn(0, 2)) }
+    /** [index] 是 `DownloadNetwork.entries` 的下标：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
+    fun setDownloadNetwork(index: Int) {
+        val policy = DownloadNetwork.entries.getOrElse(index) { DownloadNetwork.ANY }
         viewModelScope.launch {
-            settings.putJmInt(SettingKeys.Jm.DOWNLOAD_NETWORK, value)
+            settings.putJmInt(SettingKeys.Jm.DOWNLOAD_NETWORK, policy.ordinal)
             refreshResolved()
         }
     }
@@ -309,15 +298,6 @@ class SettingsViewModel(
     // ------------------------------------------------------------------
     // 网络与线路
     // ------------------------------------------------------------------
-
-    /** 切换「跟随全局 / 本模式自定义」。切回跟随后覆盖值仍在存储里，只是不生效（计划 §9.2）。 */
-    fun setNetworkOverride(overridden: Boolean) {
-        _state.update { it.copy(networkOverridden = overridden) }
-        viewModelScope.launch {
-            settings.putJmInt(SettingKeys.Jm.NETWORK_OVERRIDE, if (overridden) 1 else 0)
-            refreshResolved()
-        }
-    }
 
     fun setTimeoutSeconds(seconds: Int) {
         val value = seconds.coerceIn(SettingLimits.REQUEST_TIMEOUT_SECONDS.first, SettingLimits.REQUEST_TIMEOUT_SECONDS.last)
@@ -352,7 +332,6 @@ class SettingsViewModel(
             proxyPort = portValue ?: 0,
             proxyUsername = username,
             proxyPassword = null,
-            followedGlobal = false,
             downloadNetwork = DownloadNetwork.ANY,
         )
         probe.validate().firstOrNull()?.let { error ->
@@ -420,8 +399,8 @@ class SettingsViewModel(
     // ------------------------------------------------------------------
 
     /**
-     * 恢复默认：**只清漫画作用域**（计划 §9.2）。
-     * 不动全局值、不动书库与已下载文件、**不动凭据**（zip/pdf/代理密码单独清除）。
+     * 恢复默认：清空全部偏好（应用只有漫画一种模式，也就只有这一份）。
+     * 不动书库与已下载文件、**不动凭据**（zip/pdf/代理密码单独清除）。
      */
     fun resetSettings() {
         viewModelScope.launch {
@@ -432,19 +411,6 @@ class SettingsViewModel(
     }
 
     private companion object {
-        /** 存储值（-1/0/1）→ UI 选择项（0/1/2）。 */
-        fun storedToChoice(stored: Int): Int = when (stored) {
-            SettingDefaults.NETWORK_FOLLOW_GLOBAL -> 0
-            SettingDefaults.DOWNLOAD_NETWORK_WIFI_ONLY -> 1
-            else -> 2
-        }
-
-        fun choiceToStored(choice: Int): Int = when (choice) {
-            0 -> SettingDefaults.NETWORK_FOLLOW_GLOBAL
-            1 -> SettingDefaults.DOWNLOAD_NETWORK_WIFI_ONLY
-            else -> SettingDefaults.DOWNLOAD_NETWORK_ANY
-        }
-
         /**
          * 线路文本规整：逐行去空白、丢空行，再用换行拼回去。
          *
@@ -465,8 +431,8 @@ class SettingsViewModel(
  * 页面没有自己的 Snackbar 宿主：一次性提示由 [ModeRoot] 的 [MessageEffect] 统一弹出，
  * 所以这里不需要 message 相关参数。
  *
- * 「网络与线路」遵守计划 §9.2 的「跟随全局 / 本模式自定义」：
- * 跟随时只**显示有效值**，自定义时才出现可编辑字段——不把全局默认复制成两份。
+ * 这里是**唯一的设置页**：网络与线路直接编辑生效值，没有「跟随全局 / 本模式自定义」
+ * 那一层（全局作用域已取消，见 `SettingsRepository`）。
  */
 @Composable
 fun SettingsScreen(
@@ -479,13 +445,12 @@ fun SettingsScreen(
     onSetKeepScreenOn: (Boolean) -> Unit,
     // 下载
     onSetDownloadThreads: (Int) -> Unit,
-    /** 0 = 跟随全局，1 = 仅 Wi-Fi，2 = 允许移动网络。 */
+    /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
     onSetDownloadNetwork: (Int) -> Unit,
     // 导出
     onSaveZipPassword: (String) -> Unit,
     onSavePdfPassword: (String) -> Unit,
     // 网络与线路
-    onSetNetworkOverride: (Boolean) -> Unit,
     onSetTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
     onSaveApiDomains: (String) -> Unit,
@@ -549,7 +514,6 @@ fun SettingsScreen(
                     )
                     NetworkSection(
                         state = state,
-                        onSetNetworkOverride = onSetNetworkOverride,
                         onSetTimeoutSeconds = onSetTimeoutSeconds,
                         onSaveProxy = onSaveProxy,
                         onSaveApiDomains = onSaveApiDomains,
@@ -566,7 +530,7 @@ fun SettingsScreen(
     if (confirmReset) {
         ConfirmDialog(
             title = "恢复默认设置？",
-            text = "只重置漫画模式下的偏好（阅读方式、下载、导出、网络与线路、高级，还有阅读器里的背景与亮度）。" +
+            text = "只重置偏好（阅读方式、下载、导出、网络与线路、高级，还有阅读器里的背景与亮度）。" +
                 "不会删除书库记录、已下载的文件，也不会清空已保存的密码。",
             confirmText = "恢复默认",
             confirmButtonColors = ButtonDefaults.textButtonColors(
@@ -641,9 +605,9 @@ private fun DownloadSection(
         CardDivider()
         ChoiceRow(
             title = "下载网络",
-            hint = downloadNetworkHint(state),
-            options = listOf("跟随全局", DownloadNetwork.WIFI_ONLY.label, DownloadNetwork.ANY.label),
-            selectedIndex = state.downloadNetworkChoice,
+            hint = "仅 Wi-Fi 时移动网络下不下载，任务会停在「等待网络」",
+            options = DownloadNetwork.entries.map { it.label },
+            selectedIndex = DownloadNetwork.entries.indexOf(state.resolved?.downloadNetwork ?: DownloadNetwork.ANY),
             onSelect = onSetDownloadNetwork,
         )
     }
@@ -675,44 +639,23 @@ private fun ExportSection(
 @Composable
 private fun NetworkSection(
     state: SettingsUiState,
-    onSetNetworkOverride: (Boolean) -> Unit,
     onSetTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
     onSaveApiDomains: (String) -> Unit,
     onSaveImageDomains: (String) -> Unit,
 ) {
     SettingsSection("网络与线路") {
-        ChoiceRow(
-            title = "网络与超时",
-            hint = "跟随时用全局值；自定义只影响漫画模式，切回跟随后自定义值保留但不生效",
-            options = listOf("跟随全局", "本模式自定义"),
-            selectedIndex = if (state.networkOverridden) 1 else 0,
-            onSelect = { onSetNetworkOverride(it == 1) },
+        SliderRow(
+            title = "请求超时",
+            hint = "连接与单次读写的等待上限，不是整个下载的总时长",
+            value = state.timeoutSeconds.toFloat(),
+            range = SettingLimits.REQUEST_TIMEOUT_SECONDS.first.toFloat()..
+                SettingLimits.REQUEST_TIMEOUT_SECONDS.last.toFloat(),
+            label = { "${it.roundToInt()} 秒" },
+            onCommit = { onSetTimeoutSeconds(it.roundToInt()) },
         )
         CardDivider()
-        if (!state.networkOverridden) {
-            ReadOnlyRow(
-                title = "请求超时",
-                value = "${state.resolved?.timeoutSeconds ?: state.timeoutSeconds} 秒（跟随全局）",
-            )
-            CardDivider()
-            ReadOnlyRow(
-                title = "代理",
-                value = proxySummary(state.resolved),
-            )
-        } else {
-            SliderRow(
-                title = "请求超时",
-                hint = "连接与单次读写的等待上限，不是整个下载的总时长",
-                value = state.timeoutSeconds.toFloat(),
-                range = SettingLimits.REQUEST_TIMEOUT_SECONDS.first.toFloat()..
-                    SettingLimits.REQUEST_TIMEOUT_SECONDS.last.toFloat(),
-                label = { "${it.roundToInt()} 秒" },
-                onCommit = { onSetTimeoutSeconds(it.roundToInt()) },
-            )
-            CardDivider()
-            ProxyEditor(state = state, onSaveProxy = onSaveProxy)
-        }
+        ProxyEditor(state = state, onSaveProxy = onSaveProxy)
     }
 
     SettingsSection("线路") {
@@ -1063,27 +1006,6 @@ private fun SliderRow(
 }
 
 /**
- * 只读行：跟随全局时展示**有效值**（计划 §9.2 的「跟随全局：仅 Wi-Fi」这类展示）。
- * 这里不放控件——跟随时改这些值没有意义，改了也不生效。
- */
-@Composable
-private fun ReadOnlyRow(title: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-/**
  * 密码输入框：原文直接预填，默认用圆点遮住，右边的「显示 / 隐藏」用来核对。
  *
  * 没查 `material-icons-core` 里有没有眼睛图标——那一套里没有 Visibility 系列，
@@ -1147,27 +1069,4 @@ private fun PasswordEditor(
             Button(onClick = { onSave(draft) }) { Text("保存") }
         }
     }
-}
-
-// ======================================================================
-// 文案
-// ======================================================================
-
-/** 下载网络那行的说明：跟随时把全局的有效值写出来（计划 §9.2）。 */
-private fun downloadNetworkHint(state: SettingsUiState): String {
-    val effective = state.resolved?.downloadNetwork ?: DownloadNetwork.ANY
-    return if (state.downloadNetworkChoice == 0) {
-        "跟随全局；当前生效：${effective.label}"
-    } else {
-        "当前生效：${effective.label}"
-    }
-}
-
-/** 代理那行的文案：跟随时给全局的有效值，"不使用"就说"不使用"。 */
-private fun proxySummary(resolved: ResolvedNetworkConfig?): String {
-    if (resolved == null || resolved.proxyType == ProxyType.NONE || resolved.proxyHost.isBlank()) {
-        return "不使用（跟随全局）"
-    }
-    val scheme = if (resolved.proxyType == ProxyType.SOCKS) "socks" else "http"
-    return "$scheme://${resolved.proxyHost}:${resolved.proxyPort}（跟随全局）"
 }

@@ -487,14 +487,13 @@ fun ModeRoot(
                         onSaveZipPassword = vm::saveZipPassword,
                         onSavePdfPassword = vm::savePdfPassword,
                         // 网络与线路
-                        onSetNetworkOverride = vm::setNetworkOverride,
                         onSetTimeoutSeconds = vm::setTimeoutSeconds,
                         onSaveProxy = vm::saveProxy,
                         onSaveApiDomains = vm::saveApiDomains,
                         onSaveImageDomains = vm::saveImageDomains,
                         // 高级
                         onSetRetry = vm::setRetry,
-                        // 恢复默认：只重置漫画作用域，不动全局、不动书库与文件、不动凭据
+                        // 恢复默认：只重置偏好，不动书库与文件、不动凭据
                         onResetSettings = vm::resetSettings,
                     )
                 }

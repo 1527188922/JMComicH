@@ -2,7 +2,7 @@
 
 > 计划原文：`docs/android-app-plan.md`（= `2026-10-05-android-jm-bilibili-app.md`）
 > 跨功能硬约束：`docs/CONVENTIONS.md`（封面加载规范等）
-> 最后更新：2026-10-12
+> 最后更新：2026-10-15
 
 ## 目录结构决策
 
@@ -21,7 +21,7 @@ app/src/main/java/com/haruhi/jmcomic/
     network/                OkHttp 工厂、错误分类、超时重试
     database/               Room 实体 / Dao / 数据库
     download/               下载引擎、任务仓库、前台服务
-    settings/               设置（全局 / 漫画两个作用域）+ Keystore 凭据存储
+    settings/               设置（唯一的漫画作用域）+ Keystore 凭据存储
     storage/                目录规划、文件名清洗与排序、导出交付
     di/                     手写依赖注入容器
   feature/
@@ -118,6 +118,46 @@ app/src/main/java/com/haruhi/jmcomic/
   **在改造前就是红的**（改造前 302 个用例、同样这 3 个失败），与本次改动无关，
   是既有的未修问题；
 - 设备测试用例数从原先的 11 个变为 9 个（删掉了 2 个 `MigrationsTest` 用例）。
+
+## 改造：取消「全局设置」作用域（2026-10-15）
+
+用户指出设置页里"全局"的说法是**双模式时期的遗留**：既然只有漫画模式，就不该再区分
+「全局 App 设置」和「漫画设置」。这次把全局这一层整个去掉。
+
+### 1. 做了什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 偏好存储 | `settings_global` + `settings_jm` 两个 DataStore | **只有 `settings_jm`** |
+| `SettingKeys` | 顶层常量（全局）+ `Jm` 对象（漫画） | 全部收进 `Jm`（`THEME`、`REQUEST_TIMEOUT_SECONDS`、`PROXY_*`、`DOWNLOAD_NETWORK` 等） |
+| 网络设置 | 「跟随全局 / 本模式自定义」二选一，跟随时那两行只读 | 直接编辑生效值：请求超时滑杆 + 代理编辑器 |
+| 下载网络 | 跟随全局 / 仅 Wi-Fi / 允许移动网络（存储值 -1/0/1） | **仅 Wi-Fi / 允许移动网络**（0/1，与 `DownloadNetwork` 序号一致） |
+| 代理密码 | 全局密码与漫画密码各存一份（`secret_g_proxy_password`） | 只留 `secret_jm_proxy_password` |
+| 设置页文案 | "跟随全局""本模式自定义""只重置漫画模式…不动全局" | 全部改成单模式表述 |
+
+- `ResolvedNetworkConfig.followedGlobal` 与空壳类 `NetworkOverride` 一起删掉——
+  没有"跟随"这回事，解析出来的就是唯一生效值。
+- 旧存储值 `-1`（跟随全局）由 `DownloadNetwork.ofOrdinal` 兜底成「允许移动网络」，
+  升级后**不会**因为读到一个陌生数字而静默掐掉下载。
+
+### 2. 旧数据迁移（一次性）
+
+旧的 `settings_global` 文件保留为**只读迁移源**：`AppContainer` 创建仓库时同步调用
+`SettingsRepository.migrateLegacyGlobalScope(secrets)`，把超时 / 代理四件套 / 代理密码
+搬进 `settings_jm`（只在"旧值存在且新值没写过"时搬，幂等；全新安装是空操作）。
+搬完以后没有任何代码再写全局文件。
+
+> 为什么要迁移而不是直接忽略：用户是在**已发布**的包上升级，旧全局里的代理与超时
+> 是真实配置，直接丢掉等于让用户重设一次。
+
+### 3. 回归验证
+
+- `:app:compileDebugKotlin` 通过；
+- `:app:testDebugUnitTest`：**本次运行共 301 个用例、6 个失败**（上一行那 3 个之外，
+  还有 `DownloadManagerTest.submitting again appends chapters instead of creating a second task`、
+  `ReaderAndTaskLogicTest` 的 2 个底栏切换方向用例）。`git stash` 后在**干净工作区**跑
+  同一批用例，这 6 个**全部复现**，所以与本次改动无关，是既有的未修问题；
+- 文档：`README.md` 与本文的目录树、P1 明细里的"三作用域 + 跟随全局继承"已同步。
 
 ## 阶段状态
 
@@ -708,7 +748,7 @@ Expected identity hash: 7ecd5cfc..., found: 31e452937...
 | Room：9 张表（业务 5 + 任务 2 + 位置 1 + 搜索历史 1） | ✅ | `core/database/entity/*.kt` |
 | Dao 与查询语义（分页/排序/分组/唯一索引） | ✅ | `core/database/Daos.kt`，测试 `DaoTest` |
 | 持久化下载任务的去重与恢复语义 | ✅ | `DownloadTaskDaoTest`（12 个用例） |
-| 三作用域设置 + 跟随全局继承 | ✅ | `core/settings/Settings*`、`SettingsRepository` |
+| 三作用域设置 + 跟随全局继承 | ➖ **已取消** | 见「改造：取消全局设置作用域」（2026-10-15） |
 | Keystore 凭据存储 | ✅ | `core/settings/SecretStore.kt` |
 | 目录规划 | ✅ | `core/storage/LibraryDirs.kt` |
 | 网络层（工厂 / 错误分类 / 超时重试） | ✅ | `core/network/*` |
@@ -718,7 +758,7 @@ Expected identity hash: 7ecd5cfc..., found: 31e452937...
 | **任务仓库 + 进程重启恢复编排** | ✅ | `core/download/DownloadTaskRepository.kt`，测试 `DownloadTaskRepositoryTest` |
 | **前台服务 + 常驻通知** | ✅ | `core/download/DownloadForegroundService.kt`、`core/notification/*` |
 | WorkManager 约束调度（仅 Wi-Fi 等） | ⬜ | 服务与恢复已就绪，缺 Worker 与 Constraints |
-| 设置层单元测试（作用域隔离 / 继承 / 恢复默认） | ⬜ | |
+| 设置层单元测试（作用域隔离 / 继承 / 恢复默认） | ⬜ | 作用域已收敛成一个，只剩"恢复默认"还能测 |
 | 设置校验工具（写入前校验，拒绝非法代理等） | ⬜ | `ResolvedNetworkConfig.validate()` 已就绪，缺 UI 对接 |
 
 ### 下载引擎已覆盖的语义（计划点名项）

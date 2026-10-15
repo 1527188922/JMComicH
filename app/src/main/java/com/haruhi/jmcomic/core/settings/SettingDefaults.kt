@@ -8,41 +8,31 @@ package com.haruhi.jmcomic.core.settings
  * - `[计划]`：计划文档 §9.3～§9.5 明确写出的 Android 侧默认值；
  * - `[Android]`：参考实现没有、Android 侧因平台限制新定的值。
  *
- * 组织方式与 [SettingKeys] 对齐：顶层是**全局作用域**的默认值，
- * [Jm] 里是**漫画作用域**的默认值。范围类常量（UI 校验用）在 [SettingLimits]。
+ * 组织方式与 [SettingKeys] 对齐：默认值全在 [Jm] 里（历史上顶层是「全局作用域」的
+ * 默认值，随全局作用域一起取消，见 [SettingKeys]）。范围类常量（UI 校验用）在 [SettingLimits]。
  */
 object SettingDefaults {
 
-    // ---------------- 全局作用域 ----------------
-
-    /** [计划 §9.5] 主题：跟随系统（编码，与 [AppTheme] 的序号一致）。 */
-    const val THEME_FOLLOW_SYSTEM = 0
-
-    /** [计划 §9.5] 下载网络：仅 Wi-Fi（存储值 0，与 `DownloadNetwork` 的序号一致）。 */
-    const val DOWNLOAD_NETWORK_WIFI_ONLY = 0
-
-    /**
-     * 下载网络：允许移动网络（存储值 1）。
-     *
-     * **[计划 §9.5 原定默认"仅 Wi-Fi"，2026-10-09 按用户要求把默认值改成这一项]**
-     * 理由：设置模块（P6）还没做，界面上改不了；默认"仅 Wi-Fi"会让移动网络下的下载
-     * **看起来没反应**（任务静默停在"等待网络"）。做出开关后用户可自行收紧——
-     * 判定逻辑（`DownloadGate`）与"等待网络"状态机已就绪，不需要改。
-     */
-    const val DOWNLOAD_NETWORK_ANY = 1
-
-    /** [计划 §9.5] 请求超时：30 秒。 */
-    const val REQUEST_TIMEOUT_SECONDS = 30
-
-    /** [计划 §9.5] 代理：默认不使用。 */
-    const val PROXY_NONE = 0
-
-    /** [计划 §9.3] 下载网络默认跟随全局。 */
-    const val NETWORK_FOLLOW_GLOBAL = -1
-
-    // ---------------- 漫画作用域 ----------------
-
     object Jm {
+
+        /** [计划 §9.5] 主题：跟随系统（编码，与 [AppTheme] 的序号一致）。 */
+        const val THEME_FOLLOW_SYSTEM = 0
+
+        /**
+         * 下载网络：允许移动网络（存储值 1）。
+         *
+         * **[计划 §9.5 原定默认"仅 Wi-Fi"，2026-10-09 按用户要求把默认值改成这一项]**
+         * 理由：设置模块（P6）还没做，界面上改不了；默认"仅 Wi-Fi"会让移动网络下的下载
+         * **看起来没反应**（任务静默停在"等待网络"）。做出开关后用户可自行收紧——
+         * 判定逻辑（`DownloadGate`）与"等待网络"状态机已就绪，不需要改。
+         */
+        const val DOWNLOAD_NETWORK_ANY = 1
+
+        /** [计划 §9.5] 请求超时：30 秒。 */
+        const val REQUEST_TIMEOUT_SECONDS = 30
+
+        /** [计划 §9.5] 代理：默认不使用。 */
+        const val PROXY_NONE = 0
 
         /** [计划 §9.3] 书库布局：三列封面。 */
         const val LIBRARY_LAYOUT_GRID3 = 0
@@ -108,7 +98,7 @@ object SettingDefaults {
  * 通用边界与校验常量。UI 层做输入校验时用这些值，不要在页面里各写一份。
  */
 object SettingLimits {
-    /** [计划 §9.5] 全局请求超时范围（秒）。 */
+    /** [计划 §9.5] 请求超时范围（秒）。 */
     val REQUEST_TIMEOUT_SECONDS = 5..120
 
     /** [计划 §9.3] 搜索历史条数范围。 */

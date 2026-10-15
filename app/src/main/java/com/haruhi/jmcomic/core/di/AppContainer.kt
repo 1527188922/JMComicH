@@ -71,7 +71,14 @@ class AppContainer(private val appContext: Context) {
 
     val database: JmComicDatabase by lazy { JmComicDatabase.create(appContext) }
 
-    val settings: SettingsRepository by lazy { SettingsRepository.create(appContext) }
+    val settings: SettingsRepository by lazy {
+        SettingsRepository.create(appContext).also { repository ->
+            // 旧「全局作用域」的值一次性搬进漫画作用域（全新安装是空操作）。
+            // **同步跑完再交出仓库**：网络客户端、下载环境都在后面按同一份偏好读取，
+            // 异步迁移会和它们抢跑，让"升级后第一眼看到的还是旧值"。
+            runBlocking { repository.migrateLegacyGlobalScope(secrets) }
+        }
+    }
 
     val secrets: SecretStore by lazy { SecretStore(appContext) }
 
@@ -367,7 +374,7 @@ class AppContainer(private val appContext: Context) {
      * 全局唯一的网络客户端。首次访问时按当前设置构建。
      *
      * 以前这里按"模式"分成 JM / B站两个实例；现在只有漫画一种内容，
-     * 所以收敛成一个——网络配置也只有一组（全局 + 漫画作用域的覆盖）。
+     * 所以收敛成一个，网络配置也只有一组（唯一那份设置里的超时与代理）。
      */
     val httpClient: OkHttpClient
         get() = client ?: synchronized(this) {

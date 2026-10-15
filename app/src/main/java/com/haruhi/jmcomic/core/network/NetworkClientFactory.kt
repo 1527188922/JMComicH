@@ -15,13 +15,13 @@ import java.util.concurrent.TimeUnit
  * （照抄参考实现的指数退避）、HTTPS 证书异常要有可理解提示。
  *
  * 这里只负责"按已解析的网络配置造出客户端"。整个应用**只有一个客户端实例**
- * （见 `AppContainer.httpClient`）：漫画作用域可以覆盖全局的代理与超时（§9.2）。
+ * （见 `AppContainer.httpClient`），配置来自唯一的漫画设置作用域（§9.2）。
  * 运行中的任务不会被中途换配置：换配置后新建的客户端只对新任务生效（§9.2）。
  */
 object NetworkClientFactory {
 
     /**
-     * @param config 已把"跟随全局"合并完的有效配置
+     * @param config 已解析好的网络配置（`SettingsRepository.resolveJmNetwork`）
      * @param userAgent 统一使用的 UA
      * @param extraHeaders 调用方额外附加的固定 header（JM 接口不需要）
      * @param enableLogging 是否记录请求日志；**凭据相关的 header 必须被脱敏**，见 [redactHeaders]
