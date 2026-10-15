@@ -599,7 +599,7 @@ private fun DownloadSection(
             value = state.downloadThreads.toFloat(),
             range = 0f..8f,
             steps = 7,
-            label = { if (it.roundToInt() == 0) "自动" else "${it.roundToInt()} 个" },
+            label = { if (it.roundToInt() == 0) "自动" else "${it.roundToInt()}" },
             onCommit = { onSetDownloadThreads(it.roundToInt()) },
         )
         CardDivider()
@@ -661,14 +661,14 @@ private fun NetworkSection(
     SettingsSection("线路") {
         DomainsEditor(
             title = "接口线路",
-            hint = "每行一个域名，第一行是当前线路；留空则用默认域名",
+            hint = "漫画详情、搜索、图片清单将使用该域名（留空使用默认域名）",
             value = state.apiDomains,
             onSave = onSaveApiDomains,
         )
         CardDivider()
         DomainsEditor(
             title = "图片线路",
-            hint = "与接口线路分开维护，留空则用默认图片域名",
+            hint = "漫画图片、封面下载使用该域名（留空使用默认域名）",
             value = state.imageDomains,
             onSave = onSaveImageDomains,
         )
@@ -682,7 +682,7 @@ private fun AdvancedSection(
 ) {
     SettingsSection("高级") {
         Text(
-            text = "请求失败后自动重试的次数，0 表示不自动重试。只影响之后发出的请求。",
+            text = "请求失败后自动重试的次数，0 表示不自动重试。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -723,7 +723,7 @@ private fun ResetSection(onReset: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("恢复默认设置", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = "只重置漫画模式的偏好，不影响书库、文件与已保存的密码",
+                    text = "重置成默认设置",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -732,7 +732,7 @@ private fun ResetSection(onReset: () -> Unit) {
                 onClick = onReset,
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
             ) {
-                Text("恢复")
+                Text("重置")
             }
         }
     }
@@ -838,7 +838,7 @@ private fun DomainsEditor(
             value = draft,
             onValueChange = { draft = it },
             minLines = 2,
-            label = { Text("域名列表") },
+            label = { Text("域名列表，一行一个（放在第一行的域名将生效）") },
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         )
         Row(

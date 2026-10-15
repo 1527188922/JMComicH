@@ -633,11 +633,7 @@ private fun ReaderBottomBar(
                 },
             ) {
                 Text(
-                    text = if (state.preferences.mode == ReadingMode.HORIZONTAL) {
-                        "左右翻页"
-                    } else {
-                        "上下翻页"
-                    },
+                    text = state.preferences.mode.label,
                     color = contentColor,
                 )
             }

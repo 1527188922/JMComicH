@@ -9,8 +9,8 @@ import com.haruhi.jmcomic.core.settings.SettingDefaults
 
 /** 阅读方向：纵向连续 / 横向分页（计划 §9 第 8 条）。 */
 enum class ReadingMode(val label: String) {
-    VERTICAL("纵向连续"),
-    HORIZONTAL("横向分页"),
+    VERTICAL("上下翻页"),
+    HORIZONTAL("左右翻页"),
     ;
 
     companion object {
