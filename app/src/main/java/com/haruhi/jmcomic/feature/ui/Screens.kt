@@ -94,6 +94,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -618,12 +619,22 @@ private fun ContinueReadingCardRow(
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Material3 的 CardColors 没有 pressedContainerColor 这种 token：按下时看到的其实是
+    // **状态层** —— 内容色以 10% 不透明度叠在容器色之上
+    // （m3.material.io → Foundations → Interaction → States → State layers：Pressed = 0.1）。
+    // 把这一层预先合成为不透明实色，卡片常态就是"一直按着"的样子。
+    val pressedContainerColor = MaterialTheme.colorScheme.onSurfaceVariant
+        .copy(alpha = 0.10f)
+        .compositeOver(MaterialTheme.colorScheme.surfaceVariant)
+
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
-            containerColor = CardDefaults.cardColors().pressedContainerColor
-                ?: MaterialTheme.colorScheme.surfaceVariant
+            containerColor = pressedContainerColor,
+            // 必须显式给：containerColor 不是配色板里的槽位，contentColorFor() 认不出来，
+            // 不给的话文字色会退回环境色（比原来的 onSurfaceVariant 更深）。
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
         modifier = Modifier
             .fillMaxWidth()
