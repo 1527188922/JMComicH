@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -128,6 +129,24 @@ data class SettingsUiState(
 )
 
 /**
+ * 导出默认密码**输入框**允许的文本：去掉回车换行（粘贴多行文本时很常见）并截断到上限。
+ *
+ * 这里**不动首尾空白**：边打字边 trim 会让"中间的空格"永远打不出来
+ * （"a" + 空格 → 被 trim 掉 → 再打 "b" 就成了 "ab"）。首尾空白留到保存那一步去掉
+ * （见 [sanitizeExportPassword]），反正存进凭据存储的一定是净化后的值。
+ */
+private fun filterExportPasswordInput(raw: String): String =
+    raw.filterNot { it == '\n' || it == '\r' }.take(SettingLimits.EXPORT_PASSWORD_MAX_CHARS)
+
+/**
+ * 真正要存下来的导出默认密码：在 [filterExportPasswordInput] 的基础上**去掉首尾空白**。
+ *
+ * 输入框按「保存」时用它、ViewModel 落存储前也用它，两边同一份规则，
+ * 避免"框里显示的和实际存的不是一个值"。
+ */
+private fun sanitizeExportPassword(raw: String): String = filterExportPasswordInput(raw).trim()
+
+/**
  * 应用设置页的 ViewModel。
  *
  * 保留 **A 类设置项**：key 已定义、且业务代码已经在消费——所以这一页上任何一处改动
@@ -138,8 +157,9 @@ data class SettingsUiState(
  *   它们的取值构造上不可能越界（滑杆就是范围本身），不需要草稿态和校验，
  *   这也符合"少一层状态、少一处能写错的地方"的取舍；
  * - **代理字段、密码与两条线路**是自由文本，保留「保存」按钮，代理还要先校验，失败保留原值；
- * - 密码三个（代理 / ZIP / PDF）原文仍然存在加密凭据存储里，页面读出来预填，
- *   默认用圆点遮住、点「显示」才看原文——省掉"已设置 / 修改 / 清除"那一套流程。
+ * - 密码三个（代理 / ZIP / PDF）原文仍然存在加密凭据存储里，页面读出来预填；
+ *   代理密码默认用圆点遮住、点「显示」才看原文，
+ *   **导出那两个（ZIP / PDF）按用户要求明文显示，输入框右边的按钮就是「保存」**。
  */
 class SettingsViewModel(
     private val settings: SettingsRepository,
@@ -281,15 +301,15 @@ class SettingsViewModel(
     // ------------------------------------------------------------------
 
     fun saveZipPassword(password: String) {
-        // 存的和显示的是同一个值（都去过首尾空白），避免"输入框显示 A、实际存的是 B"
-        val value = password.trim()
+        // 存的和显示的是同一个值（都按同一份规则净化过），避免"输入框显示 A、实际存的是 B"
+        val value = sanitizeExportPassword(password)
         secrets.put(SettingKeys.SECRET_JM_ZIP_PASSWORD, value)
         _state.update { it.copy(zipPassword = value) }
         notify(if (value.isEmpty()) "已清空压缩包默认密码" else "压缩包默认密码已保存")
     }
 
     fun savePdfPassword(password: String) {
-        val value = password.trim()
+        val value = sanitizeExportPassword(password)
         secrets.put(SettingKeys.SECRET_JM_PDF_PASSWORD, value)
         _state.update { it.copy(pdfPassword = value) }
         notify(if (value.isEmpty()) "已清空 PDF 默认密码" else "PDF 默认密码已保存")
@@ -620,16 +640,16 @@ private fun ExportSection(
     onSavePdfPassword: (String) -> Unit,
 ) {
     SettingsSection("导出") {
-        PasswordEditor(
+        ExportPasswordEditor(
             title = "压缩包默认密码",
-            hint = "导出 ZIP 时的预填值，留空表示不加密（每次导出仍会弹框确认）",
+            hint = "导出 ZIP 时的密码预填值，留空表示不加密（最多 ${SettingLimits.EXPORT_PASSWORD_MAX_CHARS} 个字符）",
             value = state.zipPassword,
             onSave = onSaveZipPassword,
         )
         CardDivider()
-        PasswordEditor(
+        ExportPasswordEditor(
             title = "PDF 默认密码",
-            hint = "与压缩包密码互相独立，留空表示不加密",
+            hint = "导出 PDF 时的密码预填值，留空表示不加密（最多 ${SettingLimits.EXPORT_PASSWORD_MAX_CHARS} 个字符）",
             value = state.pdfPassword,
             onSave = onSavePdfPassword,
         )
@@ -1006,10 +1026,13 @@ private fun SliderRow(
 }
 
 /**
- * 密码输入框：原文直接预填，默认用圆点遮住，右边的「显示 / 隐藏」用来核对。
+ * 密码输入框（代理密码用它）：原文直接预填，默认用圆点遮住，右边的「显示 / 隐藏」用来核对。
  *
  * 没查 `material-icons-core` 里有没有眼睛图标——那一套里没有 Visibility 系列，
  * 所以这里跟 [AlbumDetailScreen] 的导出密码框保持一致，用文字按钮切换。
+ *
+ * **导出那两个密码不用这个**：按用户要求，它们是明文显示、右边那颗按钮直接就是「保存」，
+ * 见 [ExportPasswordEditor]。
  */
 @Composable
 private fun PasswordField(
@@ -1045,28 +1068,58 @@ private fun PasswordField(
     }
 }
 
-/** 密码 + 「保存」：导出那两条用它（自由文本，按计划 §9.2 用保存提交）。 */
+/**
+ * 导出默认密码（ZIP / PDF）那一行：**明文显示 + 输入框里那颗按钮就是「保存」**。
+ *
+ * 按用户要求定的三条规则：
+ * 1. **明文显示**：不再套 `PasswordVisualTransformation`，也没有「显示 / 隐藏」——
+ *    这一页是设置页，看到的应当就是导出时会被预填的那个值；
+ * 2. **「显示 / 隐藏」按钮改成「保存」**，同时**去掉下面 Row 里那颗保存按钮**
+ *    （一颗按钮干一件事，不重复）；
+ * 3. **最多 [SettingLimits.EXPORT_PASSWORD_MAX_CHARS] 个字符，且去掉首尾空白与换行回车**：
+ *    打字/粘贴时按 [filterExportPasswordInput] 净化（去 `\n`、`\r`、截断），
+ *    点「保存」时再按 [sanitizeExportPassword] 去掉首尾空白，并把净化后的值写回输入框
+ *    （否则框里会留着那颗已经被 trim 掉的空格，看起来像"没保存成功"）。
+ */
 @Composable
-private fun PasswordEditor(
+private fun ExportPasswordEditor(
     title: String,
     hint: String,
     value: String,
     onSave: (String) -> Unit,
 ) {
-    var draft by remember(value) { mutableStateOf(value) }
+    // 读出来的历史值也过一遍净化：框里显示的永远满足"≤ 30 字符、无首尾空白与换行"
+    var draft by remember(value) { mutableStateOf(sanitizeExportPassword(value)) }
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        PasswordField(
-            title = title,
-            hint = hint,
-            value = draft,
-            onValueChange = { draft = it },
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            text = hint,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Button(onClick = { onSave(draft) }) { Text("保存") }
-        }
+        OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = filterExportPasswordInput(it) },
+            singleLine = true,
+            label = { Text("密码") },
+            trailingIcon = {
+                TextButton(
+                    onClick = {
+                        val saved = sanitizeExportPassword(draft)
+                        draft = saved
+                        onSave(saved)
+                    },
+                ) {
+                    Text("保存")
+                }
+            },
+            // 离开输入框时就把首尾空白去掉（没点「保存」也不会一直挂着一串空格）；
+            // 中间的空格保留——边打字边 trim 会让空格根本打不出来。
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp)
+                .onFocusChanged { if (!it.isFocused) draft = sanitizeExportPassword(draft) },
+        )
     }
 }

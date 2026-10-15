@@ -658,6 +658,13 @@ app/src/main/java/com/haruhi/jmcomic/
 | Y4 | 两颗按钮都**再小一号**、都**去掉边框**；「已入库」用**主色调** | 按钮仍是 `OutlinedButton`（透明容器 + 现成的按下/禁用态），但 `border = null` 去掉描边，`contentPadding` 收到 `10dp / 0dp`、高度收到 `32dp`（Material 默认是 16dp 内边距 + 40dp 高）——两个值抽成 `ONLINE_ACTION_BUTTON_HEIGHT` / `ONLINE_ACTION_BUTTON_PADDING`，**两颗按钮共用**，状态切换时尺寸不会跳。<br>配色：已入库 `contentColor = colorScheme.primary`（主色，对勾图标跟着继承），未入库 `onSurfaceVariant`（次要色）——"在库里"是当前状态，用主色标出来；"可以入库"只是可用动作，不与状态抢色 |
 | Y5 | 按钮要**始终贴卡片的右下角**：标题只占一行时，按钮底边离卡片下内边距还有一段空隙 | 原来按钮在"文字列"里面，而文字列的高度是它自己的内容高度——封面固定 100dp，标题一行时那一列只有 ~72dp，按钮就跟着停在了半空。<br>改成：`Box(padding(8dp))` 里放 `Row(封面 + 文字列)`，按钮**浮在这个 Box 上** `Modifier.align(Alignment.BottomEnd)`，位置只由卡片高度决定，与标题占几行无关；文字列底部加 `padding(bottom = ONLINE_ACTION_BUTTON_ZONE)`（32dp 按钮 + 4dp 间距）留出净空，作者行不会被压住。<br>没有用 `height(IntrinsicSize.Min)` + `fillMaxHeight` 那一套：封面走的是 Coil 的 `AsyncImage`，intrinsic 测量要多绕一层、还得把文字列的排布改成 `SpaceBetween`（`Spacer(weight)` 在 intrinsic 下有歧义），而 Box 浮层是确定性布局，卡片高度与改动前**逐 dp 一致** |
 
+### 第二十八轮反馈修复（2026-10-15）
+
+| # | 反馈 | 落实方式 | 验证 |
+|---|---|---|---|
+| Z1 | 设置页「导出」里的 ZIP / PDF 密码框：**最多 30 个字符**，并**去掉首尾空格与字符中的换行回车** | 上限抽成 `SettingLimits.EXPORT_PASSWORD_MAX_CHARS = 30`（UI 校验常量统一放这里，不在页面里再写一份字面量）。净化拆成两半，都是在 `SettingsScreen.kt` 里的纯函数：<br>① `filterExportPasswordInput` = `filterNot { it == '\n' \|\| it == '\r' }.take(30)`，放在 `onValueChange` 里，**打字与粘贴走同一道**（`singleLine` 只是挡住键盘回车，粘多行文本照样进得来）；<br>② `sanitizeExportPassword` = 前者 + `.trim()`，**点「保存」时**用，并且把净化后的值**写回输入框**——不然框里会留着那颗已经被 trim 掉的空格，看起来像"没保存成功"。<br>为什么不在 `onValueChange` 里直接 trim：边打字边 trim 会让**中间的空格永远打不出来**（"a" + 空格被吃掉 → 再打 "b" 就成了 "ab"），而 `a b` 是合法密码。折中办法是加 `Modifier.onFocusChanged`：**离开输入框时补一次 trim**，不点保存也不会一直挂着一串空格。<br>ViewModel 的 `saveZipPassword` / `savePdfPassword` 也换成同一个 `sanitizeExportPassword`（原来各自 `trim()` 一份），框里显示的和实际存进去的是同一个值 | 代码（按要求没有跑测试，等你打 debug 包确认）。设备上这样核对：粘贴一段带换行的 40 字符文本 → 框里只剩前 30 个且没有换行；打 `a b` 空格能打出来；打 ` abc ` 后点旁边那颗**保存** → 空格消失、弹「…已保存」；再进这一页显示的是存下来的那个值 |
+| Z2 | 密码**直接明文显示**；「显示 / 隐藏」按钮**改成「保存」**，下面 Row 里那颗保存按钮**去掉** | 导出那两个框不再复用代理密码用的 `PasswordField`（那个仍是圆点 + 「显示 / 隐藏」），新建 `ExportPasswordEditor`：不传 `visualTransformation`（Compose 默认 `VisualTransformation.None`），`trailingIcon` 里那颗文字按钮直接写「保存」，原来 `Row(Arrangement.End) { Button("保存") }` 整段删除 | 同上：两个框里直接看到密码原文，右边只有一颗「保存」按钮，下方不再有第二颗 |
+
 ## P4 明细（JM 导出 zip / pdf）
 
 | 项 | 状态 | 产出 |

@@ -115,4 +115,12 @@ object SettingLimits {
 
     /** [计划 §9.3] 同时下载图片数范围（0 = 自动）。 */
     val DOWNLOAD_THREADS = 1..8
+
+    /**
+     * [用户要求] 导出默认密码（ZIP / PDF）的**最大字符数**。
+     *
+     * 设置页那两个密码框按这个值限长，粘贴进来的多行文本也会被净化
+     * （见 `SettingsScreen.sanitizeExportPassword`），所以存下去的密码不会超长。
+     */
+    const val EXPORT_PASSWORD_MAX_CHARS = 30
 }
