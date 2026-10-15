@@ -57,6 +57,12 @@ val DownloadIcon: ImageVector = ImageVector.Builder(
  *
  * 外圈是上下两段三次贝塞尔围成的眼型，中间用**奇偶填充**挖出虹膜、
  * 再填一颗实心瞳孔——同一条 path 里三层嵌套正好是"实 → 空 → 实"。
+ *
+ * **画得比原始几何大 15%**：眼型本身是扁的，原始几何只占 24×24 视口的 20×10.4，
+ * 而同尺寸的 `Icons.Default.Favorite`（爱心）占到 20×19——两者都放在
+ * `StatItem` 里按 `size(14.dp)` 渲染时，眼睛看着明显小一号。
+ * 所以把坐标按 **1.15** 放大（绕视口中心 (12,12) 缩放：`c' = 12 + (c - 12) × 1.15`），
+ * 视口不动——图标该多大仍由调用点的 `size(...)` 决定，这里只调**图形在视口里的占比**。
  */
 val EyeIcon: ImageVector = ImageVector.Builder(
     name = "Eye",
@@ -66,24 +72,24 @@ val EyeIcon: ImageVector = ImageVector.Builder(
     viewportHeight = 24f,
 ).apply {
     path(fill = SolidColor(Color.Black), pathFillType = PathFillType.EvenOdd) {
-        // 眼型：上眼皮 (2,12) → 顶点 (12,6.8) → (22,12)，下眼皮对称回来
-        moveTo(2f, 12f)
-        curveTo(7.33f, 5.07f, 16.67f, 5.07f, 22f, 12f)
-        curveTo(16.67f, 18.93f, 7.33f, 18.93f, 2f, 12f)
+        // 眼型：上眼皮 (0.5,12) → 顶点 (12,6.0) → (23.5,12)，下眼皮对称回来
+        moveTo(0.5f, 12f)
+        curveTo(6.73f, 4.03f, 17.27f, 4.03f, 23.5f, 12f)
+        curveTo(17.27f, 19.97f, 6.73f, 19.97f, 0.5f, 12f)
         close()
-        // 虹膜（挖空）：半径 4.5 的圆，用四段贝塞尔近似
-        moveTo(12f, 7.5f)
-        curveTo(14.49f, 7.5f, 16.5f, 9.51f, 16.5f, 12f)
-        curveTo(16.5f, 14.49f, 14.49f, 16.5f, 12f, 16.5f)
-        curveTo(9.51f, 16.5f, 7.5f, 14.49f, 7.5f, 12f)
-        curveTo(7.5f, 9.51f, 9.51f, 7.5f, 12f, 7.5f)
+        // 虹膜（挖空）：半径 5.175 的圆，用四段贝塞尔近似
+        moveTo(12f, 6.825f)
+        curveTo(14.86f, 6.825f, 17.175f, 9.14f, 17.175f, 12f)
+        curveTo(17.175f, 14.86f, 14.86f, 17.175f, 12f, 17.175f)
+        curveTo(9.14f, 17.175f, 6.825f, 14.86f, 6.825f, 12f)
+        curveTo(6.825f, 9.14f, 9.14f, 6.825f, 12f, 6.825f)
         close()
-        // 瞳孔（再填实）：半径 2.5 的圆
-        moveTo(12f, 9.5f)
-        curveTo(13.38f, 9.5f, 14.5f, 10.62f, 14.5f, 12f)
-        curveTo(14.5f, 13.38f, 13.38f, 14.5f, 12f, 14.5f)
-        curveTo(10.62f, 14.5f, 9.5f, 13.38f, 9.5f, 12f)
-        curveTo(9.5f, 10.62f, 10.62f, 9.5f, 12f, 9.5f)
+        // 瞳孔（再填实）：半径 2.875 的圆
+        moveTo(12f, 9.125f)
+        curveTo(13.59f, 9.125f, 14.875f, 10.41f, 14.875f, 12f)
+        curveTo(14.875f, 13.59f, 13.59f, 14.875f, 12f, 14.875f)
+        curveTo(10.41f, 14.875f, 9.125f, 13.59f, 9.125f, 12f)
+        curveTo(9.125f, 10.41f, 10.41f, 9.125f, 12f, 9.125f)
         close()
     }
 }.build()
