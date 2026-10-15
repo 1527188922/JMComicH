@@ -666,6 +666,30 @@ app/src/main/java/com/haruhi/jmcomic/
 | Z2 | 密码**直接明文显示**；「显示 / 隐藏」按钮**改成「保存」**，下面 Row 里那颗保存按钮**去掉** | 导出那两个框不再复用代理密码用的 `PasswordField`（那个仍是圆点 + 「显示 / 隐藏」），新建 `ExportPasswordEditor`：不传 `visualTransformation`（Compose 默认 `VisualTransformation.None`），`trailingIcon` 里那颗文字按钮直接写「保存」，原来 `Row(Arrangement.End) { Button("保存") }` 整段删除 | 同上：两个框里直接看到密码原文，右边只有一颗「保存」按钮，下方不再有第二颗 |
 | Z3 | （Z1 的连带 bug）设置里把 ZIP/PDF 默认密码**清空**后，详情页点「导出 ZIP/PDF」的密码框**仍然预填着密码** | 根因在 `AlbumDetailViewModel.defaultPasswordFor`：`secrets.get(key)?.takeIf { it.isNotEmpty() } ?: Defaults.DEFAULT_EXPORT_PASSWORD`——只要读出来是空（或根本没有），就**兜底成参考实现的 `1234`**。而 `SecretStore.put(key, "")` 的语义是**删掉这一项**（见 `SecretStore` 注释），所以"用户清空过"与"从来没设过"在存储层是同一个状态，兜底必然命中；更要紧的是**设置页显示的从来不兜底**（`SettingsViewModel.reload` 里只 `orEmpty()`），于是"设置里看见空的、导出时冒出 1234"。<br>改法：`defaultPasswordFor` 直接 `secrets.get(key).orEmpty()`，**去掉兜底**——设置里留空/没设过 = 预填空串 = 不加密（合上设置页 hint 那句"留空表示不加密"）。`Defaults.DEFAULT_EXPORT_PASSWORD` 常量**保留**（协议常量对照测试 `CryptoGoldenTest` 仍要核它），只在 KDoc 里写明它不再当预填兜底；`ViewModels.kt` 里那个因此空掉的 `Defaults` import 一并删掉。顺带把 `AlbumDetailScreen` 里"支持显示/隐藏"这类过期注释写回现状 | 代码（按要求没有跑测试，等你打 debug 包确认）。设备上这样核对：设置里两个密码都清空 → 详情页点「导出 ZIP」→ 密码框**是空的**（`导出 PDF` 同样）→ 直接点「确认」→ 任务提示与成品都是未加密（无密码可打开）；再在设置里填个密码 → 再点导出 → 密码框预填的就是刚填的那个值 |
 
+### 第二十九轮反馈修复（2026-10-15）
+
+**起因**：确认「同时下载图片数」选**自动**时并发到底听谁的。查完的结论是——**没有任何依据，就是一个常量 4**：
+
+- 「自动」= 存储值 0（`SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO`）；
+- `AppContainer.concurrency()` 只在 `configured > 0` 时按范围收敛，`0` 直接返回
+  `DownloadManager.AUTO_CONCURRENCY`（`AUTO_CONCURRENCY = 4`）；
+- 全工程搜 `availableProcessors` / `maxMemory` / `MemoryInfo` / `ActivityManager` **零命中**，
+  所以计划 §9.3 里那句"自动值结合设备内存限制"**从来没落地**，而设置页 hint
+  却写着"自动值会参考设备内存"——UI 说了假话。
+
+用户拍板：**只改文案，上限提到 12，自动保持 4，不做内存档位**。
+
+| # | 反馈 | 落实方式 | 验证 |
+|---|---|---|---|
+| AA1 | 设置页那句"自动值会参考设备内存"是假的，**文案改正** | 改成「**「自动」= 固定 4**；拉大同时下载的张数不一定更快，取决于线路与设备」——把"没有依据"这件事直接写在界面上，顺带把滑杆标签从「自动」写成「**自动（4）**」，不用点开也知道自动等于几。`SettingDefaults.DOWNLOAD_THREADS_AUTO` 与 `DownloadManager.AUTO_CONCURRENCY` 两处 KDoc 也补齐了"刻意不读设备参数"的说明，免得以后又有人照计划去实现内存档位 | 代码（按要求没有跑测试，等你打 debug 包确认）。设备上这样核对：设置 → 下载 → 提示语是"「自动」= 固定 4…"、滑杆停在最左时右侧数值显示「自动（4）」 |
+| AA2 | **最大支持 12 线程** | `SettingLimits.DOWNLOAD_THREADS` 由 `1..8` 改成 `1..12`（这一个值同时管住两边：`AppContainer.concurrency()` 的 `coerceIn` 与滑杆范围），滑杆从 `0f..8f / steps = 7` 改成按常量算 `0f..12f`、`steps = last - first`（即 11，对应 0～12 共 13 档）。`SettingsUiState.downloadThreads` 与 `setDownloadThreads` 的注释里的 `1～8` 一并订正 | 同上：滑杆能拉到 12，拉到 12 后任务页/日志里的并发就是 12（`Environment.concurrency()` 已按新上限收敛）；旧数据不受影响——之前存的 1～8 本来就合法 |
+| AA3 | 文档同步 | 计划 §9.3 的设置表那一行由"自动（默认）或 1～8；自动值结合设备内存限制，不能无界按 CPU 核数解码"改成"自动（默认）或 1～12；**「自动」= 固定 4**（2026-10-15 用户拍板…）"——规范与实现对上了，不再留一条没人实现的承诺 | 文档 |
+
+> **顺带记下两个查证时的结论**（都不改动，只是免得以后误判）：
+> ① 并发是**一话内**的图片并发（`downloadChapter` 开头读一次），章节之间串行；
+> ② 跨任务没有全局限流（`PARALLEL_ALBUMS` 只有常量定义、无消费方），
+> 所以同时在跑的 N 个任务各自都有一份自己的并发额度。
+
 ## P4 明细（JM 导出 zip / pdf）
 
 | 项 | 状态 | 产出 |

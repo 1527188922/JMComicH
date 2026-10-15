@@ -101,7 +101,7 @@ data class SettingsUiState(
     val keepScreenOn: Boolean = true,
 
     // 下载
-    /** 0 = 自动，1～8 = 固定图片并发数。 */
+    /** 0 = 自动（固定 4），1～12 = 固定图片并发数。 */
     val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO,
 
     // 导出默认密码：原文存进加密凭据存储，页面上默认以圆点显示，点"显示"才看得到
@@ -280,7 +280,7 @@ class SettingsViewModel(
     // 下载
     // ------------------------------------------------------------------
 
-    /** [threads] 为 0 表示自动；1～8 是固定的图片并发数（业务侧按 [SettingLimits.DOWNLOAD_THREADS] 收敛）。 */
+    /** [threads] 为 0 表示自动（固定 4）；1～12 是固定的图片并发数（业务侧按 [SettingLimits.DOWNLOAD_THREADS] 收敛）。 */
     fun setDownloadThreads(threads: Int) {
         val value = if (threads <= 0) {
             SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO
@@ -619,11 +619,15 @@ private fun DownloadSection(
     SettingsSection("下载") {
         SliderRow(
             title = "同时下载图片数",
-            hint = "自动值会参考设备内存；调大不一定更快",
+            // 照实写：这里**没有**任何按内存/CPU 核数算的逻辑，「自动」就是一个固定的 4
+            // （DownloadManager.AUTO_CONCURRENCY）。以前写的"自动值会参考设备内存"是照计划
+            // §9.3 的意图写的、代码里从没实现过，属于 UI 说了假话（用户 2026-10-15 要求改正）。
+            hint = "「自动」= 固定 4；拉大同时下载的张数不一定更快，取决于线路与设备",
             value = state.downloadThreads.toFloat(),
-            range = 0f..8f,
-            steps = 7,
-            label = { if (it.roundToInt() == 0) "自动" else "${it.roundToInt()}" },
+            range = 0f..SettingLimits.DOWNLOAD_THREADS.last.toFloat(),
+            // Compose 的 steps 是"两端之间"的分段数：0..12 有 13 个档位 → 11 段
+            steps = SettingLimits.DOWNLOAD_THREADS.last - SettingLimits.DOWNLOAD_THREADS.first,
+            label = { if (it.roundToInt() == 0) "自动（4）" else "${it.roundToInt()}" },
             onCommit = { onSetDownloadThreads(it.roundToInt()) },
         )
         CardDivider()

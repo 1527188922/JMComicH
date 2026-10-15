@@ -74,7 +74,14 @@ object SettingDefaults {
         /** [计划 §9.3] 阅读时保持亮屏：开启。 */
         const val KEEP_SCREEN_ON = true
 
-        /** [参考 `jm.download.threads=0` → CPU 核数；Android 改成"自动"] */
+        /**
+         * 同时下载图片数：**自动**（存储值 0）。
+         *
+         * [参考 `jm.download.threads=0` → CPU 核数；Android 侧改成"自动"]。
+         * Android 的"自动"**不读设备参数**——就是一个固定的 4
+         * （`DownloadManager.AUTO_CONCURRENCY`，用户 2026-10-15 确认"默认 4 即可"），
+         * 设置页那句说明必须照实写，不要再写"参考设备内存"。
+         */
         const val DOWNLOAD_THREADS_AUTO = 0
 
         /** [参考 `jm.operation.parallel.enabled=false`] */
@@ -113,8 +120,13 @@ object SettingLimits {
     /** [计划 §9.3] 文件夹名称长度范围。 */
     val ALBUM_NAME_MAX_BYTES = 32..240
 
-    /** [计划 §9.3] 同时下载图片数范围（0 = 自动）。 */
-    val DOWNLOAD_THREADS = 1..8
+    /**
+     * 同时下载图片数范围（0 = 自动）。
+     *
+     * 上限**从 8 提到 12**（用户 2026-10-15 要求"最大支持 12 线程"）：滑杆能拉到的最大值就是这里，
+     * 业务侧 `AppContainer.concurrency()` 也按同一个范围收敛，所以改这一个值两处一起生效。
+     */
+    val DOWNLOAD_THREADS = 1..12
 
     /**
      * [用户要求] 导出默认密码（ZIP / PDF）的**最大字符数**。
