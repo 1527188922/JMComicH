@@ -55,6 +55,8 @@ grep distributionUrl gradle/wrapper/gradle-wrapper.properties
 # 依赖也走国内镜像：dl.google.com / plugins.gradle.org 在国内拉不动。
 # settings.gradle.kts 里这个变量为 1 时才把阿里云镜像排在官方仓库前面（本地/GitHub 不受影响）。
 export JMCOMICH_USE_CN_MIRROR=1
+export ANDROID_HOME=/root/android-sdk
+export ANDROID_SDK_ROOT=/root/android-sdk
 
 # Gitee 构建镜像自带一个全局 init 脚本 /root/.gradle/init.gradle，它会给**每个模块**
 # 注入一个 maven 仓库；而本工程的 settings.gradle.kts 是 FAIL_ON_PROJECT_REPOS
