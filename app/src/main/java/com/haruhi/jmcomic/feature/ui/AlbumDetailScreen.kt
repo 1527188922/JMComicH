@@ -93,6 +93,7 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.storage.FileNaming
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.ExportFormat
+import com.haruhi.jmcomic.ui.theme.JmTheme
 import com.haruhi.jmcomic.ui.theme.WarningOrangeDark
 import com.haruhi.jmcomic.ui.theme.WarningOrangeLight
 
@@ -652,10 +653,13 @@ private fun ExportSection(
             autoExpanded = true
         }
     }
-
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(
+            // 「按下态」底色是全局 token，定义在 ui/theme/ExtendedColors.kt。
+            containerColor = JmTheme.colors.pressedCardContainer,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp),

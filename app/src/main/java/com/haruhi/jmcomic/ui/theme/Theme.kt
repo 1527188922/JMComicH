@@ -141,6 +141,9 @@ fun JmComicTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
-        content = content,
-    )
+    ) {
+        // 扩展色板要从最终生效的 colorScheme 推导，所以放在 MaterialTheme 里面。
+        // 加了新的扩展色只需要改 ExtendedColors.kt，这里不用动。
+        ProvideJmExtendedColors(colorScheme, content)
+    }
 }

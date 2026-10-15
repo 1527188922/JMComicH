@@ -694,6 +694,29 @@ app/src/main/java/com/haruhi/jmcomic/
 > ② 跨任务没有全局限流（`PARALLEL_ALBUMS` 只有常量定义、无消费方），
 > 所以同时在跑的 N 个任务各自都有一份自己的并发额度。
 
+### 卡片「按下态」底色收编为全局 token（2026-10-15）
+
+`ContinueReadingCardRow`（书库「继续阅读」卡片）与 `ExportSection`（详情页「导出文件」卡片）
+原来各自算了一遍"按下态容器色"：
+
+```kotlin
+MaterialTheme.colorScheme.onSurfaceVariant
+    .copy(alpha = 0.10f)
+    .compositeOver(MaterialTheme.colorScheme.surfaceVariant)
+```
+
+两处逐字相同，且以后还会有别的卡片要拿它当常态底色，所以收编成一个色板入口。
+
+| 项 | 落实方式 |
+|---|---|
+| 落点 | 新建 `app/src/main/java/com/haruhi/jmcomic/ui/theme/ExtendedColors.kt`，**不是** `Color.kt` |
+| 为什么不是 `Color.kt` | `Color.kt` 只放**写死的原始色值**（`CardWhiteSurface` 那种），而这个是**从当前 ColorScheme 推导出来的**——必须放在主题里面算，写成常量的话一开动态取色就对不上（`surfaceVariant` / `onSurfaceVariant` 会被壁纸色顶掉） |
+| 形态 | `JmExtendedColors`（`@Immutable data class`，**语义 token 名**而非色值名）+ `LocalJmExtendedColors`（`staticCompositionLocalOf`，同 `LocalImageLoader`）+ 公开入口 `JmTheme.colors`。这也是 `Color.kt` 里 `WarningOrangeLight` 那条 TODO 说的"自建色板"，以后收编警示色照搬即可 |
+| 推导 | `ColorScheme.toExtendedColors()` 私有扩展：`onSurfaceVariant.copy(alpha = 0.10f).compositeOver(surfaceVariant)`，10% 抽成 `StateLayerPressed` 常量并注明出处（m3.material.io → Foundations → Interaction → States，Pressed = 0.1）。**深浅两套共用同一个公式**，浅色是变灰、深色是变亮，不用各写一个值 |
+| 挂载 | `JmComicTheme` 的 `MaterialTheme(...)` 里层调 `ProvideJmExtendedColors(colorScheme) { content() }`——扩展色板要从最终生效的 `colorScheme` 推导，所以必须在 `MaterialTheme` **里面**。加新 token 只改 `ExtendedColors.kt`，`Theme.kt` 不用动 |
+| 调用点 | 两处都改成 `containerColor = JmTheme.colors.pressedCardContainer`，各自的 `contentColor = MaterialTheme.colorScheme.onSurfaceVariant` **保持不变**（它不是 ColorScheme 槽位，`contentColorFor()` 认不出来，不显式给文字色会退回更深的 `LocalContentColor`）；两处 `import androidx.compose.ui.graphics.compositeOver` 随之删除 |
+| 验证 | `.\gradlew.bat :app:compileDebugKotlin` 通过；渲染结果与改动前逐字节相同（同一个公式、同一组输入，只是换个地方算）。以后新卡片要这个底色，只用一行 token，别再抄公式 |
+
 ## P4 明细（JM 导出 zip / pdf）
 
 | 项 | 状态 | 产出 |

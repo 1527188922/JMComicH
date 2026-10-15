@@ -65,7 +65,8 @@ val CardWhiteDarkBackground = Color(0xFF121212)
  *
  * 按 Compose 标准，这类"M3 没有的角色"应当用 `staticCompositionLocalOf` 自建一个
  * 色板（例如 `LocalWarningColors`），而不是让调用点自己 `isSystemInDarkTheme()`
- * 二选一。当前调用点见 `AlbumDetailScreen.kt`，尚未收编。
+ * 二选一。当前调用点见 `AlbumDetailScreen.kt`，尚未收编；
+ * 自建色板的写法已经在 [ExtendedColors]（`JmTheme.colors`）里跑通，收编时照着搬。
  */
 val WarningOrangeLight = Color(0xFFB45309)
 val WarningOrangeDark = Color(0xFFFFB74D)
