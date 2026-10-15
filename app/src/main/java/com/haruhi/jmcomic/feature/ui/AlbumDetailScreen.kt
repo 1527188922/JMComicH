@@ -881,17 +881,18 @@ private fun ExportPasswordDialog(
                     value = password,
                     onValueChange = { password = it },
                     singleLine = true,
-                    label = { Text("打开密码") },
-                    visualTransformation = if (visible) {
-                        VisualTransformation.None
-                    } else {
-                        PasswordVisualTransformation()
-                    },
-                    trailingIcon = {
-                        TextButton(onClick = { visible = !visible }) {
-                            Text(if (visible) "隐藏" else "显示")
-                        }
-                    },
+                    label = { Text("密码") },
+//                    visualTransformation = if (visible) {
+//                        VisualTransformation.None
+//                    } else {
+//                        PasswordVisualTransformation()
+//                    },
+                    visualTransformation = VisualTransformation.None,
+//                    trailingIcon = {
+//                        TextButton(onClick = { visible = !visible }) {
+//                            Text(if (visible) "隐藏" else "显示")
+//                        }
+//                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
