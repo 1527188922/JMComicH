@@ -717,6 +717,20 @@ MaterialTheme.colorScheme.onSurfaceVariant
 | 调用点 | 两处都改成 `containerColor = JmTheme.colors.pressedCardContainer`，各自的 `contentColor = MaterialTheme.colorScheme.onSurfaceVariant` **保持不变**（它不是 ColorScheme 槽位，`contentColorFor()` 认不出来，不显式给文字色会退回更深的 `LocalContentColor`）；两处 `import androidx.compose.ui.graphics.compositeOver` 随之删除 |
 | 验证 | `.\gradlew.bat :app:compileDebugKotlin` 通过；渲染结果与改动前逐字节相同（同一个公式、同一组输入，只是换个地方算）。以后新卡片要这个底色，只用一行 token，别再抄公式 |
 
+### 章节行菜单：加「下载本话」并给两项都配图标（2026-10-15）
+
+**要求**：`ChapterRowItem` 的行尾菜单里，在「删除图片」上面加一项「下载本话」，两项都要有图标。
+
+| 项 | 落实方式 |
+|---|---|
+| 新参数 | `ChapterRowItem` 加 `onDownload: () -> Unit`，两个调用点（不分组那支与分组内那支）都传 `onDownloadChapters(listOf(chapter.chapterId))`——**复用**面板那条提交链路，没有新开下载入口、没碰 ViewModel |
+| 为什么可以复用 | `AlbumDetailViewModel.downloadChapters` 已经做过滤与兜底：空列表、已在队列里的 id（`queuedChapterIds`）都会给出提示而不重复提交，所以单话快捷入口不需要自己判队列 |
+| 部分下载 | 提交的是章节 id，从头下过的图由下载引擎按落盘结果跳过，所以「部分下载」的那一话点它是"补缺"，不是重下 |
+| 图标 | 两项都用 `leadingIcon`：删除 `Icons.Default.Delete`（与成品行「删除文件」同一支），下载用**手画的 `DownloadIcon`**（见下一行）。尺寸统一 `ButtonDefaults.IconSize`（与成品行那颗删除图标同一个 token）。图标**不显式 tint**：`DropdownMenuItem` 把内容色写进 `LocalContentColor`，删除那项的 `textColor = error` 会自动带着图标一起变红 |
+| ⚠ 图标踩坑（`Icons.Default.Download` 爆红） | **`material-icons-core` 里没有 `Download`**——它只有 50 个常用图标（实测列出：AccountBox…Warning，含 `Add`/`ArrowDropDown`/`CheckCircle`/`KeyboardArrowDown` 等，**没有任何下载图标**），而工程明确**不引 `material-icons-extended`**（见 `app/build.gradle.kts`）。所以新建 `ui/theme/Icons.kt` 手画一个 `DownloadIcon`：竖线 + 向下箭头 + 底部托盘，坐标照 2014 版 MD 的 `Download` 几何（core 里最接近的 `KeyboardArrowDown` 只有箭头、没有托盘，"往下翻"和"下载到本地"分不开，所以没用它）。**顺带把原先私有的 `EyeIcon` 从 `AlbumDetailScreen.kt` 迁到同一个文件**——手画图标的落点从此只有一处，别再加第二个 |
+| 顺带发现（本轮没改） | 行尾 ⋮ 的显示条件是 `chapter.downloadedImages > 0`，所以**完全没过的一话根本看不见这个菜单**，那种情况仍走更多菜单的「下载漫画」。已在 KDoc 里写明，避免以后把这个当 bug 查 |
+| 验证 | 按要求**没有跑测试**（用户自信测试）。设备上这样核对：找一话"部分下载 x/y"的章节 → 点 ⋮ → 菜单从上到下是「下载本话」（下载图标）「删除图片」（红色 + 删除图标）；点「下载本话」→ 弹出"已加入下载队列…"并在任务页看到该话；再点一次 → 提示"选中的章节都已经在下载队列里了"而不是又建一个任务 |
+
 ## P4 明细（JM 导出 zip / pdf）
 
 | 项 | 状态 | 产出 |

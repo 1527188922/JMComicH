@@ -74,10 +74,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -93,6 +90,8 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.storage.FileNaming
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.ExportFormat
+import com.haruhi.jmcomic.ui.theme.DownloadIcon
+import com.haruhi.jmcomic.ui.theme.EyeIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import com.haruhi.jmcomic.ui.theme.WarningOrangeDark
 import com.haruhi.jmcomic.ui.theme.WarningOrangeLight
@@ -121,47 +120,6 @@ private val ExpandedChapterGroupsSaver = listSaver<Set<Int>, Int>(
     save = { it.toList() },
     restore = { it.toSet() },
 )
-
-/**
- * 眼睛图标（观看数）。
- *
- * 工程**不引 `material-icons-extended`**（见 `app/build.gradle.kts`），
- * 而 `material-icons-core` 里没有眼睛，所以按 core 里那些图标的同一种写法自己画一个：
- * 外圈是上下两段三次贝塞尔围成的眼型，中间用**奇偶填充**挖出虹膜、
- * 再填一颗实心瞳孔——同一条 path 里三层嵌套正好是"实 → 空 → 实"。
- *
- * 尺寸按 24×24 视口画；实际显示多大由调用点的 `Icon(modifier = …size(…))` 决定，
- * 颜色走 `Icon` 的 tint（这里填什么色都会被覆盖）。
- */
-private val EyeIcon: ImageVector = ImageVector.Builder(
-    name = "Eye",
-    defaultWidth = 24.dp,
-    defaultHeight = 24.dp,
-    viewportWidth = 24f,
-    viewportHeight = 24f,
-).apply {
-    path(fill = SolidColor(Color.Black), pathFillType = PathFillType.EvenOdd) {
-        // 眼型：上眼皮 (2,12) → 顶点 (12,6.8) → (22,12)，下眼皮对称回来
-        moveTo(2f, 12f)
-        curveTo(7.33f, 5.07f, 16.67f, 5.07f, 22f, 12f)
-        curveTo(16.67f, 18.93f, 7.33f, 18.93f, 2f, 12f)
-        close()
-        // 虹膜（挖空）：半径 4.5 的圆，用四段贝塞尔近似
-        moveTo(12f, 7.5f)
-        curveTo(14.49f, 7.5f, 16.5f, 9.51f, 16.5f, 12f)
-        curveTo(16.5f, 14.49f, 14.49f, 16.5f, 12f, 16.5f)
-        curveTo(9.51f, 16.5f, 7.5f, 14.49f, 7.5f, 12f)
-        curveTo(7.5f, 9.51f, 9.51f, 7.5f, 12f, 7.5f)
-        close()
-        // 瞳孔（再填实）：半径 2.5 的圆
-        moveTo(12f, 9.5f)
-        curveTo(13.38f, 9.5f, 14.5f, 10.62f, 14.5f, 12f)
-        curveTo(14.5f, 13.38f, 13.38f, 14.5f, 12f, 14.5f)
-        curveTo(10.62f, 14.5f, 9.5f, 13.38f, 9.5f, 12f)
-        curveTo(9.5f, 10.62f, 10.62f, 9.5f, 12f, 9.5f)
-        close()
-    }
-}.build()
 
 /**
  * 漫画详情页（核心中转页，计划 §9 第 7 条）。
@@ -451,6 +409,7 @@ fun AlbumDetailScreen(
                             ChapterRowItem(
                                 chapter = chapter,
                                 onOpen = { onReadChapter(chapter.chapterId) },
+                                onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
                                 onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
                             )
                         }
@@ -487,6 +446,7 @@ fun AlbumDetailScreen(
                                     ChapterRowItem(
                                         chapter = chapter,
                                         onOpen = { onReadChapter(chapter.chapterId) },
+                                        onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
                                         onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
                                     )
                                 }
@@ -1294,13 +1254,25 @@ fun chapterSectionTitle(total: Int, downloaded: Int, localSizeBytes: Long): Stri
 /**
  * 章节行。
  *
- * 整行**只做一件事：进阅读器**。行尾菜单只留"删除本话文件"——
- * 下载入口统一收到更多菜单的「下载漫画」里（用户要求第 3 点：同一个动作不要有四个入口）。
+ * 整行**只做一件事：进阅读器**；其余动作收进行尾菜单（菜单只在这一话下载过东西时才出现）：
+ * 「下载本话」与「删除图片」。
+ *
+ * 关于"下载入口"：更多菜单里的「下载漫画」（多选面板）仍是**批量**入口，这里的是
+ * **单话快捷**入口，两者不冲突——用户在章节列表上看见某一话缺图，不必再开面板去勾。
+ * 这一话**部分下载**时点它会接着把缺的补齐（`downloadChapters` 只提交章节 id，
+ * 从头下过的图由下载引擎按落盘结果跳过）。
+ *
+ * ⚠ 行尾那颗 ⋮ 目前只在 `downloadedImages > 0`（下过一些、或已下完）时才显示，
+ * 所以**完全没过的一话看不见这个菜单**，那种情况仍然走更多菜单的「下载漫画」。
+ * 这是既有行为，本轮没有跟着改。
+ *
+ * @param onDownload 下载这一话（缺图补下，ViewModel 内部走同一套提交）。
  */
 @Composable
 private fun ChapterRowItem(
     chapter: ChapterRow,
     onOpen: () -> Unit,
+    onDownload: () -> Unit,
     onDeleteFiles: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -1344,11 +1316,33 @@ private fun ChapterRowItem(
                         Icon(Icons.Default.MoreVert, contentDescription = "章节操作")
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        // 两行都带 leadingIcon：菜单项文字短、动作都是"对文件做什么"，
+                        // 靠图标区分比靠读字快（删除图标与成品行的「删除文件」同一支）。
+                        // 图标**不显式上色**：DropdownMenuItem 会把内容色写进 LocalContentColor，
+                        // 下面那条的 textColor = error 会自动带着图标一起变红。
+                        DropdownMenuItem(
+                            text = { Text("下载本话") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = DownloadIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                            },
+                            onClick = { menuExpanded = false; onDownload() },
+                        )
                         DropdownMenuItem(
                             colors = MenuDefaults.itemColors(
                                 textColor = MaterialTheme.colorScheme.error,
                             ),
                             text = { Text("删除图片") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                            },
                             onClick = { menuExpanded = false; confirmDelete = true },
                         )
                     }
