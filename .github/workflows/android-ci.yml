@@ -2,7 +2,7 @@ name: android-ci
 
 on:
   push:
-    branches: [ "master", "main", "dev/**" ]
+    branches: [ "master", "main", "feature/**" ]
   pull_request:
   # 支持在 Actions 页面手动运行（只想拿一个 debug 包时不用非要推代码）
   workflow_dispatch:
