@@ -621,7 +621,10 @@ private fun ContinueReadingCardRow(
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = CardDefaults.cardColors().pressedContainerColor
+                ?: MaterialTheme.colorScheme.surfaceVariant
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp),
