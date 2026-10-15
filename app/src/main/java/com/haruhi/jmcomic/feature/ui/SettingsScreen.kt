@@ -1,6 +1,7 @@
 package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,7 +14,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -21,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -681,14 +685,14 @@ private fun NetworkSection(
     SettingsSection("线路") {
         DomainsEditor(
             title = "接口线路",
-            hint = "漫画详情、搜索、图片清单将使用该域名（留空使用默认域名）",
+            hint = "漫画详情、搜索、图片清单将使用该域名，放在第一行的域名将生效（留空使用默认域名）",
             value = state.apiDomains,
             onSave = onSaveApiDomains,
         )
         CardDivider()
         DomainsEditor(
             title = "图片线路",
-            hint = "漫画图片、封面下载使用该域名（留空使用默认域名）",
+            hint = "漫画图片、封面下载使用该域名，放在第一行的域名将生效（留空使用默认域名）",
             value = state.imageDomains,
             onSave = onSaveImageDomains,
         )
@@ -858,7 +862,7 @@ private fun DomainsEditor(
             value = draft,
             onValueChange = { draft = it },
             minLines = 2,
-            label = { Text("域名列表，一行一个（放在第一行的域名将生效）") },
+            label = { Text("域名列表，一行一个") },
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         )
         Row(
@@ -987,6 +991,7 @@ private fun ChoiceRow(
  * 拖完（`onValueChangeFinished`）才落到存储：拖动过程只改本地草稿，
  * 少写一堆中间值，也不会因为重组把手指下的位置弹回去。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SliderRow(
     title: String,
@@ -1021,9 +1026,31 @@ private fun SliderRow(
             valueRange = range,
             steps = steps,
             onValueChangeFinished = { onCommit(draft) },
+            thumb = { SliderDotThumb() },
         )
     }
 }
+
+/**
+ * 圆形滑块（圆点），替代 Material3 默认的 4dp × 44dp 竖条。
+ *
+ * 尺寸自己定：20dp 接近旧版 Material 的观感；太小会显得"点不准"，
+ * 但触控区域是 Slider 自己管的，不受这里尺寸影响，所以 18～24dp 都安全。
+ */
+@Composable
+private fun SliderDotThumb() {
+    Box(
+        modifier = Modifier.size(25.dp).background(MaterialTheme.colorScheme.primary, CircleShape),
+        contentAlignment = Alignment.Center,   // 让白圈居中
+    ) {
+        Box(modifier = Modifier.size(12.dp)          // 白圈外径
+                .border(width = 14.dp,               // 圈线粗细
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = CircleShape)
+        )
+    }
+}
+
 
 /**
  * 密码输入框（代理密码用它）：原文直接预填，默认用圆点遮住，右边的「显示 / 隐藏」用来核对。
