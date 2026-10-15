@@ -184,7 +184,7 @@ fun ReaderScreen(
                     onPreviousChapter = onPreviousChapter,
                     onNextChapter = onNextChapter,
                     onDownloadChapter = onDownloadChapter,
-                    onToggleCollected = onToggleCollected,
+                    onSetReadingMode = onSetReadingMode,
                 )
             }
 
@@ -222,7 +222,6 @@ fun ReaderScreen(
         ModalBottomSheet(onDismissRequest = onDismissSheets, sheetState = sheetState) {
             ReaderSettingsContent(
                 preferences = state.preferences,
-                onSetReadingMode = onSetReadingMode,
                 onSetDirection = onSetDirection,
                 onSetBackground = onSetBackground,
                 onSetBrightnessFollowSystem = onSetBrightnessFollowSystem,
@@ -552,10 +551,9 @@ private fun ReaderTopBar(
  * 三层信息：
  * 1. **进度条**：当前页 / 总页数，滑动时实时跟着走；
  * 2. 章节名与位置（"第 3 话 · 12/34 页"）；
- * 3. 操作：上一话 / **下载本话** / **收藏** / 下一话。
+ * 3. 操作：上一话 / **下载本话** / **阅读方式** / 下一话。
  *
- * 收藏按钮与详情页同一套语义（收藏隐含入库），图标用 `material-icons-core`
- * 里就有的实心/空心星，不引入 extended。
+ * 阅读方式按钮直接切换横向 / 纵向两种翻页方式，与阅读设置里共用同一份偏好。
  */
 @Composable
 private fun ReaderBottomBar(
@@ -565,7 +563,7 @@ private fun ReaderBottomBar(
     onPreviousChapter: () -> Unit,
     onNextChapter: () -> Unit,
     onDownloadChapter: () -> Unit,
-    onToggleCollected: () -> Unit,
+    onSetReadingMode: (ReadingMode) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -623,9 +621,23 @@ private fun ReaderBottomBar(
             TextButton(onClick = onDownloadChapter) {
                 Text("下载本话", color = contentColor)
             }
-            TextButton(onClick = onToggleCollected) {
+            TextButton(
+                onClick = {
+                    onSetReadingMode(
+                        if (state.preferences.mode == ReadingMode.HORIZONTAL) {
+                            ReadingMode.VERTICAL
+                        } else {
+                            ReadingMode.HORIZONTAL
+                        },
+                    )
+                },
+            ) {
                 Text(
-                    text = if (state.collected) "★ 已收藏" else "☆ 收藏",
+                    text = if (state.preferences.mode == ReadingMode.HORIZONTAL) {
+                        "左右翻页"
+                    } else {
+                        "上下翻页"
+                    },
                     color = contentColor,
                 )
             }
@@ -707,7 +719,6 @@ private fun ChapterPickerContent(state: ReaderUiState, onOpenChapter: (Int) -> U
 @Composable
 private fun ReaderSettingsContent(
     preferences: ReaderPreferences,
-    onSetReadingMode: (ReadingMode) -> Unit,
     onSetDirection: (ReadingDirection) -> Unit,
     onSetBackground: (ReadingBackground) -> Unit,
     onSetBrightnessFollowSystem: (Boolean) -> Unit,
@@ -718,12 +729,6 @@ private fun ReaderSettingsContent(
         Text("阅读设置", style = MaterialTheme.typography.titleSmall)
         Spacer(Modifier.height(12.dp))
 
-        SettingChoiceRow(
-            label = "阅读方式",
-            options = ReadingMode.entries.map { it to it.label },
-            selected = preferences.mode,
-            onSelect = onSetReadingMode,
-        )
         if (preferences.mode == ReadingMode.HORIZONTAL) {
             SettingChoiceRow(
                 label = "翻页方向",
