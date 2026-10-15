@@ -519,14 +519,6 @@ class DownloadManager(
         /** 同一话最多重跑几轮（每轮都必须有进展，否则立刻结束）。 */
         const val MAX_CHAPTER_ROUNDS = 3
 
-        /**
-         * 设置里选「自动」时的图片并发数：**固定 4**。
-         *
-         * 刻意不读任何设备参数（CPU 核数 / 内存档位都没有参与计算，见用户 2026-10-15 的决定
-         * "最大支持 12 线程、默认 4 即可"）：4 是低端机也稳的保守值，想要更快就把滑杆往右拉。
-         */
-        const val AUTO_CONCURRENCY = 4
-
         const val WAITING_REASON = "当前网络不允许下载，已暂停传输"
 
         /**

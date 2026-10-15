@@ -101,8 +101,8 @@ data class SettingsUiState(
     val keepScreenOn: Boolean = true,
 
     // 下载
-    /** 0 = 自动（固定 4），1～12 = 固定图片并发数。 */
-    val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO,
+    /** 同时下载图片数（**没有"自动"档**）；默认 4 就是滑杆的初始位置。 */
+    val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS,
 
     // 导出默认密码：原文存进加密凭据存储，页面上默认以圆点显示，点"显示"才看得到
     val zipPassword: String = "",
@@ -202,8 +202,11 @@ class SettingsViewModel(
             .jmBoolean(SettingKeys.Jm.KEEP_SCREEN_ON, SettingDefaults.Jm.KEEP_SCREEN_ON)
             .first()
         val threads = settings
-            .jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO)
+            .jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS)
             .first()
+            // 老版本存过的 0（当时那一档"自动"）在这里就折成默认值 4，
+            // 否则滑杆最小值是 1、state 却是 0，拇指位置和右侧数字会对不上
+            .let { SettingDefaults.Jm.normalizeDownloadThreads(it) }
         val proxyType = ResolvedNetworkConfig.proxyTypeOf(
             settings.jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.Jm.PROXY_NONE).first(),
         )
@@ -280,13 +283,14 @@ class SettingsViewModel(
     // 下载
     // ------------------------------------------------------------------
 
-    /** [threads] 为 0 表示自动（固定 4）；1～12 是固定的图片并发数（业务侧按 [SettingLimits.DOWNLOAD_THREADS] 收敛）。 */
+    /**
+     * 同时下载图片数：**只有 1～12 这几个数值，没有"自动"档**（用户 2026-10-15）。
+     *
+     * 走 [SettingDefaults.Jm.normalizeDownloadThreads]：越界值（含老版本存下的 0）都按默认值 4，
+     * 不静默变成 1。
+     */
     fun setDownloadThreads(threads: Int) {
-        val value = if (threads <= 0) {
-            SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO
-        } else {
-            threads.coerceIn(SettingLimits.DOWNLOAD_THREADS.first, SettingLimits.DOWNLOAD_THREADS.last)
-        }
+        val value = SettingDefaults.Jm.normalizeDownloadThreads(threads)
         _state.update { it.copy(downloadThreads = value) }
         viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.DOWNLOAD_THREADS, value) }
     }
@@ -619,15 +623,16 @@ private fun DownloadSection(
     SettingsSection("下载") {
         SliderRow(
             title = "同时下载图片数",
-            // 照实写：这里**没有**任何按内存/CPU 核数算的逻辑，「自动」就是一个固定的 4
-            // （DownloadManager.AUTO_CONCURRENCY）。以前写的"自动值会参考设备内存"是照计划
-            // §9.3 的意图写的、代码里从没实现过，属于 UI 说了假话（用户 2026-10-15 要求改正）。
-            hint = "「自动」= 固定 4；拉大同时下载的张数不一定更快，取决于线路与设备",
+            // 没有"自动"档（用户 2026-10-15 取消）：滑杆就是 1～12 的数值，默认停在 4。
+            // 也**没有任何"按内存/CPU 核数算"的逻辑**——以前那句"自动值会参考设备内存"
+            // 是照计划 §9.3 的意图写的、代码里从没实现过，所以整档一起去掉了。
+            hint = "可同时下载图片张数（拉高配置可提升下载速度的下限，但上限取决于网速与手机CPU线程数）",
             value = state.downloadThreads.toFloat(),
-            range = 0f..SettingLimits.DOWNLOAD_THREADS.last.toFloat(),
-            // Compose 的 steps 是"两端之间"的分段数：0..12 有 13 个档位 → 11 段
-            steps = SettingLimits.DOWNLOAD_THREADS.last - SettingLimits.DOWNLOAD_THREADS.first,
-            label = { if (it.roundToInt() == 0) "自动（4）" else "${it.roundToInt()}" },
+            range = SettingLimits.DOWNLOAD_THREADS.first.toFloat()..
+                SettingLimits.DOWNLOAD_THREADS.last.toFloat(),
+            // Compose 的 steps 是"两端之间"的分段数：1～12 有 12 个整数档位 → 10 段
+            steps = SettingLimits.DOWNLOAD_THREADS.last - SettingLimits.DOWNLOAD_THREADS.first - 1,
+            label = { "${it.roundToInt()}" },
             onCommit = { onSetDownloadThreads(it.roundToInt()) },
         )
         CardDivider()

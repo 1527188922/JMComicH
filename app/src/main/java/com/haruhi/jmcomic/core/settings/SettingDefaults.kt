@@ -75,14 +75,29 @@ object SettingDefaults {
         const val KEEP_SCREEN_ON = true
 
         /**
-         * 同时下载图片数：**自动**（存储值 0）。
+         * 同时下载图片数：**默认 4**。
          *
-         * [参考 `jm.download.threads=0` → CPU 核数；Android 侧改成"自动"]。
-         * Android 的"自动"**不读设备参数**——就是一个固定的 4
-         * （`DownloadManager.AUTO_CONCURRENCY`，用户 2026-10-15 确认"默认 4 即可"），
-         * 设置页那句说明必须照实写，不要再写"参考设备内存"。
+         * [参考 `jm.download.threads=0` → CPU 核数；Android 侧改成"自动"]——
+         * **2026-10-15 用户把"自动"这一档取消了**：滑杆就是 1～12 的纯数值，没有"自动"档，
+         * 默认值 4 就是滑杆的初始位置（用户原话"默认 4 表示下载数进度条控件默认在 4 这个值的位置"）。
+         * 所以这里没有什么"自动值算法"：不读 CPU 核数，也不读内存。
+         *
+         * 老版本存过 `0`（当时那一档"自动"）的机器由 [normalizeDownloadThreads] 按 4 处理。
          */
-        const val DOWNLOAD_THREADS_AUTO = 0
+        const val DOWNLOAD_THREADS = 4
+
+        /**
+         * 把存储里读出来的线程数收敛成可用值。
+         *
+         * - 正常值：落在 [SettingLimits.DOWNLOAD_THREADS] 里就原样用；
+         * - 其它（**老版本存下的 `0`、越界值、脏数据**）：一律按默认 [DOWNLOAD_THREADS]。
+         *
+         * 为什么不是 `coerceIn`：`coerceIn` 会把老版本的 `0`（当时的"自动"）**静默变成 1**，
+         * 那是从 4 张并发掉到 1 张、明显变慢；按默认值处理才是"取消自动档"应有的语义。
+         * 读设置的两处（设置页显示、下载时取并发）都走这一个函数，不会两边不一致。
+         */
+        fun normalizeDownloadThreads(value: Int): Int =
+            if (value in SettingLimits.DOWNLOAD_THREADS) value else DOWNLOAD_THREADS
 
         /** [参考 `jm.operation.parallel.enabled=false`] */
         const val PARALLEL_ALBUMS = false
@@ -121,10 +136,11 @@ object SettingLimits {
     val ALBUM_NAME_MAX_BYTES = 32..240
 
     /**
-     * 同时下载图片数范围（0 = 自动）。
+     * 同时下载图片数范围。
      *
-     * 上限**从 8 提到 12**（用户 2026-10-15 要求"最大支持 12 线程"）：滑杆能拉到的最大值就是这里，
-     * 业务侧 `AppContainer.concurrency()` 也按同一个范围收敛，所以改这一个值两处一起生效。
+     * **没有"自动"档**（用户 2026-10-15 取消）：最小值 1、最大值 **12**（"最大支持 12 线程"），
+     * 默认值见 [SettingDefaults.Jm.DOWNLOAD_THREADS]（4）。
+     * 滑杆能拉到的最大值与业务侧的收敛都用这一个范围，改它就两处一起生效。
      */
     val DOWNLOAD_THREADS = 1..12
 

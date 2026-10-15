@@ -9,7 +9,6 @@ import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
-import com.haruhi.jmcomic.core.settings.SettingLimits
 import com.haruhi.jmcomic.core.settings.SettingsRepository
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import kotlinx.coroutines.CoroutineScope
@@ -140,15 +139,10 @@ class AppContainer(private val appContext: Context) {
         object : com.haruhi.jmcomic.feature.data.DownloadEnvironment {
 
             override suspend fun concurrency(): Int {
-                val configured = settings.jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS_AUTO).first()
-                return if (configured > 0) {
-                    configured.coerceIn(
-                        SettingLimits.DOWNLOAD_THREADS.first,
-                        SettingLimits.DOWNLOAD_THREADS.last,
-                    )
-                } else {
-                    com.haruhi.jmcomic.feature.data.DownloadManager.AUTO_CONCURRENCY
-                }
+                // 「自动」这一档已取消（用户 2026-10-15）：滑杆就是 1～12 的数值，默认 4。
+                // 老版本存下的 0 由 normalizeDownloadThreads 按默认值 4 处理，不会掉成 1。
+                val configured = settings.jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS).first()
+                return SettingDefaults.Jm.normalizeDownloadThreads(configured)
             }
 
             override suspend fun imageDomain(): String {

@@ -37,7 +37,11 @@ internal object SettingKeys {
 
         const val KEEP_SCREEN_ON = "keep_screen_on"
 
-        /** 同时下载图片数；0 = 自动 */
+        /**
+         * 同时下载图片数（1～12，默认 4；**没有"自动"档**，2026-10-15 取消）。
+         *
+         * 老版本存过 `0`（当时那一档"自动"）：读取时按 `normalizeDownloadThreads` 折成 4。
+         */
         const val DOWNLOAD_THREADS = "download_threads"
 
         /** 是否允许同时下载多本漫画 */
