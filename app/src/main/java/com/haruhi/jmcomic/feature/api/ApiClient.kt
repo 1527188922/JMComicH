@@ -9,7 +9,6 @@ import com.haruhi.jmcomic.core.network.withTimeoutRetry
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber

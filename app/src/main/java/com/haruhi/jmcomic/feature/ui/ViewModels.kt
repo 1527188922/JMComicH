@@ -8,7 +8,6 @@ import com.haruhi.jmcomic.core.database.entity.SearchHistoryEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
 import com.haruhi.jmcomic.core.protocol.SearchSort
-import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingKeys

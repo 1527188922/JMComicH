@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +47,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
@@ -72,7 +72,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -1813,13 +1812,16 @@ private fun FavoriteCover(row: FavoritesUiState.FavoriteRow) {
         Box(
             modifier = size
                 .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.secondaryContainer)
+                .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), shape),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "☆",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Icon(
+                imageVector = Icons.Default.FavoriteBorder,
+                contentDescription = null,
+                // 同色系的 on 色，对比度是 Material 保证过的，深浅模式下都清楚
+                tint = MaterialTheme.colorScheme.outlineVariant,
+                modifier = Modifier.size(24.dp),
             )
         }
     }

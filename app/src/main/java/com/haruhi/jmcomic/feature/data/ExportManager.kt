@@ -2,7 +2,6 @@ package com.haruhi.jmcomic.feature.data
 
 import com.haruhi.jmcomic.core.codec.ArchiveWriter
 import com.haruhi.jmcomic.core.codec.PdfWriter
-import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadType
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
@@ -16,14 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.coroutines.coroutineContext
 
 /** 导出任务的参数快照（`t_download_task.payload`）。**绝不放密码**（计划 §D.2 第 6 条）。 */
 @Serializable

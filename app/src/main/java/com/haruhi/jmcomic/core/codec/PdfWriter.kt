@@ -9,7 +9,6 @@ import com.tom_roush.pdfbox.pdmodel.PageMode
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission
 import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy
-import com.tom_roush.pdfbox.pdmodel.encryption.StandardSecurityHandler
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitWidthDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
