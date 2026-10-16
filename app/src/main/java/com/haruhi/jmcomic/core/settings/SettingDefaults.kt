@@ -28,11 +28,11 @@ object SettingDefaults {
          */
         const val DOWNLOAD_NETWORK_ANY = 1
 
-        /** [计划 §9.5] 请求超时：30 秒。 */
-        const val REQUEST_TIMEOUT_SECONDS = 30
+        /** 请求超时：3 秒。 */
+        const val REQUEST_TIMEOUT_SECONDS = 3
 
-        /** 图片下载超时：30 秒（与接口超时分开配置，默认值取一致）。 */
-        const val IMAGE_REQUEST_TIMEOUT_SECONDS = 30
+        /** 图片下载超时：3 秒（与接口超时分开配置，默认值取一致）。 */
+        const val IMAGE_REQUEST_TIMEOUT_SECONDS = 3
 
         /** [计划 §9.5] 代理：默认不使用。 */
         const val PROXY_NONE = 0
