@@ -999,9 +999,9 @@ private fun AlbumGridCard(
                     }
                 }
             } else if (card.album.collected == true && onToggleCollected != null) {
-                IconButton(onClick = onToggleCollected, modifier = Modifier.align(Alignment.TopEnd)) {
-                    Text("★", style = MaterialTheme.typography.titleMedium)
-                }
+//                IconButton(onClick = onToggleCollected, modifier = Modifier.align(Alignment.TopEnd)) {
+//                    Text("★", style = MaterialTheme.typography.titleMedium)
+//                }
             }
         }
         Column(modifier = Modifier.padding(8.dp)) {

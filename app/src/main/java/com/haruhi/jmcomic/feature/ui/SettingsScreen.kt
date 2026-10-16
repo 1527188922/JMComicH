@@ -47,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
@@ -1211,10 +1212,10 @@ private fun SliderRow(
             track = { sliderState ->
                 SliderDefaults.Track(
                     sliderState = sliderState,
-                    // 末端圆角取轨道高（16dp）的一半，进度条收成半圆与滑块弧形接壤
-                    trackInsideCornerSize = 8.dp,
-                    // 轨道与滑块之间的留白，偏大/偏小在这里调
-                    thumbTrackGapSize = 2.dp,
+                    // 末端收成直角（8dp 那种圆角是朝滑块「鼓」出来的，方向相反），
+                    // 并让轨道一直伸到滑块边缘；露在外面的那截由滑块外围的背景色圆遮成凹弧。
+                    trackInsideCornerSize = 0.dp,
+                    thumbTrackGapSize = 0.dp,
                 )
             },
         )
@@ -1229,13 +1230,21 @@ private fun SliderRow(
  */
 @Composable
 private fun SliderDotThumb() {
+    val primary = MaterialTheme.colorScheme.primary
+    val surface = MaterialTheme.colorScheme.surface
     Box(
-        modifier = Modifier.size(25.dp).background(MaterialTheme.colorScheme.primary, CircleShape),
+        modifier = Modifier
+            .size(25.dp)
+            // 在圆点外围再铺一圈背景色：盖住轨道末端，让轨道以「向内凹的弧」包住滑块（( O ) 那种观感）。
+            // 半径 = 拇指半径 12.5dp + 留白 2.5dp，想改留白就改这个数值；但必须 > 14.9dp，
+            // 否则盖不住轨道端的直角，轨道两侧会露出小凸角。
+            .drawBehind { drawCircle(color = surface, radius = 15.dp.toPx()) }
+            .background(primary, CircleShape),
         contentAlignment = Alignment.Center,   // 让白圈居中
     ) {
         Box(modifier = Modifier.size(12.dp)          // 白圈外径
                 .border(width = 14.dp,               // 圈线粗细
-                    color = MaterialTheme.colorScheme.surface,
+                    color = surface,
                     shape = CircleShape)
         )
     }
