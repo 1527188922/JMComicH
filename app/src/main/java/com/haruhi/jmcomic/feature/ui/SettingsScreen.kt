@@ -34,6 +34,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -1186,6 +1187,15 @@ private fun SliderRow(
             steps = steps,
             onValueChangeFinished = { onCommit(draft) },
             thumb = { SliderDotThumb() },
+            track = { sliderState ->
+                SliderDefaults.Track(
+                    sliderState = sliderState,
+                    // 末端圆角取轨道高（16dp）的一半，进度条收成半圆与滑块弧形接壤
+                    trackInsideCornerSize = 8.dp,
+                    // 轨道与滑块之间的留白，偏大/偏小在这里调
+                    thumbTrackGapSize = 2.dp,
+                )
+            },
         )
     }
 }
