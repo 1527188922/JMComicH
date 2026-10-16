@@ -121,7 +121,7 @@ object SettingDefaults {
  */
 object SettingLimits {
     /** [计划 §9.5] 请求超时范围（秒）。 */
-    val REQUEST_TIMEOUT_SECONDS = 5..120
+    val REQUEST_TIMEOUT_SECONDS = 1..30
 
     /** [计划 §9.3] 搜索历史条数范围。 */
     val SEARCH_HISTORY_LIMIT = 1..100
