@@ -1396,8 +1396,17 @@ fun SearchResultsScreen(
  * 不参与 nested-scroll，直接放进去是拉不动的（详情页踩过这个坑，见 AlbumDetailScreen）。
  *
  * 高度必须显式给回"整屏"：`verticalScroll` 发给子项的是**无限高约束**，
- * [EmptyBox] 内部用 fillMaxSize，直接把无限高传下去会崩；给成固定 dp，
- * 空状态在平板上又不会居中。所以用 BoxWithConstraints 读真实视口高度再填回去。
+ * [EmptyBox] 内部用 fillMaxSize，直接把无限高传下去会崩。
+ *
+ * ⚠ 高度取的是 `minHeight`、**不是 `maxHeight`**：滚动轴上的上界是无限的，
+ * 而 `BoxWithConstraints` 遇到无界高度会把 `maxHeight` 报成 `Dp.Infinity`
+ * （foundation-layout 的 `BoxWithConstraintsScopeImpl` 只在 `hasBoundedHeight` 时才给真值），
+ * 于是 `heightIn(min = Dp.Infinity)` 等于把盒子撑成 Int.MAX_VALUE 高，内容按默认的
+ * TopStart 贴在盒子最顶上——这就是"空状态紧挨着灰区顶边"的成因。
+ * `minHeight` 才是外层 `fillMaxSize` 留下的真实视口高度（滚动容器只放开滚动轴的上限，不减下限）。
+ *
+ * 另外，居中要写在**这一层**：`EmptyBox` 自带的 `contentAlignment` 在"父级 min 被清零 +
+ * 高度无界"时是不生效的——它内部那个 Box 根本没被展开过，居中没有参照物。
  */
 @Composable
 private fun ScrollableFullScreenBox(content: @Composable () -> Unit) {
@@ -1406,7 +1415,10 @@ private fun ScrollableFullScreenBox(content: @Composable () -> Unit) {
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
-        Box(modifier = Modifier.heightIn(min = maxHeight)) { content() }
+        Box(
+            modifier = Modifier.heightIn(min = minHeight),
+            contentAlignment = Alignment.Center,
+        ) { content() }
     }
 }
 
