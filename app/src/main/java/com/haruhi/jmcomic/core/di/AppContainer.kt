@@ -86,11 +86,11 @@ class AppContainer(private val appContext: Context) {
     /**
      * 下载引擎。**每次取用都会按当前网络设置新建**：
      * 计划 §9.2 要求"线程数、超时、线路等对新任务或下次重试生效"，
-     * 所以引擎不缓存客户端，而是持有 [httpClient] 的引用。
+     * 所以引擎不缓存客户端，而是持有 [imageHttpClient] 的引用。
      */
     val fileDownloader: com.haruhi.jmcomic.core.download.FileDownloader by lazy {
         com.haruhi.jmcomic.core.download.FileDownloader(
-            client = httpClient,
+            client = imageHttpClient,
             dirs = libraryDirs,
         )
     }
@@ -334,13 +334,15 @@ class AppContainer(private val appContext: Context) {
      *
      * 网络层复用 JM 的 OkHttp（带正确的 UA 与代理设置）——
      * JM 的封面域名对 UA 有校验，用 Coil 默认的 OkHttp 会被拒。
+     *
+     * 用 [imageHttpClient]：封面属于"图片下载"，超时跟设置里的「图片下载超时」走。
      */
     val imageLoader: coil3.ImageLoader by lazy {
         coil3.ImageLoader.Builder(appContext)
             .components {
                 add(
                     coil3.network.okhttp.OkHttpNetworkFetcherFactory(
-                        callFactory = { httpClient },
+                        callFactory = { imageHttpClient },
                     ),
                 )
             }
@@ -361,34 +363,58 @@ class AppContainer(private val appContext: Context) {
 
     // ---------------- 网络 ----------------
 
+    /** 一对客户端：超时值不同，其余（ConnectionPool / Dispatcher / 拦截器）共享。 */
+    private class Clients(val api: OkHttpClient, val image: OkHttpClient)
+
     @Volatile
-    private var client: OkHttpClient? = null
+    private var clients: Clients? = null
+
+    private val resolvedClients: Clients
+        get() = clients ?: synchronized(this) {
+            clients ?: buildClients().also { clients = it }
+        }
 
     /**
-     * 全局唯一的网络客户端。首次访问时按当前设置构建。
-     *
-     * 以前这里按"模式"分成 JM / B站两个实例；现在只有漫画一种内容，
-     * 所以收敛成一个，网络配置也只有一组（唯一那份设置里的超时与代理）。
+     * 接口客户端：漫画详情 / 章节 / 搜索。超时取设置里的「请求超时」。
      */
     val httpClient: OkHttpClient
-        get() = client ?: synchronized(this) {
-            client ?: buildClient().also { client = it }
-        }
+        get() = resolvedClients.api
+
+    /**
+     * 图片下载客户端：章节图片与封面。超时取设置里的「图片下载超时」。
+     *
+     * 由 [httpClient] 经 `newBuilder()` 派生，所以两个客户端共享连接池与线程池，
+     * 构建逻辑也仍在 `NetworkClientFactory` 一处。
+     */
+    val imageHttpClient: OkHttpClient
+        get() = resolvedClients.image
 
     /**
      * 设置变更后调用：丢掉缓存的客户端，让新任务用新配置。
      * 已在执行的任务持有旧实例的引用，不受影响（符合 §9.2 的生效时机要求）。
+     *
+     * **当前没有任何调用点**：超时与代理的生效时机是"重启应用"（设置页有对应提示），
+     * 冷启动时按存储里的值构建即可。留着是为了将来若要改成即时生效时有落点。
      */
     fun invalidateNetworkClients() {
-        synchronized(this) { client = null }
+        synchronized(this) { clients = null }
     }
 
-    private fun buildClient(): OkHttpClient = NetworkClientFactory.create(
-        config = runBlocking { settings.resolveJmNetwork(secrets) },
-        userAgent = Defaults.USER_AGENT,
-        extraHeaders = emptyMap(),
-        enableLogging = BuildConfig.DEBUG,
-    )
+    /**
+     * 按**同一份配置快照**构建两个客户端：代理 / UA / 日志配置必须一致，
+     * 只有三个超时不同（接口一份、图片一份）。
+     */
+    private fun buildClients(): Clients {
+        val config = runBlocking { settings.resolveJmNetwork(secrets) }
+        val api = NetworkClientFactory.create(
+            config = config,
+            userAgent = Defaults.USER_AGENT,
+            extraHeaders = emptyMap(),
+            enableLogging = BuildConfig.DEBUG,
+        )
+        val image = NetworkClientFactory.deriveWithTimeout(api, config.imageTimeoutSeconds)
+        return Clients(api, image)
+    }
 
     companion object {
         /** 封面磁盘缓存上限：256MB 足够放下几万张缩略封面。 */

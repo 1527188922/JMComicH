@@ -31,6 +31,9 @@ object SettingDefaults {
         /** [计划 §9.5] 请求超时：30 秒。 */
         const val REQUEST_TIMEOUT_SECONDS = 30
 
+        /** 图片下载超时：30 秒（与接口超时分开配置，默认值取一致）。 */
+        const val IMAGE_REQUEST_TIMEOUT_SECONDS = 30
+
         /** [计划 §9.5] 代理：默认不使用。 */
         const val PROXY_NONE = 0
 
@@ -122,6 +125,9 @@ object SettingDefaults {
 object SettingLimits {
     /** [计划 §9.5] 请求超时范围（秒）。 */
     val REQUEST_TIMEOUT_SECONDS = 1..30
+
+    /** 图片下载超时范围（秒）。与接口超时分开配置，范围与它相同。 */
+    val IMAGE_REQUEST_TIMEOUT_SECONDS = 1..30
 
     /** [计划 §9.3] 搜索历史条数范围。 */
     val SEARCH_HISTORY_LIMIT = 1..100

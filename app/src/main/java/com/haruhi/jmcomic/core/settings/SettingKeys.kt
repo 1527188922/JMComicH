@@ -63,8 +63,11 @@ internal object SettingKeys {
         /** 图片线路（换行分隔的域名列表，第一项为当前线路） */
         const val IMAGE_DOMAINS = "image_domains"
 
-        /** 请求超时（秒） */
+        /** 请求超时（秒）：接口（详情 / 章节 / 搜索）用。 */
         const val REQUEST_TIMEOUT_SECONDS = "request_timeout_seconds"
+
+        /** 图片下载超时（秒）：章节图片、封面用。 */
+        const val IMAGE_REQUEST_TIMEOUT_SECONDS = "image_request_timeout_seconds"
 
         /** 代理类型 0=不使用 1=HTTP 2=SOCKS */
         const val PROXY_TYPE = "proxy_type"

@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -43,9 +45,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -109,8 +118,10 @@ data class SettingsUiState(
     val pdfPassword: String = "",
 
     // 网络与线路
-    /** 请求超时（秒）。 */
+    /** 接口请求超时（秒）。 */
     val timeoutSeconds: Int = SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS,
+    /** 图片下载超时（秒）。 */
+    val imageTimeoutSeconds: Int = SettingDefaults.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS,
     /** 代理设置（密码存在加密凭据存储里，读出来只用于这一页的显示）。 */
     val proxyType: ProxyType = ProxyType.NONE,
     val proxyHost: String = "",
@@ -216,6 +227,12 @@ class SettingsViewModel(
         val timeout = settings
             .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS)
             .first()
+        val imageTimeout = settings
+            .jmInt(
+                SettingKeys.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS,
+                SettingDefaults.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS,
+            )
+            .first()
         val proxyHost = settings.jmString(SettingKeys.Jm.PROXY_HOST).first()
         val proxyPort = settings.jmInt(SettingKeys.Jm.PROXY_PORT, 0).first()
         val proxyUsername = settings.jmString(SettingKeys.Jm.PROXY_USERNAME).first()
@@ -239,6 +256,7 @@ class SettingsViewModel(
                 zipPassword = zipPassword,
                 pdfPassword = pdfPassword,
                 timeoutSeconds = timeout,
+                imageTimeoutSeconds = imageTimeout,
                 proxyType = proxyType,
                 proxyHost = proxyHost,
                 proxyPort = proxyPort.takeIf { it > 0 }?.toString().orEmpty(),
@@ -337,6 +355,22 @@ class SettingsViewModel(
     }
 
     /**
+     * 图片下载超时：与接口超时同属"冷启动才生效"（两个客户端都在首次访问时构建）。
+     * 滑杆即时落存储，重启应用后生效（UI 上有橙色提示）。
+     */
+    fun setImageTimeoutSeconds(seconds: Int) {
+        val value = seconds.coerceIn(
+            SettingLimits.IMAGE_REQUEST_TIMEOUT_SECONDS.first,
+            SettingLimits.IMAGE_REQUEST_TIMEOUT_SECONDS.last,
+        )
+        _state.update { it.copy(imageTimeoutSeconds = value) }
+        viewModelScope.launch {
+            settings.putJmInt(SettingKeys.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS, value)
+            refreshResolved()
+        }
+    }
+
+    /**
      * 保存代理设置（含密码）。
      *
      * 校验复用 [ResolvedNetworkConfig.validate]：它给出的是**用户能看懂的中文文案**
@@ -355,6 +389,7 @@ class SettingsViewModel(
         }
         val probe = ResolvedNetworkConfig(
             timeoutSeconds = _state.value.timeoutSeconds,
+            imageTimeoutSeconds = _state.value.imageTimeoutSeconds,
             proxyType = draft.type,
             proxyHost = ResolvedNetworkConfig.normalizedHost(host),
             proxyPort = portValue ?: 0,
@@ -480,6 +515,7 @@ fun SettingsScreen(
     onSavePdfPassword: (String) -> Unit,
     // 网络与线路
     onSetTimeoutSeconds: (Int) -> Unit,
+    onSetImageTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
     onSaveApiDomains: (String) -> Unit,
     onSaveImageDomains: (String) -> Unit,
@@ -543,6 +579,7 @@ fun SettingsScreen(
                     NetworkSection(
                         state = state,
                         onSetTimeoutSeconds = onSetTimeoutSeconds,
+                        onSetImageTimeoutSeconds = onSetImageTimeoutSeconds,
                         onSaveProxy = onSaveProxy,
                         onSaveApiDomains = onSaveApiDomains,
                         onSaveImageDomains = onSaveImageDomains,
@@ -673,6 +710,7 @@ private fun ExportSection(
 private fun NetworkSection(
     state: SettingsUiState,
     onSetTimeoutSeconds: (Int) -> Unit,
+    onSetImageTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
     onSaveApiDomains: (String) -> Unit,
     onSaveImageDomains: (String) -> Unit,
@@ -680,12 +718,29 @@ private fun NetworkSection(
     SettingsSection("网络与线路") {
         SliderRow(
             title = "请求超时",
-            hint = "连接与单次读写的等待上限，不是整个下载的总时长",
+            hint = "连接与单次读写的等待上限",
+            help = "指 connect（建立连接）、read（读取）、write（发送）各自的等待上限，" +
+                "不是整次请求或整个下载的总时长。修改后需重启应用才生效。",
+            needsRestart = true,
             value = state.timeoutSeconds.toFloat(),
             range = SettingLimits.REQUEST_TIMEOUT_SECONDS.first.toFloat()..
                 SettingLimits.REQUEST_TIMEOUT_SECONDS.last.toFloat(),
             label = { "${it.roundToInt()} 秒" },
             onCommit = { onSetTimeoutSeconds(it.roundToInt()) },
+        )
+        CardDivider()
+        SliderRow(
+            title = "图片下载超时",
+            hint = "单张图片每次读写的等待上限",
+            help = "指下载章节图片与封面时，connect / read / write 各自的等待上限，" +
+                "不是整张图的总下载时长（大图慢慢下不会被它掐断）。" +
+                "修改后需重启应用才生效。",
+            needsRestart = true,
+            value = state.imageTimeoutSeconds.toFloat(),
+            range = SettingLimits.IMAGE_REQUEST_TIMEOUT_SECONDS.first.toFloat()..
+                SettingLimits.IMAGE_REQUEST_TIMEOUT_SECONDS.last.toFloat(),
+            label = { "${it.roundToInt()} 秒" },
+            onCommit = { onSetImageTimeoutSeconds(it.roundToInt()) },
         )
         CardDivider()
         ProxyEditor(state = state, onSaveProxy = onSaveProxy)
@@ -797,6 +852,9 @@ private fun ProxyEditor(
         ChoiceRow(
             title = "代理",
             hint = "不使用 / HTTP / SOCKS",
+            help = "代理地址、端口、用户名与密码都保存在本地；" +
+                "用户名留空表示不走认证。修改后需重启应用才生效。",
+            needsRestart = true,
             options = listOf("不使用", "HTTP", "SOCKS"),
             selectedIndex = type.ordinal,
             onSelect = { type = ProxyType.entries[it] },
@@ -922,6 +980,108 @@ private fun CardDivider() {
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
+/**
+ * 「需要重启应用才生效」的提示色。
+ *
+ * `MaterialTheme` 调色板里没有橙色（primary / error 都不合适），所以自定义一个常量。
+ * 值偏深，浅色底上可读；深浅主题共用同一个值。
+ */
+private val RestartHintColor = Color(0xFFE8590C)
+
+/**
+ * 行标题：标题 +（可选）问号图标。
+ *
+ * 说明太长时，hint 只留一句简要描述、完整说明放 [help]，点问号弹框看，
+ * 免得把设置行一行行撑高。
+ */
+@Composable
+private fun SettingsTitleRow(
+    title: String,
+    help: String? = null,
+    trailing: @Composable () -> Unit = {},
+) {
+    var showHelp by remember { mutableStateOf(false) }
+
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        if (help != null) {
+            HelpBadge(onClick = { showHelp = true })
+        }
+        Spacer(Modifier.weight(1f))
+        trailing()
+    }
+    if (showHelp && help != null) {
+        HelpDialog(title = title, text = help, onDismiss = { showHelp = false })
+    }
+}
+
+/**
+ * 问号图标：一个描边圆圈 + 圈里的「?」。
+ *
+ * 不走图标资源：`material-icons-core` 里没有问号 / 帮助系列，
+ * 而工程明确不引 `material-icons-extended`（见 app/build.gradle.kts）。
+ * 32dp 是触控区，视觉上的圆圈只有 16dp。
+ */
+@Composable
+private fun HelpBadge(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .size(32.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(16.dp)
+                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "?",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 说明弹框：只给一颗「知道了」（这里没有可取消的动作）。 */
+@Composable
+private fun HelpDialog(title: String, text: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } },
+    )
+}
+
+/**
+ * 行的说明文字：普通部分用次要色；[needsRestart] 为真时在末尾追一句橙色的
+ * 「· 重启应用后生效」，提示这类配置不是即时生效的。
+ */
+@Composable
+private fun HintText(hint: String, needsRestart: Boolean) {
+    val text = if (needsRestart) {
+        buildAnnotatedString {
+            append(hint)
+            append("  ")
+            withStyle(SpanStyle(color = RestartHintColor, fontWeight = FontWeight.Medium)) {
+                append("· 重启应用后生效")
+            }
+        }
+    } else {
+        AnnotatedString(hint)
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
 /** 开关行：名称 + 说明 +（可展开的自定义区）+ 开关。 */
 @Composable
 private fun SwitchRow(
@@ -929,6 +1089,8 @@ private fun SwitchRow(
     hint: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    help: String? = null,
+    needsRestart: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -937,14 +1099,8 @@ private fun SwitchRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            hint?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            SettingsTitleRow(title = title, help = help)
+            hint?.let { HintText(hint = it, needsRestart = needsRestart) }
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
@@ -959,6 +1115,8 @@ private fun ChoiceRow(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
     innerPadding: Boolean = true,
+    help: String? = null,
+    needsRestart: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -968,14 +1126,8 @@ private fun ChoiceRow(
                 vertical = 8.dp,
             ),
     ) {
-        Text(title, style = MaterialTheme.typography.bodyLarge)
-        hint?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        SettingsTitleRow(title = title, help = help)
+        hint?.let { HintText(hint = it, needsRestart = needsRestart) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1010,25 +1162,20 @@ private fun SliderRow(
     onCommit: (Float) -> Unit,
     hint: String? = null,
     steps: Int = 0,
+    help: String? = null,
+    needsRestart: Boolean = false,
 ) {
     var draft by remember(value) { mutableFloatStateOf(value) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        SettingsTitleRow(title = title, help = help) {
             Text(
                 text = label(draft),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
         }
-        hint?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        hint?.let { HintText(hint = it, needsRestart = needsRestart) }
         Slider(
             value = draft,
             onValueChange = { draft = it },

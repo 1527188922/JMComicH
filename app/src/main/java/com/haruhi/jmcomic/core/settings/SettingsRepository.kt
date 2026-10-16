@@ -78,6 +78,10 @@ class SettingsRepository(
                 SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS,
                 SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS,
             ).first(),
+            imageTimeoutSeconds = jmInt(
+                SettingKeys.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS,
+                SettingDefaults.Jm.IMAGE_REQUEST_TIMEOUT_SECONDS,
+            ).first(),
             proxyType = ResolvedNetworkConfig.proxyTypeOf(
                 jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.Jm.PROXY_NONE).first(),
             ),

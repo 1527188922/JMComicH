@@ -491,6 +491,7 @@ fun ModeRoot(
                         onSavePdfPassword = vm::savePdfPassword,
                         // 网络与线路
                         onSetTimeoutSeconds = vm::setTimeoutSeconds,
+                        onSetImageTimeoutSeconds = vm::setImageTimeoutSeconds,
                         onSaveProxy = vm::saveProxy,
                         onSaveApiDomains = vm::saveApiDomains,
                         onSaveImageDomains = vm::saveImageDomains,

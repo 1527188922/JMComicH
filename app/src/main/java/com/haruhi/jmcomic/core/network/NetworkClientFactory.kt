@@ -57,6 +57,21 @@ object NetworkClientFactory {
         return builder.build()
     }
 
+    /**
+     * 由 [base] 派生一个「只改超时」的客户端。
+     *
+     * 走 `newBuilder()` 而不是再调一次 [create]：结果**共享 ConnectionPool / Dispatcher /
+     * 拦截器链 / Cache，只有三个超时不同**。所以「构建逻辑」仍然只有 [create] 一份，
+     * 这里只是同一套逻辑的参数化结果（接口超时与图片下载超时分开配置时用）。
+     */
+    fun deriveWithTimeout(base: OkHttpClient, timeoutSeconds: Int): OkHttpClient =
+        base.newBuilder()
+            .connectTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+            .readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+            .writeTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.SECONDS)
+            .build()
+
     private fun parseProxy(config: ResolvedNetworkConfig, proxyUrl: String): Proxy {
         val type = when (config.proxyType) {
             ProxyType.SOCKS -> Proxy.Type.SOCKS
