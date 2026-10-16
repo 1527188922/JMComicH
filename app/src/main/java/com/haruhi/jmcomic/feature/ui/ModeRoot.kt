@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ import androidx.navigation.navArgument
 import com.haruhi.jmcomic.core.di.AppContainer
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -185,7 +187,16 @@ fun ModeRoot(
     val scope = rememberCoroutineScope()
     // 一次性提示统一走根部：**先消费、再这里弹**（见 MessageEffect 的注释）。
     // 挂在根部的 scope 上，切 tab 时提示不会被正在销毁的页面协程一起取消。
-    val showMessage: (String) -> Unit = { message -> scope.launch { snackbar.showSnackbar(message) } }
+    //
+    // 新提示到来时**先取消上一条**：`showSnackbar` 是挂起函数、内部按 Mutex 串行排队，
+    // 默认每条要播 ~4 秒，提示一多就会"排队逐个播完"，用户要等很久（用户反馈）。
+    // 取消正在展示的那条协程后，Material3 会在 finally 里清空 currentSnackbarData，
+    // 当前提示立即消失，新提示马上顶上。
+    val messageJob = remember { mutableStateOf<Job?>(null) }
+    val showMessage: (String) -> Unit = { message ->
+        messageJob.value?.cancel()
+        messageJob.value = scope.launch { snackbar.showSnackbar(message) }
+    }
     // 导出成品的「打开至 / 发送至」要发系统 Intent（计划 §8 第 10 条）
     val context = LocalContext.current
 
@@ -459,12 +470,12 @@ fun ModeRoot(
                         onOpenAlbum = { albumId -> navController.navigate(Routes.detail(albumId)) },
                         // 导出成品的「打开至 / 发送至」（用户要求第 4 点）
                         onOpenOutput = { name ->
-                            launchOutputIntent(context, name, share = false, snackbar, scope) {
+                            launchOutputIntent(context, name, share = false, showMessage, scope) {
                                 taskViewModel.outputUri(name)
                             }
                         },
                         onSendOutput = { name ->
-                            launchOutputIntent(context, name, share = true, snackbar, scope) {
+                            launchOutputIntent(context, name, share = true, showMessage, scope) {
                                 taskViewModel.outputUri(name)
                             }
                         },
@@ -606,19 +617,19 @@ fun ModeRoot(
                         onCancelExport = vm::cancelExport,
                         // 详情页「导出文件」区块的三个操作（用户第九轮要求第 2 点）
                         onOpenOutput = { name ->
-                            launchOutputIntent(context, name, share = false, snackbar, scope) {
+                            launchOutputIntent(context, name, share = false, showMessage, scope) {
                                 vm.outputUri(name)
                             }
                         },
                         onSendOutput = { name ->
-                            launchOutputIntent(context, name, share = true, snackbar, scope) {
+                            launchOutputIntent(context, name, share = true, showMessage, scope) {
                                 vm.outputUri(name)
                             }
                         },
                         onDeleteExport = vm::deleteExport,
                         // 「打开文件夹」：把系统文件管理器拉到成品目录（用户反馈第 2 点）
                         onOpenFolder = {
-                            openExportFolder(context, vm.outputFolderUri(), snackbar, scope)
+                            openExportFolder(context, vm.outputFolderUri(), showMessage)
                         },
                         // 点作者：**直接开结果页按作者名搜**（用户要求），不再绕去发现页填搜索框。
                         //
@@ -716,14 +727,14 @@ private fun launchOutputIntent(
     context: Context,
     displayName: String,
     share: Boolean,
-    snackbar: SnackbarHostState,
+    showMessage: (String) -> Unit,
     scope: CoroutineScope,
     resolveUri: suspend () -> android.net.Uri?,
 ) {
     scope.launch {
         val uri = resolveUri()
         if (uri == null) {
-            snackbar.showSnackbar("找不到这个文件，可能已经被删除")
+            showMessage("找不到这个文件，可能已经被删除")
             return@launch
         }
         val mime = if (displayName.endsWith(".pdf", ignoreCase = true)) {
@@ -747,7 +758,7 @@ private fun launchOutputIntent(
                 context.startActivity(view)
             }
         }.onFailure {
-            snackbar.showSnackbar("没有可以打开这个文件的应用")
+            showMessage("没有可以打开这个文件的应用")
         }
     }
 }
@@ -765,12 +776,11 @@ private fun launchOutputIntent(
 private fun openExportFolder(
     context: Context,
     folderUri: android.net.Uri?,
-    snackbar: SnackbarHostState,
-    scope: CoroutineScope,
+    showMessage: (String) -> Unit,
 ) {
     val message = "没有可以打开文件夹的应用，成品在 下载/JMComicH"
     if (folderUri == null) {
-        scope.launch { snackbar.showSnackbar(message) }
+        showMessage(message)
         return
     }
     val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -778,7 +788,7 @@ private fun openExportFolder(
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching { context.startActivity(intent) }
-        .onFailure { scope.launch { snackbar.showSnackbar(message) } }
+        .onFailure { showMessage(message) }
 }
 
 /**
