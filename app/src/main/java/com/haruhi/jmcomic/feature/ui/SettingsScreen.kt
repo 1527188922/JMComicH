@@ -663,7 +663,8 @@ private fun DownloadSection(
             // 没有"自动"档（用户 2026-10-15 取消）：滑杆就是 1～12 的数值，默认停在 4。
             // 也**没有任何"按内存/CPU 核数算"的逻辑**——以前那句"自动值会参考设备内存"
             // 是照计划 §9.3 的意图写的、代码里从没实现过，所以整档一起去掉了。
-            hint = "可同时下载图片张数（拉高配置可提升下载速度的下限，但上限取决于网速与手机CPU线程数）",
+            hint = "可同时下载图片张数",
+            help = "拉高配置可一定程度提升总体下载速度的下限，但上限取决于网速与手机CPU线程数。",
             value = state.downloadThreads.toFloat(),
             range = SettingLimits.DOWNLOAD_THREADS.first.toFloat()..
                 SettingLimits.DOWNLOAD_THREADS.last.toFloat(),
@@ -749,14 +750,16 @@ private fun NetworkSection(
     SettingsSection("线路") {
         DomainsEditor(
             title = "接口线路",
-            hint = "漫画详情、搜索、图片清单将使用该域名，放在第一行的域名将生效（留空使用默认域名）",
+            hint = "一行一个，放在第一行的域名将生效",
+            help = "获取漫画详情、图片列表清单和搜索将使用该域名，放在第一行的域名将生效；留空使用默认线路域名。",
             value = state.apiDomains,
             onSave = onSaveApiDomains,
         )
         CardDivider()
         DomainsEditor(
             title = "图片线路",
-            hint = "漫画图片、封面下载使用该域名，放在第一行的域名将生效（留空使用默认域名）",
+            hint = "一行一个，放在第一行的域名将生效",
+            help = "下载漫画图片、封面使用该域名，放在第一行的域名将生效（留空使用默认线路域名）",
             value = state.imageDomains,
             onSave = onSaveImageDomains,
         )
@@ -929,7 +932,7 @@ private fun DomainsEditor(
             value = draft,
             onValueChange = { draft = it },
             minLines = 2,
-            label = { Text("域名列表，一行一个") },
+            label = { Text("域名列表") },
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         )
         Row(
