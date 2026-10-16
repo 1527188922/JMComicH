@@ -67,12 +67,14 @@ import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.core.settings.SettingLimits
 import com.haruhi.jmcomic.core.settings.SettingsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /** 三处「请求失败后重试」的区分（详情 / 搜索 / 章节）。 */
@@ -98,10 +100,15 @@ data class ProxyDraft(
  * 阅读与显示、下载、导出、网络与线路、高级。
  * 书库布局 / 并行下载 / 搜索历史 / 文件夹名长度 / 存储与缓存这几组
  * 要么还没接线、要么没有实现，按计划 §9.5「未实现的功能不展示空页面或占位开关」不做。
+ *
+ * **没有 `loading` 字段**（修进入掉帧时去掉的）：以前初始值是"加载中"，等存储读回来
+ * 再整页换成内容——那次"占位页 → 内容页"的结构切换正好落在页面进入动画中间，
+ * 第 2~3 帧要一边跑动画、一边首次组合并测量整页，掉的就是那一帧。
+ * 现在初始值就是各字段的默认值，首帧直接画出整页结构，真实值回来只是若干文本/选中态
+ * 变化，不再重建整页。代价是默认值（线程数、超时秒数之类）可能在头一两帧先露一下
+ * ——这段时间远短于一帧的观感阈值，看不到。
  */
 data class SettingsUiState(
-    val loading: Boolean = true,
-
     // 阅读与显示
     //
     // 「阅读背景」「亮度」**不放这一页**：它们随每次阅读的环境变，用户要改也是进了阅读器再改
@@ -202,8 +209,14 @@ class SettingsViewModel(
      *
      * 逐项 `first()` 会走多次 DataStore 读取，但只发生在进页面那一次，
      * 换来的是"读到的每一项都独立、不需要构造一个临时 Preferences 快照"的简单实现。
+     *
+     * **整段跑在 IO 上**（`withContext(Dispatchers.IO)`）：这里除了 DataStore 读取，
+     * 还有 4 次凭据解密——[SecretStore.get] 每次都要 `KeyStore.load(null)` + `Cipher.init`
+     * + `doFinal`，是跨进程、走 TEE 的调用，慢的时候十几到几十毫秒。以前这段落在
+     * `viewModelScope` 默认的 Main 上，正好压在页面进入动画的那几帧里；
+     * 现在主线程在动画期间只负责组合与绘制。
      */
-    private suspend fun reload() {
+    private suspend fun reload() = withContext(Dispatchers.IO) {
         val mode = ReadingMode.fromCode(
             settings.jmInt(SettingKeys.Jm.READING_MODE, SettingDefaults.Jm.READING_MODE_VERTICAL).first(),
         )
@@ -249,7 +262,6 @@ class SettingsViewModel(
 
         _state.update {
             it.copy(
-                loading = false,
                 readingMode = mode,
                 readingDirection = direction,
                 keepScreenOn = keepScreenOn,
@@ -273,8 +285,13 @@ class SettingsViewModel(
         }
     }
 
-    /** 写完网络相关的项之后刷新一次"有效值"，让"当前生效"那行立刻跟上。 */
-    private suspend fun refreshResolved() {
+    /**
+     * 写完网络相关的项之后刷新一次"有效值"，让"当前生效"那行立刻跟上。
+     *
+     * 和 [reload] 一样整段放 IO：这里的 [SettingsRepository.resolveJmNetwork] 内部还会再读一次
+     * 代理密码（Keystore 解密），不该占主线程。
+     */
+    private suspend fun refreshResolved() = withContext(Dispatchers.IO) {
         val resolved = settings.resolveJmNetwork(secrets)
         _state.update { it.copy(resolved = resolved) }
     }
@@ -548,47 +565,47 @@ fun SettingsScreen(
         }
 
         // 正文区铺灰色底；头部「应用设置」那一行留白。
+        //
+        // **这里没有"加载中 → 内容"的占位切换**（修进入掉帧时去掉的，见 [SettingsUiState]）：
+        // 首帧就直接组合这一整页，存储里的真实值回来只是若干文本/选中态变化，
+        // 不会再把整页结构重建一遍——那次重建正好落在页面进入动画中间，掉的就是那一帧。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            if (state.loading) {
-                LoadingBox()
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    ReadingSection(
-                        state = state,
-                        onSetReadingMode = onSetReadingMode,
-                        onSetReadingDirection = onSetReadingDirection,
-                        onSetKeepScreenOn = onSetKeepScreenOn,
-                    )
-                    DownloadSection(
-                        state = state,
-                        onSetDownloadThreads = onSetDownloadThreads,
-                        onSetDownloadNetwork = onSetDownloadNetwork,
-                    )
-                    ExportSection(
-                        state = state,
-                        onSaveZipPassword = onSaveZipPassword,
-                        onSavePdfPassword = onSavePdfPassword,
-                    )
-                    NetworkSection(
-                        state = state,
-                        onSetTimeoutSeconds = onSetTimeoutSeconds,
-                        onSetImageTimeoutSeconds = onSetImageTimeoutSeconds,
-                        onSaveProxy = onSaveProxy,
-                        onSaveApiDomains = onSaveApiDomains,
-                        onSaveImageDomains = onSaveImageDomains,
-                    )
-                    AdvancedSection(state = state, onSetRetry = onSetRetry)
-                    ResetSection(onReset = { confirmReset = true })
-                    Spacer(Modifier.height(24.dp))
-                }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                ReadingSection(
+                    state = state,
+                    onSetReadingMode = onSetReadingMode,
+                    onSetReadingDirection = onSetReadingDirection,
+                    onSetKeepScreenOn = onSetKeepScreenOn,
+                )
+                DownloadSection(
+                    state = state,
+                    onSetDownloadThreads = onSetDownloadThreads,
+                    onSetDownloadNetwork = onSetDownloadNetwork,
+                )
+                ExportSection(
+                    state = state,
+                    onSaveZipPassword = onSaveZipPassword,
+                    onSavePdfPassword = onSavePdfPassword,
+                )
+                NetworkSection(
+                    state = state,
+                    onSetTimeoutSeconds = onSetTimeoutSeconds,
+                    onSetImageTimeoutSeconds = onSetImageTimeoutSeconds,
+                    onSaveProxy = onSaveProxy,
+                    onSaveApiDomains = onSaveApiDomains,
+                    onSaveImageDomains = onSaveImageDomains,
+                )
+                AdvancedSection(state = state, onSetRetry = onSetRetry)
+                ResetSection(onReset = { confirmReset = true })
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
