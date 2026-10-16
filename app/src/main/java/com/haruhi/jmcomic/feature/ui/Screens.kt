@@ -1898,8 +1898,10 @@ fun FavoritesScreen(
                 state.loading -> LoadingBox()
                 state.favorites.isEmpty() -> EmptyBox("还没有收藏夹", "点「新建」创建一个")
                 else -> LazyColumn(
-                    // 顶部 8dp 由 master 侧加进来（原来紧贴标题行），保留 master 的间距
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    // 顶部 12dp：头部「收藏夹 / 排序 / 新建」那一行的底边到第一张白卡之间
+                    // 留一段呼吸位（原来是 8dp，和「更多」页对齐后统一成 12dp）；
+                    // 底部仍是 8dp，列表滚到底时卡片不贴屏幕边。
+                    contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
