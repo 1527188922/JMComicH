@@ -1307,30 +1307,30 @@ private fun ChapterRowItem(
                     },
                 )
             }
-            if (chapter.downloadedImages > 0) {
-                // 图标与菜单放在同一个 Box 里：DropdownMenu 是相对**它所在的父布局**定位的，
-                // 直接放在 Row 里当兄弟节点时锚点会落到整行上，菜单看起来"飘"到了别处
-                // （用户反馈第 6 点）。包一层 Box 之后锚点才是那颗按钮。
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "章节操作")
-                    }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                        // 两行都带 leadingIcon：菜单项文字短、动作都是"对文件做什么"，
-                        // 靠图标区分比靠读字快（删除图标与成品行的「删除文件」同一支）。
-                        // 图标**不显式上色**：DropdownMenuItem 会把内容色写进 LocalContentColor，
-                        // 下面那条的 textColor = error 会自动带着图标一起变红。
-                        DropdownMenuItem(
-                            text = { Text("下载本话") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = DownloadIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(ButtonDefaults.IconSize),
-                                )
-                            },
-                            onClick = { menuExpanded = false; onDownload() },
-                        )
+            // 图标与菜单放在同一个 Box 里：DropdownMenu 是相对**它所在的父布局**定位的，
+            // 直接放在 Row 里当兄弟节点时锚点会落到整行上，菜单看起来"飘"到了别处
+            // （用户反馈第 6 点）。包一层 Box 之后锚点才是那颗按钮。
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "章节操作")
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    // 两行都带 leadingIcon：菜单项文字短、动作都是"对文件做什么"，
+                    // 靠图标区分比靠读字快（删除图标与成品行的「删除文件」同一支）。
+                    // 图标**不显式上色**：DropdownMenuItem 会把内容色写进 LocalContentColor，
+                    // 下面那条的 textColor = error 会自动带着图标一起变红。
+                    DropdownMenuItem(
+                        text = { Text("下载本话") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = DownloadIcon,
+                                contentDescription = null,
+                                modifier = Modifier.size(ButtonDefaults.IconSize),
+                            )
+                        },
+                        onClick = { menuExpanded = false; onDownload() },
+                    )
+                    if (chapter.downloadedImages > 0) {
                         DropdownMenuItem(
                             colors = MenuDefaults.itemColors(
                                 textColor = MaterialTheme.colorScheme.error,
@@ -1354,7 +1354,7 @@ private fun ChapterRowItem(
     if (confirmDelete) {
         ConfirmDialog(
             title = "删除「${chapter.title}」的图片？",
-            text = "删除这一话已经下载的图片。（不删除其他话的图片）",
+            text = "删除这一话已经下载的图片。",
             confirmText = "删除图片",
             onConfirm = { confirmDelete = false; onDeleteFiles() },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
