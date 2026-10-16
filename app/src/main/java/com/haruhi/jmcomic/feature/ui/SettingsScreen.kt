@@ -705,6 +705,9 @@ private fun ExportSection(
             value = state.pdfPassword,
             onSave = onSavePdfPassword,
         )
+        // 输入框是硬描边、没有文字行高那层留白，编辑器自带的 6dp 底边距看着会贴住卡片。
+        // 这里只在**卡内容末尾**补一点，和上面的 6dp 凑成 12dp；行与行之间的间距不动。
+        Spacer(Modifier.height(6.dp))
     }
 }
 

@@ -1315,18 +1315,25 @@ private fun ChapterRowItem(
                     Icon(Icons.Default.MoreVert, contentDescription = "章节操作")
                 }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    // 两行都带 leadingIcon：菜单项文字短、动作都是"对文件做什么"，
-                    // 靠图标区分比靠读字快（删除图标与成品行的「删除文件」同一支）。
+                    // 图标**不放进 leadingIcon 槽**：那个槽会把图标塞进固定 24dp 的容器、
+                    // 再和文字槽之间插一段固定间距，两处都是 DropdownMenuItem 内部常量，
+                    // 调用方改不小，18dp 的图标最后会空出十几 dp（用户反馈间距太宽）。
+                    // 改成把图标和文字一起放进 text 槽的 Row 里，间距由 spacedBy 说了算。
                     // 图标**不显式上色**：DropdownMenuItem 会把内容色写进 LocalContentColor，
                     // 下面那条的 textColor = error 会自动带着图标一起变红。
                     DropdownMenuItem(
-                        text = { Text("下载本话") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = DownloadIcon,
-                                contentDescription = null,
-                                modifier = Modifier.size(ButtonDefaults.IconSize),
-                            )
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = DownloadIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                                Text("下载本话")
+                            }
                         },
                         onClick = { menuExpanded = false; onDownload() },
                     )
@@ -1335,13 +1342,18 @@ private fun ChapterRowItem(
                             colors = MenuDefaults.itemColors(
                                 textColor = MaterialTheme.colorScheme.error,
                             ),
-                            text = { Text("删除图片") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Delete,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(ButtonDefaults.IconSize),
-                                )
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                                    )
+                                    Text("删除图片")
+                                }
                             },
                             onClick = { menuExpanded = false; confirmDelete = true },
                         )

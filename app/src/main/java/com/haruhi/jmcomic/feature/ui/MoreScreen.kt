@@ -108,7 +108,9 @@ fun MoreScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                        // 顶部 12dp 是「更多」那一行与卡片之间的呼吸位，底部保持 4dp——
+                        // 卡片下面还有版本号自己的 20dp 内边距，不用在这里再加。
+                        .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 4.dp),
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         MoreEntryRow(
