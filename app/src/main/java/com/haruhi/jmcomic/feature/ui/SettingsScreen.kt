@@ -937,13 +937,14 @@ private fun ProxyEditor(
 private fun DomainsEditor(
     title: String,
     hint: String,
+    help: String? = null,
     value: String,
     onSave: (String) -> Unit,
 ) {
     var draft by remember(value) { mutableStateOf(value) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Text(title, style = MaterialTheme.typography.bodyLarge)
+        SettingsTitleRow(title = title, help = help)
         Text(
             text = hint,
             style = MaterialTheme.typography.bodySmall,
