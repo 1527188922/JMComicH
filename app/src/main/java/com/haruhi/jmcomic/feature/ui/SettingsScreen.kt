@@ -42,7 +42,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -864,7 +863,7 @@ private fun NetworkSection(
  * 1. **当前线路直接显示在分组里**，不用点开面板就知道自己在用哪一条（每行的第二行就是域名）；
  * 2. **没有「保存」按钮**：面板里点一条就写存储、下一次请求立刻走新线路；
  * 3. **点完不自动关面板**（用户 2026-10-18 要求）：可以接着点下一条比较，
- *    什么时候退出由用户自己决定（拖把手/标题区下滑、点遮罩，或面板里的「关闭」）；
+ *    什么时候退出由用户自己决定（**拖把手下滑**、点遮罩，或面板里的「关闭」）；
  * 4. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
  *    面板里另给「恢复默认」（回到工程当前在用的那条）和接口线路的「全部测速」。
  */
@@ -882,8 +881,7 @@ private fun LineSection(
 
     // 两个面板的列表状态提到这里（而不是在 LinePickerSheet 里 remember）：
     // 面板一关就整个移出组合，滚动位置会丢；提到这一层才能在"关掉再打开"之后
-    // 回到上次看到的那几条。误关（虽然已用 [sheetSwipeGuard] 挡住大部分）之后
-    // 重开也不用从头翻。
+    // 回到上次看到的那几条。
     val apiListState = rememberLazyListState()
     val imageListState = rememberLazyListState()
 
@@ -1047,11 +1045,12 @@ private fun LineSummaryRow(
  * 交互约定：
  * - **点一行 = 选中即生效，但面板保持打开**（用户 2026-10-18 要求）：灯号就摆在旁边，
  *   用户往往想"点一条、看有没有变快、再点下一条"，自动关掉会逼他反复重开面板。
- * - **在列表上滑只滚列表，不会误关面板**（用户 2026-10-19 要求）：列表内容超出可视区时，
- *   [sheetSwipeGuard] 把向下的纵向手势吃掉，面板纹丝不动；一屏放得下的短列表
- *   （接口线路只有 6 条）守门人不介入，行为和以前完全一样。
- * - **退出有三条路**：拖把手/标题区下滑、点遮罩、点面板底部的「关闭」。
- *   （「关闭」是 2026-10-19 从注释里放回来的：列表区既然不能再靠下滑关闭，
+ * - **内容区不响应上下滑动**（用户 2026-10-19 要求）：标题、按钮行、线路列表上的纵向手势
+ *   只归列表（或什么也不做），面板纹丝不动——以前"上下滑着找线路"很容易把面板滑没了。
+ *   实现见 `SheetGestures.kt` 的 `HandleDragOnlyBottomSheet`：两条通道（指针拖动 +
+ *   列表滚到头后的嵌套滚动余量）一起掐掉，**把手**照旧能拖。
+ * - **退出靠**：**拖顶部把手下滑**、点遮罩、返回键，或面板底部的「关闭」。
+ *   （「关闭」是 2026-10-19 从注释里放回来的：内容区既然不能再靠下滑关闭，
  *   就得给一个不用猜的出口，否则用户会觉得"面板关不掉了"。）
  * - **不弹 Snackbar**：提示会被面板挡住、连点几次还会排队；反馈就是这一行的
  *   「使用中 + ✓」和分组里那行域名，两者都即时更新。
@@ -1061,9 +1060,8 @@ private fun LineSummaryRow(
  *
  * 图片线路的面板传 `onTest = null` 且 `autoTest = false`：图片线路暂不做测速。
  *
- * @param listState 列表状态**由调用方持有**（`LineSection`）：它要同时交给
- *   [sheetSwipeGuard]（判断"列表滚到哪儿了"）和 `LazyColumn`，并且因为活在面板外面，
- *   面板关掉再打开时滚动位置还在。
+ * @param listState 列表状态**由调用方持有**（`LineSection`）：它交给 `LazyColumn`，
+ *   并且因为活在面板外面，面板关掉再打开时滚动位置还在。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1091,12 +1089,10 @@ private fun LinePickerSheet(
         }
     }
 
-    ModalBottomSheet(
+    // 内容区（标题、按钮、线路列表）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+    HandleDragOnlyBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        // 挂在面板内容的外层：列表还能滚时，向下的纵向手势先被守门人吃掉，
-        // 不会再被转成"面板下滑关闭"（详见 SheetGestures.kt）。
-        modifier = Modifier.sheetSwipeGuard(listState),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(

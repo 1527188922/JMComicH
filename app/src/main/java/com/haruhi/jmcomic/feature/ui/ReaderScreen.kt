@@ -41,7 +41,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -213,12 +212,10 @@ fun ReaderScreen(
     if (state.showChapterPicker) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         val listState = rememberLazyListState()
-        ModalBottomSheet(
+        // 内容区（标题、章节列表）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+        HandleDragOnlyBottomSheet(
             onDismissRequest = onDismissSheets,
             sheetState = sheetState,
-            // 章节可能几百话：列表还能滚时，向下的纵向手势只归列表，
-            // 别把"翻章"翻成"关面板"（详见 SheetGestures.kt）
-            modifier = Modifier.sheetSwipeGuard(listState),
         ) {
             ChapterPickerContent(state = state, onOpenChapter = onOpenChapter, listState = listState)
         }
@@ -226,7 +223,8 @@ fun ReaderScreen(
 
     if (state.showSettings) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(onDismissRequest = onDismissSheets, sheetState = sheetState) {
+        // 内容区（各项设置）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+        HandleDragOnlyBottomSheet(onDismissRequest = onDismissSheets, sheetState = sheetState) {
             ReaderSettingsContent(
                 preferences = state.preferences,
                 onSetDirection = onSetDirection,
@@ -684,7 +682,7 @@ private fun ReaderEmptyState(
 private fun ChapterPickerContent(
     state: ReaderUiState,
     onOpenChapter: (Int) -> Unit,
-    /** 列表状态由外层持有：它同时交给 [sheetSwipeGuard] 和 `LazyColumn`。 */
+    /** 列表状态由外层持有：面板关掉再打开时滚动位置还在。 */
     listState: LazyListState,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {

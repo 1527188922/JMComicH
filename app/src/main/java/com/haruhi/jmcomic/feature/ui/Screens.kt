@@ -65,7 +65,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -552,11 +551,10 @@ private fun FavoritePickerForSelection(
     val createFavorite = onCreate
     val listState = rememberLazyListState()
 
-    ModalBottomSheet(
+    // 内容区（标题、收藏夹列表、底部按钮行）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+    HandleDragOnlyBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        // 收藏夹多起来时列表要滚：滚动时不把向下的手势让给面板（详见 SheetGestures.kt）
-        modifier = Modifier.sheetSwipeGuard(listState),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(

@@ -51,7 +51,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuDefaults
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -1147,7 +1146,8 @@ private fun FavoritePickerSheet(
     var newName by remember { mutableStateOf("") }
     var showCreate by remember { mutableStateOf(false) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // 内容区不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+    HandleDragOnlyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Text("收藏夹", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
@@ -1512,11 +1512,10 @@ private fun DownloadSheet(
     val queued = state.queuedChapterIds
     val listState = rememberLazyListState()
 
-    ModalBottomSheet(
+    // 内容区（标题、全选按钮行、章节列表）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
+    HandleDragOnlyBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        // 章节可能几百话、必须滚：滚动列表时不把向下的手势让给面板（详见 SheetGestures.kt）
-        modifier = Modifier.sheetSwipeGuard(listState),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(

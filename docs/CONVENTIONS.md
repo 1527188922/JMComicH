@@ -61,43 +61,55 @@ Cover(
 - [ ] 「从书库移除」「清空最近浏览」之后，对应封面按 `CoverCache.evict` 失效；
       "只删除本地文件"、以及仍能在书库/最近里看到的，封面**保留**。
 
-## 2. 底部面板里的可滚动列表：必须挂 `sheetSwipeGuard`
+## 2. 底部面板一律用 `HandleDragOnlyBottomSheet`
 
 ### 规则（必须遵守）
 
-1. 面板里只要有 `LazyColumn` 这类**能滚**的列表（线路、章节、收藏夹……），就给面板挂
+1. **别直接写 `ModalBottomSheet { … }`**，一律用 `feature/ui/SheetGestures.kt` 里的外壳：
    ```kotlin
-   val listState = rememberLazyListState()
-   ModalBottomSheet(
+   HandleDragOnlyBottomSheet(
        onDismissRequest = onDismiss,
-       sheetState = sheetState,
-       modifier = Modifier.sheetSwipeGuard(listState),   // 见 feature/ui/SheetGestures.kt
+       sheetState = sheetState,        // 需要时自己 rememberModalBottomSheetState(...)
    ) {
-       LazyColumn(state = listState) { … }               // 同一个 listState 也要给列表
+       Column(Modifier.fillMaxWidth()) {
+           …                          // 标题、按钮行、LazyColumn 照旧
+       }
    }
    ```
-2. 面板里**至少留一条"不靠猜"的关闭出口**：把手/标题区可下滑，或一颗「关闭」/「取消」按钮。
-   列表区被守门人保护之后，用户不能再靠"在列表上下滑"关面板了。
-3. **别用 `sheetGesturesEnabled = false` 图省事**：那会把把手的下滑一起禁掉，
-   面板只剩点遮罩/返回键能关（material3 1.4.0 起有这个参数，但不是本项目的做法）。
+   它保证**内容区（标题 / 按钮 / 列表）上的上下滑动完全到不了面板**（两个方向都一样），
+   只有顶部的把手能拖着关。
+2. 面板里**至少留一条"不靠猜"的关闭出口**：把手可下滑、或一颗「关闭」/「取消」按钮。
+3. **别在调用点自己开面板手势**：`HandleDragOnlyBottomSheet` 里之所以传
+   `sheetGesturesEnabled = false`（material3 1.4.0 起有这个参数），是为了把面板自带的那套手势
+   **整套摘掉**——那套东西（Surface 上的 `draggable` + `nestedScroll`）就是会跟列表抢上下滑的元凶。
+   把手由外壳自己用 `Modifier.draggable` 接管（拖过 56dp 或甩过 125dp/s 就收起）。
+4. 列表状态（`rememberLazyListState()`）该提到面板外面还是照旧提——面板一关就整个移出组合，
+   提上去才能在"关掉再打开"之后回到上次看到的那几条。
 
 ### 为什么（真实踩过的坑）
 
-material3 1.4.0 的 `ModalBottomSheet` 内容上同时挂了两套手势：
+material3 1.4.0 的 `ModalBottomSheet` 把面板拖动挂在**整块内容**上，而且有**两条**通道：
 
-- `draggable`：按住**非滚动区域**（标题 / 提示 / 按钮行）上下滑 = 直接拖面板；
+- `draggable`（指针手势）：手指落在**没有被下面消费掉**的地方——标题 / 提示 / 按钮行，
+  以及"一屏放得下、滚不动"的短列表；
 - `nestedScroll(ConsumeSwipeWithinBottomSheetBoundsNestedScrollConnection)`：
   `pre-up / post-down` —— 向上先给面板（面板已全展开时它只吞 0，余量落到列表），
   **向下则是列表消费完之后的余量直接拿去拖面板**。
 
-也就是"列表一到顶，之后每一像素向下位移都变成面板位移"，而关闭判定只有
-`BottomSheetDefaults.PositionalThreshold = 56.dp` / `VelocityThreshold = 125.dp/s`
-（两个常量都读自 aar）。结果就是"往上翻列表时，手指往回收一点，面板关了"。
-2026-10-19 处理设置页线路面板误关时确认过，完整分析见 `docs/PROGRESS.md` 的同名小节。
+关闭判定只有 `BottomSheetDefaults.PositionalThreshold = 56.dp` / `VelocityThreshold = 125.dp/s`
+（两个常量都读自 aar）。结果就是"想上下滑着找线路 / 翻章节，手指一动面板就跟着走、一不小心就滑没了"。
+
+2026-10-19 先在列表区挡了一道（只挡"长列表 + 已在顶部"）；用户随后要求**彻底取消内容区的上下滑手势**，
+于是改成先"消费事件"的拦截版——真机验出来**向下不抢了、向上还抢**。
+最后定稿：不给面板挂手势（`sheetGesturesEnabled = false`），把手自己接管。
+完整分析见 `docs/PROGRESS.md` 的「面板内容区不再响应上下滑动手势」与之前那节「线路面板不再被"下滑即关"误伤」。
 
 ### 验收清单（改动面板手势后照着跑）
 
-- [ ] 列表中部上下滑：只滚列表，面板不动；
+- [ ] 在标题 / 提示 / 按钮行上下滑：面板纹丝不动；
+- [ ] 列表中部上下滑：只滚列表，面板不动（**上下两个方向都要试**）；
 - [ ] 列表滑到顶后继续向下拉 100dp 再松手：**不关**；
 - [ ] 在列表上快速向下甩一下：**不关**；
-- [ ] 按把手 / 标题区向下拖、点遮罩、点「关闭」、返回键：四条都还能关。
+- [ ] 一屏放得下的短列表（接口线路 6 条）上同样滑不动面板；
+- [ ] 在**把手**上向下拖、松手：面板滑下去关掉；
+- [ ] 点遮罩、点「关闭」、返回键：都还能关。
