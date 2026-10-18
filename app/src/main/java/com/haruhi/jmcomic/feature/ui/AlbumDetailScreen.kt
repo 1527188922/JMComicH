@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -20,8 +21,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -39,6 +42,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,27 +65,36 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
+import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.storage.FileNaming
+import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.ExportFormat
 import com.haruhi.jmcomic.ui.theme.DownloadIcon
@@ -89,6 +102,7 @@ import com.haruhi.jmcomic.ui.theme.EyeIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import com.haruhi.jmcomic.ui.theme.WarningOrangeDark
 import com.haruhi.jmcomic.ui.theme.WarningOrangeLight
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** 简介收起时显示的行数。 */
 private const val DESCRIPTION_COLLAPSED_LINES = 3
@@ -140,6 +154,16 @@ private val ExpandedChapterGroupsSaver = listSaver<Set<Int>, Int>(
  * 下载入口是更多菜单里的第一项「下载漫画」，点开面板选章节；面板里**已经在下载队列中的章节**
  * 用次要颜色标出来并且点不动，避免重复提交。章节行与章节区标题上都不再放下拉/按钮
  * （用户本轮要求：原先占着封面下方那颗「下载」按钮的位置让给入库按钮）。
+ *
+ * ## 简介下方两个 tab（用户要求）
+ *
+ * 头部（封面 / 按钮 / 简介）之后是**吸顶**的 `章节 | 评论` 两个 tab：
+ * - 章节 tab 装原有的全部内容（导出文件、章节进度与正序/倒序、每 10 话一组的分组列表）；
+ * - 评论 tab 装 `/forum` 的分页评论，滑到底自动追加下一页（每页 10 条）；
+ *   评论**只存在内存里**（按 jm 号缓存，退出 App 清空），下拉刷新只刷当前 tab 的数据。
+ *
+ * 整页仍然只有一个 `LazyColumn`（头部要跟着滚走），所以滚动状态提到本函数，
+ * 用来做"切 tab 时把 tab 栏滚到顶部"和"评论滑到底追加"两件事。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -158,6 +182,14 @@ fun AlbumDetailScreen(
     onReadChapter: (Long) -> Unit,
     /** 头部「阅读」按钮：**从第一章开始读**（用户要求第 4 点）。 */
     onReadFromStart: () -> Unit,
+    /** 简介下方两个 tab 的切换（用户要求）。 */
+    onSelectTab: (AlbumDetailTab) -> Unit,
+    /** 评论 tab 的下拉刷新：丢掉内存缓存、重取第一页。 */
+    onRefreshComments: () -> Unit,
+    /** 评论列表滑到底：追加下一页。 */
+    onLoadMoreComments: () -> Unit,
+    /** 评论加载失败后的「重试」。 */
+    onRetryComments: () -> Unit,
     /** 下载面板提交（选中的章节 id）。 */
     onDownloadChapters: (List<Long>) -> Unit,
     onDeleteChapterFiles: (Long) -> Unit,
@@ -216,6 +248,53 @@ fun AlbumDetailScreen(
 
     // 一次性提示统一走 MessageEffect：先消费、再交给根部弹（切页不会重放）
     MessageEffect(state.message, onConsume = onConsumeMessage, onShow = onMessage)
+
+    // 整页只有一个 LazyColumn（头部 → tab 栏 → 当前 tab 的内容），滚动状态提到这里，
+    // 两个用途：切 tab 时把 tab 栏滚到顶部、评论 tab 滑到底时追加下一页。
+    val listState = rememberLazyListState()
+    val latestState by rememberUpdatedState(state)
+
+    // 切 tab 时的落点（用户要求"交互符合直觉"）：
+    // 章节有几十话、评论有几百条，两段长度完全不同。如果用户已经滑到章节中部再切到评论，
+    // 保留原来的滚动深度会直接落到评论列表的末尾（还可能顺手触发一次追加加载），
+    // 完全找不到自己在哪。所以只要**已经滑过 tab 栏**，就把 tab 栏滚到顶部——
+    // 换完 tab 第一眼看到的就是新内容的开头。
+    //
+    // 反过来，用户还停在头部（tab 栏就在屏幕里）时**什么都不做**：那时跳一下反而突兀。
+    // 索引 1 是头部，`refreshing` 时头部下面多一条进度条，tab 栏就退到 2。
+    LaunchedEffect(state.tab) {
+        if (state.album == null) return@LaunchedEffect
+        val tabsIndex = if (state.refreshing) 2 else 1
+        if (listState.firstVisibleItemIndex > tabsIndex) {
+            listState.scrollToItem(tabsIndex)
+        }
+    }
+
+    // 评论「下滑追加」：最后几条进入可视区就请求下一页。
+    //
+    // 两个坑（都踩过，见 Screens.kt 的搜索结果页）：
+    // 1. 不能用 `derivedStateOf { layoutInfo... }`——读到的是过期快照，
+    //    表现为"必须先滑回顶部再滑下来才加载"；
+    // 2. `LaunchedEffect` 的 key 不能带"当前条数"——每次追加都会重启这个 effect，
+    //    正在进行的滚动检测被打断，于是永远停在某一批。
+    // 所以 key 固定，判定条件通过 rememberUpdatedState 读实时值。
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount
+        }
+            .distinctUntilChanged()
+            .collect { (lastVisibleIndex, totalItems) ->
+                val s = latestState
+                if (s.tab != AlbumDetailTab.COMMENTS) return@collect
+                if (!s.commentsLoaded || s.commentsReachedEnd) return@collect
+                // 已经有请求在飞、或者上一次失败了（等用户点重试），都不再自动追加
+                if (s.commentsLoading || s.commentsLoadingMore || s.commentsError != null) return@collect
+                if (totalItems > 0 && lastVisibleIndex >= totalItems - COMMENT_LOAD_AHEAD) {
+                    onLoadMoreComments()
+                }
+            }
+    }
 
     Scaffold(
         modifier = modifier,
@@ -312,9 +391,26 @@ fun AlbumDetailScreen(
         // `loading` 与 `refreshing` 是**同时为 true** 的（见 loadFromNetwork），
         // 直接把 refreshing 交给它，屏幕上会同时出现"居中的加载圈"和"顶部下拉圈"
         // 两个 loading（用户报的 bug）。有内容时两者互斥，才轮到下拉圈出场。
+        //
+        // 评论 tab 下拉刷的是**评论**（不是详情）：在评论列表上下拉却去刷新简介/点赞数
+        // 会让人莫名其妙。列表还空着的时候不显示下拉圈——那时整块是居中的加载圈，
+        // 两个圈同时转就是重复。
         PullToRefreshBox(
-            isRefreshing = state.refreshing && !state.loading,
-            onRefresh = { if (!state.refreshing && !state.loading) onRefresh() },
+            isRefreshing = when {
+                state.tab == AlbumDetailTab.COMMENTS ->
+                    state.commentsLoading && state.comments.isNotEmpty()
+
+                else -> state.refreshing && !state.loading
+            },
+            onRefresh = {
+                when {
+                    state.tab == AlbumDetailTab.COMMENTS -> {
+                        if (!state.commentsLoading && !state.commentsLoadingMore) onRefreshComments()
+                    }
+
+                    !state.refreshing && !state.loading -> onRefresh()
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -336,10 +432,11 @@ fun AlbumDetailScreen(
                     }
                 }
                 else -> LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(bottom = 24.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    item {
+                    item(key = DETAIL_KEY_HEADER) {
                         AlbumHeader(
                             state = state,
                             onAddToLibrary = onAddToLibrary,
@@ -353,86 +450,64 @@ fun AlbumDetailScreen(
                         )
                     }
                     if (state.refreshing) {
-                        item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
-                    }
-                    // 已经导出过的 zip/pdf：放在章节前面——它属于"这本在我设备上有什么"，
-                    // 与章节区标题里的占用体积是同一类信息，不该被长长的章节列表压到最下面
-                    // （用户第九轮要求第 2 点）。正在导出的也算（用户第十一轮要求第 3 点）。
-                    if (state.exports.isNotEmpty() || state.activeExports.isNotEmpty()) {
-                        item {
-                            ExportSection(
-                                exports = state.exports,
-                                active = state.activeExports,
-                                canOpenFolder = state.canOpenFolder,
-                                onOpen = onOpenOutput,
-                                onSend = onSendOutput,
-                                onDelete = { name -> pendingDeleteExport = name },
-                                onOpenFolder = onOpenFolder,
-                            )
+                        item(key = DETAIL_KEY_REFRESH_BAR) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
                     }
-                    // 离线 / 刷新失败**不再挂横幅**（用户本轮要求第 1 点）：
-                    // 失败原因由 ViewModel 走 `message` 弹一句提示，用户想重试自己下拉释放一次。
-                    // 页面上的章节列表本来就不受刷新失败影响（本地优先，计划 §9 第 7 条），
-                    // 横幅只是把这块地方永久占住了。
-                    item {
-                        ChapterSectionHeader(
-                            total = state.totalChapters,
-                            downloaded = state.downloadedChapters,
-                            localSizeBytes = state.localSizeBytes,
-                            reversed = state.reversed,
-                            onToggleReversed = onToggleReversed,
+                    // 简介下方那两个 tab（用户要求）：**吸顶**。
+                    // 章节几十话、评论几百条，滚起来之后 tab 栏一直贴在顶栏下面，
+                    // 用户随时知道自己看的是哪一段，也能一键换过去。
+                    stickyHeader(key = DETAIL_KEY_TABS) {
+                        AlbumDetailTabRow(
+                            selected = state.tab,
+                            chapterCount = state.totalChapters,
+                            commentCount = state.commentTabCount,
+                            onSelect = onSelectTab,
                         )
                     }
-                    if (state.chapters.isEmpty()) {
-                        item {
-                            EmptyBox(
-                                title = "还没有章节数据",
-                                hint = "下拉刷新试试",
-                                modifier = Modifier.height(160.dp),
-                            )
-                        }
-                    } else if (state.chapters.size <= CHAPTER_GROUP_SIZE) {
-                        // 一屏就放得下（≤ 10 话）：不分组，直接平铺。
-                        // 只有一个分组、而且它永远是展开的，组头就是白占一行。
-                        items(state.chapters, key = { it.chapterId }) { chapter ->
-                            ChapterRowItem(
-                                chapter = chapter,
-                                onOpen = { onReadChapter(chapter.chapterId) },
-                                onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
-                                onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
-                            )
-                        }
-                    } else {
-                        // 每 CHAPTER_GROUP_SIZE 话一组：组头一行 +（展开时）组内的章节行。
-                        // 先分组再往 LazyColumn 里塞，所以一组展开与否完全由 expandedChapterGroups
-                        // 决定——折叠的组只是"没往列表里加行"，不会为它多做一份测量。
-                        val groups = state.chapters.chunked(CHAPTER_GROUP_SIZE)
-                        groups.forEachIndexed { groupIndex, group ->
-                            // 组与组之间压一条分割：章节行是一张张长得几乎一样的卡片，
-                            // 上一组的最后一话和下一组的组头只隔 6dp 时，整片会糊成一块，
-                            // 连着往下读很累。给足行距再补一条细线，视线才有落点。
-                            if (groupIndex > 0) {
-                                item(key = chapterGroupSeparatorKey(groupIndex)) {
-                                    ChapterGroupSeparator()
+                    when (state.tab) {
+                        AlbumDetailTab.CHAPTERS -> {
+                            // 已经导出过的 zip/pdf：放在章节前面——它属于"这本在我设备上有什么"，
+                            // 与章节区标题里的占用体积是同一类信息，不该被长长的章节列表压到最下面
+                            // （用户第九轮要求第 2 点）。正在导出的也算（用户第十一轮要求第 3 点）。
+                            if (state.exports.isNotEmpty() || state.activeExports.isNotEmpty()) {
+                                item(key = DETAIL_KEY_EXPORTS) {
+                                    ExportSection(
+                                        exports = state.exports,
+                                        active = state.activeExports,
+                                        canOpenFolder = state.canOpenFolder,
+                                        onOpen = onOpenOutput,
+                                        onSend = onSendOutput,
+                                        onDelete = { name -> pendingDeleteExport = name },
+                                        onOpenFolder = onOpenFolder,
+                                    )
                                 }
                             }
-                            val expanded = groupIndex in expandedChapterGroups
-                            item(key = chapterGroupKey(groupIndex)) {
-                                ChapterGroupHeader(
-                                    chapters = group,
-                                    expanded = expanded,
-                                    onToggle = {
-                                        expandedChapterGroups = if (expanded) {
-                                            expandedChapterGroups - groupIndex
-                                        } else {
-                                            expandedChapterGroups + groupIndex
-                                        }
-                                    },
+                            // 离线 / 刷新失败**不再挂横幅**（用户本轮要求第 1 点）：
+                            // 失败原因由 ViewModel 走 `message` 弹一句提示，用户想重试自己下拉释放一次。
+                            // 页面上的章节列表本来就不受刷新失败影响（本地优先，计划 §9 第 7 条），
+                            // 横幅只是把这块地方永久占住了。
+                            item(key = DETAIL_KEY_CHAPTER_HEADER) {
+                                ChapterSectionHeader(
+                                    total = state.totalChapters,
+                                    downloaded = state.downloadedChapters,
+                                    localSizeBytes = state.localSizeBytes,
+                                    reversed = state.reversed,
+                                    onToggleReversed = onToggleReversed,
                                 )
                             }
-                            if (expanded) {
-                                items(group, key = { it.chapterId }) { chapter ->
+                            if (state.chapters.isEmpty()) {
+                                item(key = DETAIL_KEY_CHAPTER_EMPTY) {
+                                    EmptyBox(
+                                        title = "还没有章节数据",
+                                        hint = "下拉刷新试试",
+                                        modifier = Modifier.height(160.dp),
+                                    )
+                                }
+                            } else if (state.chapters.size <= CHAPTER_GROUP_SIZE) {
+                                // 一屏就放得下（≤ 10 话）：不分组，直接平铺。
+                                // 只有一个分组、而且它永远是展开的，组头就是白占一行。
+                                items(state.chapters, key = { it.chapterId }) { chapter ->
                                     ChapterRowItem(
                                         chapter = chapter,
                                         onOpen = { onReadChapter(chapter.chapterId) },
@@ -440,8 +515,55 @@ fun AlbumDetailScreen(
                                         onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
                                     )
                                 }
+                            } else {
+                                // 每 CHAPTER_GROUP_SIZE 话一组：组头一行 +（展开时）组内的章节行。
+                                // 先分组再往 LazyColumn 里塞，所以一组展开与否完全由 expandedChapterGroups
+                                // 决定——折叠的组只是"没往列表里加行"，不会为它多做一份测量。
+                                val groups = state.chapters.chunked(CHAPTER_GROUP_SIZE)
+                                groups.forEachIndexed { groupIndex, group ->
+                                    // 组与组之间压一条分割：章节行是一张张长得几乎一样的卡片，
+                                    // 上一组的最后一话和下一组的组头只隔 6dp 时，整片会糊成一块，
+                                    // 连着往下读很累。给足行距再补一条细线，视线才有落点。
+                                    if (groupIndex > 0) {
+                                        item(key = chapterGroupSeparatorKey(groupIndex)) {
+                                            ChapterGroupSeparator()
+                                        }
+                                    }
+                                    val expanded = groupIndex in expandedChapterGroups
+                                    item(key = chapterGroupKey(groupIndex)) {
+                                        ChapterGroupHeader(
+                                            chapters = group,
+                                            expanded = expanded,
+                                            onToggle = {
+                                                expandedChapterGroups = if (expanded) {
+                                                    expandedChapterGroups - groupIndex
+                                                } else {
+                                                    expandedChapterGroups + groupIndex
+                                                }
+                                            },
+                                        )
+                                    }
+                                    if (expanded) {
+                                        items(group, key = { it.chapterId }) { chapter ->
+                                            ChapterRowItem(
+                                                chapter = chapter,
+                                                onOpen = { onReadChapter(chapter.chapterId) },
+                                                onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
+                                                onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
+
+                        // 评论：列表滑到底自动追加下一页（见上面的 snapshotFlow），
+                        // 底部再留一个"加载更多"当兜底。
+                        AlbumDetailTab.COMMENTS -> commentTabItems(
+                            state = state,
+                            onLoadMore = onLoadMoreComments,
+                            onRetry = onRetryComments,
+                        )
                     }
                 }
             }
@@ -565,6 +687,485 @@ fun AlbumDetailScreen(
             onWithoutPassword = onExportWithoutPassword,
             onDismiss = onCancelExport,
         )
+    }
+}
+
+// ======================================================================
+// 简介下方的两个 tab（章节 / 评论）
+// ======================================================================
+
+/**
+ * 详情页 LazyColumn 里那几个"固定行"的 key。
+ *
+ * 提成常量是因为它们和章节行的 `chapterId`（Long）、分组 key（`chapter_group_N`）
+ * 混在同一个列表里：手写字符串迟早会撞，撞了之后 LazyColumn 的表现是
+ * "滚动位置乱跳"而且不会报错（同 `chapterGroupKey` 的注释）。
+ */
+private const val DETAIL_KEY_HEADER = "detail_header"
+private const val DETAIL_KEY_REFRESH_BAR = "detail_refresh_bar"
+private const val DETAIL_KEY_TABS = "detail_tabs"
+private const val DETAIL_KEY_EXPORTS = "detail_exports"
+private const val DETAIL_KEY_CHAPTER_HEADER = "detail_chapter_header"
+private const val DETAIL_KEY_CHAPTER_EMPTY = "detail_chapter_empty"
+
+/** 评论列表距离底部还剩几条时就追加下一页（留几条做缓冲，滚到底之前就开始拉）。 */
+private const val COMMENT_LOAD_AHEAD = 3
+
+/** 一条评论默认最多显示几条内嵌回复，多出来的折起来。 */
+private const val COMMENT_REPLY_PREVIEW = 3
+
+/**
+ * 简介下方那两个 tab（用户要求）：`章节` / `评论`。
+ *
+ * 视觉语言沿用详情页那套"白底 + 细分割线 + 主色调选中"：
+ * - **两段等宽、整块可点**（不用瞄准文字），符合"点 tab 换内容"的直觉；
+ * - 选中：主色调 + 加粗 + 下方一颗圆角短横（吸顶滚动时也能一眼看出在哪一段）；
+ * - 未选中：次要色；
+ * - 数字跟在标签后面（`章节 25` / `评论 851`），**0 或未知时不写**——
+ *   "章节 0"这种数字只会让人以为加载失败了。
+ */
+@Composable
+private fun AlbumDetailTabRow(
+    selected: AlbumDetailTab,
+    chapterCount: Int,
+    commentCount: Int,
+    onSelect: (AlbumDetailTab) -> Unit,
+) {
+    // 吸顶栏必须自己铺底色：不然下面滚上来的内容会从字缝里透过去
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            AlbumDetailTabItem(
+                tab = AlbumDetailTab.CHAPTERS,
+                count = chapterCount,
+                selected = selected == AlbumDetailTab.CHAPTERS,
+                onSelect = { onSelect(AlbumDetailTab.CHAPTERS) },
+                modifier = Modifier.weight(1f),
+            )
+            AlbumDetailTabItem(
+                tab = AlbumDetailTab.COMMENTS,
+                count = commentCount,
+                selected = selected == AlbumDetailTab.COMMENTS,
+                onSelect = { onSelect(AlbumDetailTab.COMMENTS) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@Composable
+private fun AlbumDetailTabItem(
+    tab: AlbumDetailTab,
+    count: Int,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val idle = MaterialTheme.colorScheme.onSurfaceVariant
+    val color = if (selected) accent else idle
+    // 选中态做一个短过渡：直接跳色在吸顶栏上会显得"闪了一下"
+    val animatedColor by animateColorAsState(targetValue = color, label = "detailTabColor")
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .clickable(onClickLabel = "切换到${tab.label}", onClick = onSelect)
+            .padding(top = 12.dp, bottom = 8.dp),
+    ) {
+        Text(
+            // 标签 + 数字放进同一个 Text：数字用半透明色跟着标签走，
+            // 拆成两个 Text 的话基线对不齐、长标签还会把数字挤到第二行
+            text = buildAnnotatedString {
+                append(tab.label)
+                if (count > 0) {
+                    withStyle(SpanStyle(color = animatedColor.copy(alpha = 0.6f))) {
+                        append("  ")
+                        append(count.toString())
+                    }
+                }
+            },
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = animatedColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(6.dp))
+        // 选中的那颗短横：始终占位（透明），所以切换时标签不会上下抖一下
+        Box(
+            modifier = Modifier
+                .width(20.dp)
+                .height(3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(if (selected) accent else Color.Transparent),
+        )
+    }
+}
+
+/**
+ * 评论 tab 的列表内容（在详情页那个 LazyColumn 里追加）。
+ *
+ * 四态：整块加载圈 / 整块失败（带重试）/ 空态 / 有内容 + 底部状态行。
+ * **失败时绝不清空已经拿到的评论**：用户滑了几十屏，下一页超时不该把整片抹掉
+ * （ViewModel 那边就是这么处理的，这里只按"列表空不空"分两支画）。
+ */
+private fun LazyListScope.commentTabItems(
+    state: AlbumDetailUiState,
+    onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    if (state.comments.isEmpty()) {
+        item(key = "comments_placeholder") {
+            when {
+                // 先判错误：下拉刷新失败时不该被"加载圈"盖掉原因
+                state.commentsError != null -> CommentPlaceholder(
+                    title = "评论加载失败",
+                    hint = state.commentsError,
+                    actionText = "重试",
+                    onAction = onRetry,
+                )
+
+                // `!commentsLoaded` 也要显示加载圈：刚切到这一个 tab 的那一帧里
+                // 请求还没真正发出去，不加这一条会先闪一下"还没有评论"
+                state.commentsLoading || !state.commentsLoaded -> Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+
+                else -> CommentPlaceholder(
+                    title = "还没有评论",
+                    hint = "这本还没有人留言，过段时间再来看看",
+                )
+            }
+        }
+        return
+    }
+
+    items(state.comments, key = { "comment_${it.cid}" }) { comment ->
+        CommentItem(comment)
+    }
+
+    item(key = "comments_footer") {
+        CommentFooter(
+            loadingMore = state.commentsLoadingMore,
+            error = state.commentsError,
+            reachedEnd = state.commentsReachedEnd,
+            onLoadMore = onLoadMore,
+            onRetry = onRetry,
+        )
+    }
+}
+
+/** 评论 tab 的空态 / 失败态（列表里的一块，不是整屏）。 */
+@Composable
+private fun CommentPlaceholder(
+    title: String,
+    hint: String? = null,
+    actionText: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(220.dp)
+            .padding(horizontal = 24.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        hint?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (actionText != null && onAction != null) {
+            Spacer(Modifier.height(10.dp))
+            TextButton(onClick = onAction) { Text(actionText) }
+        }
+    }
+}
+
+/**
+ * 评论列表底部那一行：正在追加 / 追加失败 / 到底了 / 兜底的「加载更多」。
+ *
+ * 正常情况下用户滑到底就会自动追加（见 `AlbumDetailScreen` 里的 snapshotFlow），
+ * 所以「加载更多」几乎看不到；留着是为了"自动追加失灵"时不至于只能靠下拉刷新。
+ */
+@Composable
+private fun CommentFooter(
+    loadingMore: Boolean,
+    error: String?,
+    reachedEnd: Boolean,
+    onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            loadingMore -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "正在加载评论…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            error != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                TextButton(onClick = onRetry) { Text("重试") }
+            }
+
+            reachedEnd -> Text(
+                text = "没有更多评论了",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            else -> TextButton(onClick = onLoadMore) { Text("加载更多评论") }
+        }
+    }
+}
+
+/**
+ * 一条评论。
+ *
+ * 布局是"头像 + 右侧一列"：昵称（+ 等级徽标）→ 时间 → 正文 → 内嵌回复 → 点赞数。
+ * 信息密度按"先看人、再看说了什么、最后看有多少人认同"排，与常见的评论区一致。
+ *
+ * 用**普通行 + 内缩分割线**而不是卡片：几百条评论铺成几百张卡片会非常吵，
+ * 而这一屏本来就是"一条接一条往下读"的列表（章节列表用卡片是因为每一话都是独立动作）。
+ */
+@Composable
+private fun CommentItem(comment: CommentRow) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row {
+            CommentAvatar(comment = comment, modifier = Modifier.size(36.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = comment.author,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    comment.levelName?.let { level ->
+                        Spacer(Modifier.width(6.dp))
+                        CommentLevelBadge(level)
+                    }
+                }
+                comment.timeLabel?.let { time ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = time,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (comment.text.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    // 正文可长按选中复制（评论里常有"求车牌"之类的文字，用户会想复制）
+                    SelectionContainer {
+                        Text(
+                            text = comment.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            lineHeight = 20.sp,
+                        )
+                    }
+                }
+                if (comment.replies.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    CommentReplies(comment.replies)
+                }
+                comment.likes?.let { likes ->
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Favorite,
+                            contentDescription = "点赞数",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(12.dp),
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            text = likes,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    // 分割线从头像右侧开始：看起来才像"同一条评论的延续"
+    HorizontalDivider(
+        color = MaterialTheme.colorScheme.outlineVariant,
+        modifier = Modifier.padding(start = 58.dp, end = 12.dp),
+    )
+}
+
+/** 等级徽标（`搖曳的金星` 这种）：小圆角底 + 一行小字，不抢正文的注意力。 */
+@Composable
+private fun CommentLevelBadge(level: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    ) {
+        Text(
+            text = level,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * 评论者头像：圆形，**图片没加载出来时显示昵称首字**。
+ *
+ * 为什么不用 `Cover`：`Cover` 是"JM 封面"的唯一入口（`docs/CONVENTIONS.md` 第 1 条），
+ * 它按**本子号**拼 `/media/albums/{aid}.jpg` 并固定内存缓存 key；头像要的是
+ * `/media/users/{photo}`，两者不是一回事。这里用同一个**应用级 ImageLoader**
+ * （带正确 UA / 代理、缓存也落在同一处），所以不会出现"单例加载器 + 另一份缓存"的老问题。
+ */
+@Composable
+private fun CommentAvatar(comment: CommentRow, modifier: Modifier = Modifier) {
+    val imageLoader = currentImageLoader()
+    val url = remember(comment.avatar) { comment.avatar?.let { Defaults.buildAvatarUrl(it) } }
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        // 首字垫在下面：加载中 / 加载失败 / 没有头像时，它就是头像本身
+        Text(
+            text = comment.initial,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        if (url != null) {
+            val imageModifier = Modifier.matchParentSize()
+            if (imageLoader != null) {
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    imageLoader = imageLoader,
+                    modifier = imageModifier,
+                )
+            } else {
+                // Preview / 测试没装应用级加载器时退回 Coil 的单例（同 `Cover`）
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = imageModifier,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 内嵌回复。
+ *
+ * 接口把回复一起塞在每条主楼的 `replys` 里（`docs/official-api-2.1.11.md` 没写这一点，
+ * 是实测出来的），所以展开/收起纯本地，**不额外发请求**。
+ * 默认只铺 [COMMENT_REPLY_PREVIEW] 条：有些楼能有十几条回复，全铺出来会把下一条评论顶走。
+ */
+@Composable
+private fun CommentReplies(replies: List<CommentRow>) {
+    var expanded by remember(replies) { mutableStateOf(false) }
+    val folded = !expanded && replies.size > COMMENT_REPLY_PREVIEW
+    val visible = if (folded) replies.take(COMMENT_REPLY_PREVIEW) else replies
+    val hidden = replies.size - visible.size
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            // 与「导出文件」卡片同一种"次级面板"底色（全局 token，见 ExtendedColors）
+            .background(JmTheme.colors.pressedCardContainer)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        visible.forEachIndexed { index, reply ->
+            if (index > 0) Spacer(Modifier.height(6.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = reply.author,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    reply.timeLabel?.let { time ->
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (reply.text.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    SelectionContainer {
+                        Text(
+                            text = reply.text,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+        if (hidden > 0) {
+            Text(
+                text = "展开另外 $hidden 条回复",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .clickable(onClickLabel = "展开回复") { expanded = true },
+            )
+        }
     }
 }
 

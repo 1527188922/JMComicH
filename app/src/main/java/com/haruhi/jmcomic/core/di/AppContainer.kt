@@ -166,6 +166,17 @@ class AppContainer(private val appContext: Context) {
         )
     }
 
+    /**
+     * 详情页评论的**内存缓存**（按 jm 号区分，用户要求）。
+     *
+     * 放在容器里而不是 ViewModel 里：详情页退出再进来会换一个 ViewModel，
+     * 缓存挂在容器上才能跨"进出页面"存活；而容器跟着进程走，所以退出 App 自然清空，
+     * [handleAppExit] 里还会再显式清一次（进程留在后台的情况）。
+     */
+    val jmCommentCache: com.haruhi.jmcomic.feature.data.CommentCache by lazy {
+        com.haruhi.jmcomic.feature.data.CommentCache()
+    }
+
     // ---------------- JM ----------------
 
     /**
@@ -311,6 +322,10 @@ class AppContainer(private val appContext: Context) {
                 .onFailure { Timber.tag("app").w(it, "退出时清理导出任务失败") }
             runCatching { jmDownloads.pauseAllForExit() }
                 .onFailure { Timber.tag("app").w(it, "退出时暂停下载任务失败") }
+            // 评论缓存是"退出 App 即清空"的（用户要求）：正常退出时顺手清掉，
+            // 免得进程还留在后台（下载/导出把进程续着）再被点开时又看到上次的评论。
+            runCatching { jmCommentCache.clearAll() }
+                .onFailure { Timber.tag("app").w(it, "退出时清理评论缓存失败") }
             com.haruhi.jmcomic.core.download.DownloadForegroundService.stop(appContext)
         }
     }

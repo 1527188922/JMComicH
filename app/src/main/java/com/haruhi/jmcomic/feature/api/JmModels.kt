@@ -128,3 +128,60 @@ data class CategoryDto(
     @SerialName("id") val id: String? = null,
     @SerialName("title") val title: String? = null,
 )
+
+// ----------------------------------------------------------------------
+// 评论（`/forum`）
+// ----------------------------------------------------------------------
+
+/**
+ * 评论列表（`/forum?mode=all&page=N&aid=JM号` 的 `data` 解密后的 JSON）。
+ *
+ * 实测（2026-10，aid=114514）：`total` 被服务端截断到 5000，每页固定 10 条，
+ * 匿名可读（不需要登录态）。字段类型也是**实测**的，与官方逆向文档 §6.3 有两处不同：
+ *
+ * | 文档 | 实际响应 |
+ * |---|---|
+ * | `likes: 0`（数字） | `"likes": "0"`（字符串） |
+ * | `spoiler: false`（布尔） | `"spoiler": "1"`（字符串，且同一本**每条都是 "1"**） |
+ *
+ * 所以 `likes` 这里声明成 `String?`；`spoiler` **故意不声明**（`ignoreUnknownKeys`
+ * 会跳过它）：实测拿它无法区分剧透与否，声明成 `String` 反而会因将来类型变化整页解析失败。
+ */
+@Serializable
+data class ForumRespDto(
+    @SerialName("total") val total: String? = null,
+    @SerialName("list") val list: List<ForumItemDto>? = null,
+)
+
+/**
+ * 一条评论。
+ *
+ * `replys` 是**内嵌的回复列表**（文档里没写，实测存在）：每页 10 条主楼里带着各自的回复，
+ * 不用再按 `parent_CID` 单独请求。回复项的结构与主楼相同（只是没有再嵌一层）。
+ */
+@Serializable
+data class ForumItemDto(
+    @SerialName("CID") val cid: String? = null,
+    @SerialName("UID") val uid: String? = null,
+    @SerialName("username") val username: String? = null,
+    @SerialName("nickname") val nickname: String? = null,
+    /** 正文是 HTML 片段（`<div>` 包裹，可能含 `<img>` 表情），展示前必须清洗。 */
+    @SerialName("content") val content: String? = null,
+    /** 头像文件名，拼 `{img_host}/media/users/{photo}`；没有头像时是 `nopic-*.gif`。 */
+    @SerialName("photo") val photo: String? = null,
+    @SerialName("likes") val likes: String? = null,
+    @SerialName("gender") val gender: String? = null,
+    /** 展示用时间串，实测形如 `Oct 11, 2026`。 */
+    @SerialName("addtime") val addTime: String? = null,
+    /** 父评论 id；主楼为空或 `"0"`。 */
+    @SerialName("parent_CID") val parentCid: String? = null,
+    @SerialName("expinfo") val expInfo: ForumExpDto? = null,
+    @SerialName("replys") val replies: List<ForumItemDto>? = null,
+)
+
+/** 评论者的等级 / 徽章信息（只取展示用得上的两项）。 */
+@Serializable
+data class ForumExpDto(
+    @SerialName("level") val level: Int? = null,
+    @SerialName("level_name") val levelName: String? = null,
+)

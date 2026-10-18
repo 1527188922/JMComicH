@@ -480,6 +480,110 @@ app/src/main/java/com/haruhi/jmcomic/
 不画滚动条、也不把内容变成可滚动容器（它只负责手势隔离 + 把手 + 上面那层兜底滚动）。
 
 
+## 功能：详情页「评论」tab（2026-10-19）
+
+用户要求（原话要点）：**只做查看评论，不做发送**；在详情页**简介区域的下方**放两个 tab
+——「章节」（现有的章节列表 / 章节分组全部收进去）和「评论」；评论 tab **下滑可以追加**
+新加载的评论；评论**按 jm 号存在内存里，退出 App 清空**；交互要符合直觉、UI 符合当前 App 风格。
+
+### 1. 接口（本机实测，aid=114514）
+
+| 项 | 结论 |
+|---|---|
+| 地址 | `GET /forum?mode=all&page=N&aid={jm号}` |
+| 签名 / 解密 | 与本工程现有那一套**完全通用**：`Token = md5(ts+"18comicAPP")`、`Tokenparam = "{ts},2.0.13"`、响应 `data` 用 `md5(ts+"185Hcomic3PAPP7R")` 解。**不用换协议** |
+| 分页 | `page` 从 1 开始，每页固定 **10** 条 |
+| 总数 | 实测 `total = "851"`（字符串），与 `/album` 的 `comment_total` 一致；服务端上限 5000 |
+| 登录 | **匿名可读**，不带 `Authorization` 也返回 200，与本工程"不做 JM 账号"一致 |
+| 正文 | **HTML 片段**（`<div style='flex-direction:row;flex-wrap:wrap;'>…</div>`，可能夹 `<img>` 表情） |
+| 回复 | 主楼自带 `replys` 数组（**逆向文档 §6.3 没写这一条**，是实测出来的）；展开/收起纯本地，不再发请求 |
+| 时间 | `addtime` 是英文月日年（`Oct 11, 2026`），与本工程请求不带 `lang` 有关 |
+| 字段类型 | 与文档 §6.3 有两处不符：`likes` 是**字符串** `"0"`（文档写数字）、`spoiler` 是**字符串** `"1"`（文档写布尔），且同一本**每条都是 "1"** —— 拿它折叠剧透会把整页评论全藏起来，所以**不实现剧透折叠**，字段也不声明 |
+
+探测方式：本机用 node 脚本按同一套签名/解密直接打接口（`www.cdnbea.net` 首次偶发超时，重试即通；
+`www.cdngwc.cc` / `www.cdngwc.club` / `www.cdnutc.me` 一次通过）。脚本是临时的，没有入库。
+
+### 2. 做了什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 简介下方 | 直接接「导出文件」+ 章节区标题 + 章节列表 | **两个 tab**：`章节`（数字=总话数）/ `评论`（数字=评论总数）；**吸顶**，滚起来之后一直贴在顶栏下面 |
+| 章节相关内容 | 全部平铺在页面上 | 全部收进**章节 tab**（导出文件 → 章节进度 + 正序/倒序 → 分组列表） |
+| 评论 | 无 | 列表：头像 + 昵称 + 等级徽标 → 时间 → 正文 → 内嵌回复（默认 3 条，多的可展开）→ 点赞数 |
+| 下滑追加 | — | 最后 3 条进入可视区就自动请求下一页（每页 10 条），底部还有「加载更多」兜底 |
+| 评论缓存 | — | `CommentCache`（按 jm 号一份快照，只存内存）；退出页面再进来**不再请求**，退出 App 清空 |
+| 下拉刷新 | 只刷详情 | **按 tab 分流**：章节 tab 刷详情；评论 tab 刷评论第一页（刷新成功后覆盖缓存基准，失败不动旧数据） |
+| 失败 | — | 第一页失败给整块错误态 + 重试；追加失败**不清空已有评论**，底部一行错误 + 重试 |
+| 切 tab 的滚动落点 | — | 已经滑过 tab 栏的话，把 tab 栏滚到顶部；还停在头部则不动（详见 §3） |
+
+### 3. 关键取舍（都是"为什么这么做"的记录）
+
+1. **一个 LazyColumn 装两段内容，而不是两套列表**：头部（封面 / 按钮 / 简介）必须先跟着滚走，
+   所以整页仍然只有一个 LazyColumn，tab 栏用 `stickyHeader` 吸顶。
+   Material3 里 `stickyHeader` 已经是 `LazyListScope` 的**接口成员**（1.10.4 实测），
+   **不需要 import**——写成扩展函数导入会 "Unresolved reference"（踩过）。
+2. **懒加载**：进详情页**不**请求评论，第一次点到「评论」tab 才拉第一页。
+   大多数人进详情页是来读的，不该为一次"可能会看"的评论多打一次网络请求。
+3. **缓存挂在 `AppContainer`（`jmCommentCache`）而不是 ViewModel**：详情页退出再进来会换一个
+   ViewModel，缓存挂在容器上才能跨"进出页面"存活；容器跟进程走，退出 App 自然清空，
+   `handleAppExit()` 里再显式 `clearAll()` 一次（返回键退出时进程可能还被下载续着）。
+4. **正文必须清洗**（`cleanCommentHtml`）：`<img alt="笑哭">` 取 alt 文字（整条丢掉会让句子断掉）、
+   `<br>` / `</div>` 变真换行、其余标签剥掉、HTML 实体还原、连续空行压成一个空行。
+5. **按 `cid` 去重**（`mergeComments`）：翻页期间 `total` 会变，同一 `cid` 可能出现两次，
+   而列表拿 `cid` 当 key —— 重复 key 会让 LazyColumn 直接白屏崩溃。
+6. **切 tab 的滚动落点**：章节几十话、评论几百条，两段长度差很多。已经滑过 tab 栏时保留原
+   滚动深度，会直接落到评论列表末尾（还可能顺手触发一次追加）。所以"滑过 tab 栏 → 把 tab 栏
+   滚到顶部"；还停在头部时不动（那时跳一下反而突兀）。
+7. **头像不用 `Cover`**：`Cover` 是"JM 封面"的唯一入口（`CONVENTIONS.md` 第 1 条），按**本子号**拼
+   `/media/albums/{aid}.jpg`。头像要的是 `/media/users/{photo}`，所以直接 `AsyncImage` +
+   **同一个应用级 ImageLoader**（带正确 UA / 代理、缓存同一处），并垫一层"昵称首字"圆底：
+   图片没加载出来 / 加载失败时它就是头像本身（`CONVENTIONS.md` 的例外清单已补这一条）。
+8. **评论用普通行 + 内缩分割线，不用卡片**：几百条评论铺成几百张卡片会非常吵；
+   章节用卡片是因为每一话都是独立动作。
+
+### 4. 代码落点
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/JmModels.kt` | 新增 `ForumRespDto` / `ForumItemDto` / `ForumExpDto`（字段类型按**实测**写，并注明与文档的差异） |
+| `feature/api/ApiClient.kt` | 新增 `forum(aid, page, mode=all)`；重试次数沿用「漫画详情」那一项 |
+| `feature/data/Comments.kt`（新） | `CommentRow` / `CommentPage` / `cleanCommentHtml` / `commentTimeLabel` / `commentLikeCount` / `mergeComments` / `CommentCache` |
+| `feature/data/Repository.kt` | 新增 `comments(albumId, page)`：拉取 + 归一化（清洗正文 / 时间 / 点赞数 / 丢掉空 cid） |
+| `core/protocol/Defaults.kt` | 新增 `buildAvatarUrl(photo)`（`https://{img_host}/media/users/{photo}`） |
+| `core/di/AppContainer.kt` | 新增 `jmCommentCache`；`handleAppExit()` 里一并清空 |
+| `feature/ui/ViewModels.kt` | `AlbumDetailTab` 枚举；`AlbumDetailUiState` 新增 tab / 评论相关 7 个字段 + `commentTabCount`；`selectTab` / `loadMoreComments` / `refreshComments` / `retryComments` / `fetchComments` |
+| `feature/ui/AlbumDetailScreen.kt` | 简介下方两个吸顶 tab；章节内容整段进 tab；评论列表的三个部件（`CommentPlaceholder` / `CommentFooter` / `CommentItem` + 头像 / 等级 / 回复）；下滑追加的 `snapshotFlow`；下拉刷新按 tab 分流 |
+| `feature/ui/ModeRoot.kt` | 接线 4 个新回调 + 工厂里注入 `commentCache` |
+| `test/.../CommentLogicTest.kt`（新） | 20 个用例：HTML 清洗 / 时间文案 / 点赞数 / 合并去重 / 缓存隔离与清空 / 头像 URL / tab 计数 |
+
+### 5. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` ✅
+- `:app:testDebugUnitTest` —— **346 个用例，6 个失败**，全部是**既有失败**
+  （`AlbumCleanerTest` 3 个、`ReaderAndTaskLogicTest` 3 个，与改动前完全一致）；
+  新增的 `feature.data.CommentLogicTest` **20 个用例全绿**。
+- `:app:lintDebug` —— **0 error**（warning 全是既有项：`UnusedResources` / `ModifierParameter` /
+  `UseKtx` / `ObsoleteSdkInt` / `VisibleForTests` / `TrustAllX509TrustManager`）。
+- `:app:assembleDebug` ✅ —— `app/build/outputs/apk/debug/app-debug.apk`
+- **没有真机 / 模拟器**（`adb devices` 为空），所以界面观感与手势只能按下面的清单人工过一遍。
+
+### 6. 真机验收清单
+
+1. 进任意本子详情页 → 简介下方是 `章节 N | 评论 M` 两个 tab，**默认停在章节**，
+   章节列表、导出文件、正序/倒序都还在。
+2. 往上滑 → tab 栏**吸顶**贴在顶栏下面，不跟着滚走；章节分组照常展开/收起。
+3. 点「评论」→ 第一次才转圈拉取（约 10 条）；再点回「章节」→ 内容立刻回来。
+4. 评论列表往下滑 → **自动追加**，底部出现「正在加载评论…」，滚到 851 条为止显示「没有更多评论了」。
+   用 `aid=114514` 验证（实测 851 条）。
+5. 长评论有多条回复时：默认显示 3 条 + 「展开另外 N 条回复」，点开展开。
+6. 在评论 tab 下拉 → 顶部转圈，重新拉到**最新**的第一页（旧缓存被替换）。
+7. 返回上一页再点进同一本 → 评论 tab **立刻显示上次的列表**（不转圈、不请求）。
+8. 完全退出 App（返回键退出 / 划掉最近任务）再进来 → 评论重新拉取（内存缓存已清）；
+   换另一本本子 → 两本的评论互不影响。
+9. 断网进评论 tab → 整块"评论加载失败 + 重试"；恢复网络点「重试」能出来。
+   滑到第 3 页断网 → **已加载的评论还在**，底部一行错误 + 「重试」。
+10. 从章节中部直接点「评论」→ 页面把 tab 栏顶到顶部，第一眼是评论开头（不是列表末尾）。
+
 ## 阶段状态
 
 | 阶段 | 状态 | 说明 |

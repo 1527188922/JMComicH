@@ -51,6 +51,11 @@ Cover(
 
 - **阅读器的章节原图**是本地文件（`ImageStore` 负责落盘，`AsyncImage(page.file)` 渲染），
   不是封面，不适用本规范。
+- **评论者头像**（详情页「评论」tab）不是封面：地址是 `{img_host}/media/users/{photo}`，
+  按**文件名**取图，根本没有本子号可以传给 `Cover`。这种图直接 `AsyncImage` +
+  **同一个应用级 ImageLoader**（`currentImageLoader()`，带正确 UA / 代理、缓存同一处），
+  并且自己垫一层"昵称首字"的圆底占位（加载失败时它就是头像）。
+  **不要**为了头像去改 `Cover` 的 `memoryCacheKey` / 解码尺寸，也不要另建 ImageLoader。
 - **Preview / UI 测试**：`LocalImageLoader` 默认值为 `null`，此时 Coil 退回单例加载器，
   仅用于在没有完整容器的情况下把界面画出来。
 

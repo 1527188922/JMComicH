@@ -14,9 +14,12 @@ import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.FavoriteWriteResult
 import com.haruhi.jmcomic.feature.data.AlbumCleaner
+import com.haruhi.jmcomic.feature.data.CommentCache
+import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.DownloadManager
 import com.haruhi.jmcomic.feature.data.ExportFormat
 import com.haruhi.jmcomic.feature.data.ExportManager
+import com.haruhi.jmcomic.feature.data.mergeComments
 import com.haruhi.jmcomic.feature.data.ReadingRepository
 import com.haruhi.jmcomic.feature.data.Repository
 import com.haruhi.jmcomic.feature.data.OnlineSearchItem
@@ -1221,6 +1224,22 @@ data class ChapterRow(
         }
 }
 
+/**
+ * 简介下方那两个 tab（用户要求）。
+ *
+ * 章节相关的所有内容（导出文件、章节进度、分组列表）都在 [CHAPTERS] 里，
+ * 评论单独一页；**默认停在章节**：进详情页的第一诉求还是"从这一话开始读"。
+ */
+enum class AlbumDetailTab(val label: String) {
+    CHAPTERS("章节"),
+    COMMENTS("评论"),
+    ;
+
+    companion object {
+        val DEFAULT = CHAPTERS
+    }
+}
+
 data class AlbumDetailUiState(
     val album: AlbumEntity? = null,
     val chapters: List<ChapterRow> = emptyList(),
@@ -1295,7 +1314,43 @@ data class AlbumDetailUiState(
      * 这时为 false，界面不显示「打开文件夹」。
      */
     val canOpenFolder: Boolean = false,
+
+    // ---------------- 简介下方的两个 tab（用户要求） ----------------
+
+    /** 当前停在哪一个 tab；默认章节。 */
+    val tab: AlbumDetailTab = AlbumDetailTab.DEFAULT,
+
+    /**
+     * 已经加载出来的评论（**跨页累积**，下滑追加）。
+     *
+     * 只在内存里：`CommentCache` 按 jm 号存一份快照，退出 App 清空。
+     */
+    val comments: List<CommentRow> = emptyList(),
+    /** 评论总条数（`/forum` 的 `total`，上限 5000）。 */
+    val commentTotal: Int = 0,
+    /** 第一次拉第一页（评论列表还空着）：整块显示加载圈。 */
+    val commentsLoading: Boolean = false,
+    /** 正在追加下一页（列表已有内容，底部显示一行"加载中"）。 */
+    val commentsLoadingMore: Boolean = false,
+    /** 评论加载失败的原因（第一次失败显示空态+重试，追加失败显示底部一行）。 */
+    val commentsError: String? = null,
+    /** 已经加载过评论（有缓存或至少请求过一次）；用来决定切到评论 tab 时要不要发请求。 */
+    val commentsLoaded: Boolean = false,
+    /** 已经到底了（服务端没有更多，或条数已经够 total）。 */
+    val commentsReachedEnd: Boolean = false,
 ) {
+    /**
+     * 「评论」tab 上那个数字：优先用 `/forum` 给的 `total`，
+     * 还没加载过评论时退回 `/album` 的 `comment_total`（两者实测一致）。
+     * 都没有就是 0，界面据此不显示数字。
+     */
+    val commentTabCount: Int
+        get() = if (commentsLoaded || commentTotal > 0) {
+            commentTotal
+        } else {
+            album?.commentTotal?.trim()?.toIntOrNull() ?: 0
+        }
+
     /**
      * 下载面板的默认勾选：**没下完、也不在队列里**的章节。
      *
@@ -1382,6 +1437,11 @@ class AlbumDetailViewModel(
     private val cleaner: AlbumCleaner,
     private val reading: ReadingRepository,
     /**
+     * 评论的进程内缓存（按 jm 号）。挂在 `AppContainer` 上，所以退出页面再进来、
+     * 甚至换一个 ViewModel 实例，评论都还在；退出 App 即清空。
+     */
+    private val commentCache: CommentCache,
+    /**
      * 应用级协程作用域（`AppContainer.appScope`）。
      *
      * 只给「移出书库」这种**必须活过本页**的删除用：移出书库不再自动返回上一页，
@@ -1393,6 +1453,21 @@ class AlbumDetailViewModel(
 
     private val _state = MutableStateFlow(AlbumDetailUiState())
     val state: StateFlow<AlbumDetailUiState> = _state.asStateFlow()
+
+    /**
+     * 下一次要请求的评论页码（**从 1 开始**）。
+     *
+     * 单独放在字段里而不是从 `comments.size` 反推：接口每页 10 条，但服务端有可能
+     * 少给（到底了）或多给，用条数除页大小算出页码迟早会错位。
+     */
+    private var commentNextPage = 1
+
+    /**
+     * 上一次评论请求失败时，那次请求是不是"替换整个列表"（第一页 / 下拉刷新）。
+     *
+     * 「重试」按它决定重走哪条路，见 [retryComments]。
+     */
+    private var commentRetryReset = false
 
     init {
         // 1) 记一次浏览（三种入口共用这一条路径）
@@ -1521,6 +1596,21 @@ class AlbumDetailViewModel(
                             )
                         }
                     }
+            }
+        }
+
+        // 7) 评论：进来先把**内存里那一份**接上（用户要求：按 jm 号缓存、退出 App 才清）。
+        //    命中缓存就不再发请求——用户"看几条 → 返回 → 再进来"时应当立刻看到原来的列表；
+        //    想拿最新的就下拉刷新（`refreshComments`）。
+        commentCache.get(albumId)?.let { snapshot ->
+            commentNextPage = snapshot.nextPage
+            _state.update {
+                it.copy(
+                    comments = snapshot.comments,
+                    commentTotal = snapshot.total,
+                    commentsLoaded = true,
+                    commentsReachedEnd = snapshot.reachedEnd,
+                )
             }
         }
     }
@@ -1718,6 +1808,134 @@ class AlbumDetailViewModel(
     }
 
     fun toggleDescription() = _state.update { it.copy(descriptionExpanded = !it.descriptionExpanded) }
+
+    // ------------------------------------------------------------------
+    // 评论（简介下方的第二个 tab）
+    // ------------------------------------------------------------------
+
+    /**
+     * 切 tab。**第一次切到「评论」时才去请求第一页**——大多数人进详情页是来读的，
+     * 不该为一次"可能会看"的评论多打一次网络请求。
+     */
+    fun selectTab(tab: AlbumDetailTab) {
+        if (_state.value.tab == tab) return
+        _state.update { it.copy(tab = tab) }
+        if (tab == AlbumDetailTab.COMMENTS) ensureCommentsLoaded()
+    }
+
+    /** 评论列表滑到底：追加下一页（已在拉 / 已到底 / 还没加载过时什么都不做）。 */
+    fun loadMoreComments() {
+        val current = _state.value
+        if (!current.commentsLoaded || current.commentsReachedEnd) return
+        if (current.commentsLoading || current.commentsLoadingMore) return
+        fetchComments(page = commentNextPage, reset = false)
+    }
+
+    /**
+     * 评论 tab 下拉刷新：从第一页重取。
+     *
+     * 成功后就以这一份为**新的缓存基准**（`fetchComments` 会覆盖缓存），
+     * 所以这里不必先清缓存——刷新失败时反而要保住旧的，别把用户已经看到的评论弄丢。
+     */
+    fun refreshComments() {
+        val current = _state.value
+        if (current.commentsLoading || current.commentsLoadingMore) return
+        fetchComments(page = 1, reset = true)
+    }
+
+    /**
+     * 评论加载失败后的「重试」。
+     *
+     * 重试**走原来那条路**：上一次失败的是"刷新第一页"就还刷第一页，
+     * 是"追加下一页"就还追加那一页。否则"下拉刷新失败 → 点重试"会变成追加第 N 页，
+     * 用户看到的是列表末尾多了一段，而不是刷新。
+     */
+    fun retryComments() {
+        val current = _state.value
+        if (current.commentsLoading || current.commentsLoadingMore) return
+        val reset = commentRetryReset || current.comments.isEmpty()
+        fetchComments(page = if (reset) 1 else commentNextPage, reset = reset)
+    }
+
+    /** 还没加载过才发请求（缓存命中或已经拉过就直接用现有的）。 */
+    private fun ensureCommentsLoaded() {
+        val current = _state.value
+        if (current.commentsLoaded || current.commentsLoading) return
+        fetchComments(page = 1, reset = true)
+    }
+
+    /**
+     * 拉一页评论。
+     *
+     * @param reset true = 用这一页**替换**整个列表（首次加载 / 下拉刷新）；
+     *        false = 按 `cid` 去重后追加在后面（下滑追加）。
+     *
+     * 成功时立刻把结果写回 [CommentCache]（这样退出页面再进来不用重新拉）；
+     * 失败时只记 `commentsError`，**不丢掉已经拿到的那些**——用户滑了很久的列表
+     * 不该因为下一页超时被清空。
+     */
+    private fun fetchComments(page: Int, reset: Boolean) {
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    commentsLoading = reset,
+                    commentsLoadingMore = !reset,
+                    commentsError = null,
+                )
+            }
+            runCatching { repo.comments(albumId, page) }
+                .onSuccess { result ->
+                    commentRetryReset = false
+                    // 走 mergeComments 而不是直接用 result.comments：它顺手做了**按 cid 去重**，
+                    // 万一服务端同一页里给了重复的评论，也不会让列表出现重复 key（会白屏崩）
+                    val merged = if (reset) {
+                        mergeComments(emptyList(), result.comments)
+                    } else {
+                        mergeComments(_state.value.comments, result.comments)
+                    }
+                    commentNextPage = result.page + 1
+                    // 三种"到底"的判定：空页 / 这一页没给满 / 总条数已经够了。
+                    // 空页那条不能省：`total` 有被截断（5000）的历史，出现空页就是真的没了。
+                    val reachedEnd = result.comments.isEmpty() ||
+                        result.comments.size < COMMENT_PAGE_SIZE ||
+                        merged.size >= result.total
+                    _state.update {
+                        it.copy(
+                            comments = merged,
+                            commentTotal = result.total,
+                            commentsLoaded = true,
+                            commentsLoading = false,
+                            commentsLoadingMore = false,
+                            commentsError = null,
+                            commentsReachedEnd = reachedEnd,
+                        )
+                    }
+                    commentCache.put(
+                        albumId,
+                        CommentCache.Snapshot(
+                            comments = merged,
+                            total = result.total,
+                            nextPage = commentNextPage,
+                            reachedEnd = reachedEnd,
+                        ),
+                    )
+                }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Timber.tag("jm").w(e, "加载评论失败：albumId=%d page=%d", albumId, page)
+                    commentRetryReset = reset
+                    _state.update {
+                        it.copy(
+                            commentsLoading = false,
+                            commentsLoadingMore = false,
+                            commentsError = e.toUserMessage(),
+                            // 失败也算"加载过"：否则切回章节再切回来会立刻再打一次同样的请求
+                            commentsLoaded = true,
+                        )
+                    }
+                }
+        }
+    }
 
     /** 收藏/取消收藏。未入库时会先入库（收藏隐含入库，参考实现的 `collectAlbums` 语义）。 */
     fun toggleCollected() {
@@ -2054,6 +2272,16 @@ class AlbumDetailViewModel(
             // loadLocalStats 自己会切 IO、只读写 _state，不碰 viewModelScope，所以在这里调用是安全的。
             loadLocalStats()
         }
+    }
+
+    companion object {
+        /**
+         * `/forum` 每页固定 10 条（实测）。
+         *
+         * 拿它判断"到底了"：某一页**没给满** 10 条就说明后面没有了，
+         * 不必等下一页的空响应再收尾（省一次请求、也让最后一屏不闪一下"加载中"）。
+         */
+        const val COMMENT_PAGE_SIZE = 10
     }
 }
 

@@ -63,6 +63,16 @@ object Defaults {
         return "https://$host/media/albums/$jmId.jpg"
     }
 
+    /**
+     * 评论者头像 URL：`https://{imageDomain}/media/users/{photo}`。
+     *
+     * `photo` 是接口给的**文件名**（`nopic-Male.gif`、`22094869.jpg`）。
+     * 和封面一样固定走 [IMAGE_DOMAIN]：头像与封面本来就是同一个图片 CDN，
+     * 封面能显示就说明这条线路通。加载失败时界面显示昵称首字的占位圈，不会留空框。
+     */
+    fun buildAvatarUrl(photo: String, imageDomain: String = IMAGE_DOMAIN): String =
+        "https://$imageDomain/media/users/${photo.trim().trimStart('/')}"
+
     /** 章节图片 URL：`https://{imageDomain}/media/photos/{chapterId}/{filename}`。 */
     fun buildImgUrl(chapterId: Long, filename: String, imageDomain: String = IMAGE_DOMAIN): String =
         "https://$imageDomain/media/photos/$chapterId/$filename"

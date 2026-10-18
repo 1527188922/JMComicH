@@ -615,6 +615,12 @@ fun ModeRoot(
                         onDownloadChapters = vm::downloadChapters,
                         onDeleteChapterFiles = vm::deleteChapterFiles,
                         onDeleteAlbumFiles = vm::deleteAlbumFiles,
+                        // 简介下方两个 tab（章节 / 评论）：切到评论时才去拉第一页，
+                        // 加载过的评论挂在内存缓存上（退出 App 清空）
+                        onSelectTab = vm::selectTab,
+                        onRefreshComments = vm::refreshComments,
+                        onLoadMoreComments = vm::loadMoreComments,
+                        onRetryComments = vm::retryComments,
                         onExport = vm::startExport,
                         onDownloadMissing = vm::downloadMissingChapters,
                         onDismissExportPrecheck = vm::dismissExportPrecheck,
@@ -867,6 +873,8 @@ class ViewModelFactory(
                 secrets = container.secrets,
                 cleaner = container.jmAlbumCleaner,
                 reading = container.jmReading,
+                // 评论缓存挂在容器上：退出页面再进来还在，退出 App 才清
+                commentCache = container.jmCommentCache,
                 // 移出书库的删除挂在应用级作用域上：页面退出不该把它取消掉
                 //（详情页不再自动返回，用户可能删到一半就自己退）
                 appScope = container.appScope,

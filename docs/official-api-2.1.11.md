@@ -732,6 +732,26 @@ related_list, liked, is_favorite, is_aids, price, purchased
 
 ---
 
+### 6.6 本项目复核的实测更正（2026-10-19）
+
+用 `aid=114514` 复核了一遍 `/forum`（签名与解密沿用本工程现有那一套：
+`Token = md5(ts+"18comicAPP")`、`Tokenparam="{ts},2.0.13"`、`data` 用 `md5(ts+"185Hcomic3PAPP7R")` 解，
+**通用**，不用换协议）。与上文 §6.3 的差异：
+
+| 项 | §6.3 写的 | 实测 |
+|---|---|---|
+| `total` | 5000（被截断） | `"851"`（**字符串**；上限仍是 5000） |
+| `likes` | `0`（数字） | `"0"`（字符串） |
+| `spoiler` | `false`（布尔） | `"1"`（字符串），且同一本**每条都是 "1"** |
+| `parent_CID` | `null`（主楼） | `"0"`（主楼） |
+| `addtime` | `2026-10-16 12:34` | `Oct 11, 2026`（英文月日年；与请求不带 `lang` 有关） |
+| `content` | 纯文本 + `[推薦書籍 xxx]` 标记 | **HTML 片段**：`<div style='flex-direction:row;flex-wrap:wrap;'>…</div>`，可能夹 `<img … alt="笑哭" />` 表情 |
+| `replys` | 未提及 | **每条主楼自带 `replys` 数组**（内嵌回复，结构与主楼相同，不会再嵌一层） |
+| `expinfo` | `level` / `level_name` / `badges` | 另有 `exp` / `expPercent` / `nextLevelExp` / `uid`；`level` 是数字，`badges` 可能是空数组 |
+
+结论：**读评论只用 `/forum` 一个接口**就够（每页 10 条，`page` 从 1 开始），
+不用再按 `parent_CID` 单独补回复；`spoiler` 字段拿不到可用语义（全是 `"1"`），不要据此折叠剧透。
+
 ## 7. 全量接口清单（85 个 key）
 
 > 路径前缀统一 `https://{线路域名}/`；除注明外，响应都是 `{code, data(密文)}`。

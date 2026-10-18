@@ -23,6 +23,7 @@ import com.haruhi.jmcomic.feature.api.AlbumDto
 import com.haruhi.jmcomic.feature.api.ApiClient
 import com.haruhi.jmcomic.feature.api.ChapterDto
 import com.haruhi.jmcomic.feature.api.ApiJson
+import com.haruhi.jmcomic.feature.api.ForumItemDto
 import com.haruhi.jmcomic.feature.api.SearchItemDto
 import com.haruhi.jmcomic.feature.api.SeriesDto
 import kotlinx.coroutines.flow.Flow
@@ -498,6 +499,47 @@ class Repository(
     /** 只拉章节详情，不入库（调用方决定何时写库）。 */
     suspend fun fetchChapter(chapterId: Long): ChapterDto = api.chapter(chapterId)
 
+    // ------------------------------------------------------------------
+    // 评论
+    // ------------------------------------------------------------------
+
+    /**
+     * 拉一页漫画评论（详情页「评论」tab）。
+     *
+     * `page` **从 1 开始**、每页固定 10 条；`total` 被服务端截断到 5000。
+     * 评论**不入库**：按用户要求只存在内存里（`CommentCache`），退出 App 即清空。
+     *
+     * 返回的每一条都做过三件事：正文 HTML 清洗、时间文案归一、点赞数归一
+     * （见 `Comments.kt`）。`cid` 为空的条目直接丢掉——它是列表的 key，不能空。
+     */
+    suspend fun comments(albumId: Long, page: Int = 1): CommentPage {
+        val resp = api.forum(aid = albumId, page = page)
+        val comments = resp.list.orEmpty()
+            .map { it.toCommentRow() }
+            .filter { it.cid.isNotEmpty() }
+        val total = resp.total?.trim()?.toIntOrNull() ?: comments.size
+        return CommentPage(page = page, total = total.coerceAtLeast(0), comments = comments)
+    }
+
+    /** 接口 DTO → 可直接渲染的评论（回复列表同样递归归一化）。 */
+    private fun ForumItemDto.toCommentRow(): CommentRow = CommentRow(
+        cid = cid?.trim().orEmpty(),
+        author = listOf(nickname, username)
+            .firstOrNull { !it.isNullOrBlank() && !it.equals("null", ignoreCase = true) }
+            ?.trim()
+            .orEmpty()
+            .ifEmpty { ANONYMOUS_COMMENT_AUTHOR },
+        avatar = photo?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+        text = cleanCommentHtml(content),
+        likes = commentLikeCount(likes),
+        timeLabel = commentTimeLabel(addTime),
+        levelName = expInfo?.levelName?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+        replies = replies.orEmpty()
+            .map { it.toCommentRow() }
+            .filter { it.cid.isNotEmpty() },
+    )
+
     /** 从本子已存的 `series` JSON 里找出某一章对应的条目。 */
     fun seriesOf(album: AlbumEntity, chapterId: Long): SeriesDto? =
         album.series
@@ -927,6 +969,9 @@ class Repository(
 
     companion object {
         const val DEFAULT_FAVORITE_NAME = "默认收藏夹"
+
+        /** 接口没给昵称/用户名时的展示名（不要显示成一串数字 id）。 */
+        const val ANONYMOUS_COMMENT_AUTHOR = "匿名用户"
 
         /**
          * 单话本子的章节标题（同时也是章节目录名）。

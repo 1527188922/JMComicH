@@ -19,7 +19,8 @@ import java.net.URLEncoder
  * JM 接口客户端。
  *
  * 覆盖计划 §10 P2 要求的四个接口 + 一个模板接口：
- * `/search`、`/album`、`/chapter`、`/chapter_view_template`。
+ * `/search`、`/album`、`/chapter`、`/chapter_view_template`；
+ * 详情页「评论」tab 用的 `/forum` 也在这里。
  * **`/login` 不实现**（已确认不做 JM 账号）。
  *
  * 契约细节全部对齐参考实现 `JmcomicService`：
@@ -82,6 +83,32 @@ class ApiClient(
         params = listOf("id" to aid.toString()),
         retry = retryProvider().album,
         decode = { json -> ApiJson.decodeFromString(AlbumDto.serializer(), json) },
+    )
+
+    /**
+     * `/forum`：漫画评论列表（详情页「评论」tab）。
+     *
+     * | 参数 | 说明 |
+     * |---|---|
+     * | `mode` | 固定 `all`（详情页看全部；`manhua` / `chat` 是官方 App 的其它场景） |
+     * | `page` | **从 1 开始**，每页固定 **10** 条 |
+     * | `aid` | 漫画 id |
+     *
+     * `total` 被服务端截断到 5000，所以最多 500 页。**匿名可读**（实测无登录态也返回 200），
+     * 与本工程"不做 JM 账号"的定位一致。
+     *
+     * 重试次数沿用「漫画详情」那一项（`jm.request.album.retry`）：评论和详情同属详情页数据，
+     * 不为它单开一个设置项。
+     */
+    suspend fun forum(aid: Long, page: Int = 1, mode: String = "all"): ForumRespDto = getDecrypted(
+        path = "/forum",
+        params = listOf(
+            "mode" to mode,
+            "page" to (if (page < 1) 1 else page).toString(),
+            "aid" to aid.toString(),
+        ),
+        retry = retryProvider().album,
+        decode = { json -> ApiJson.decodeFromString(ForumRespDto.serializer(), json) },
     )
 
     /** `/chapter`：章节详情，含图片文件名清单。 */
