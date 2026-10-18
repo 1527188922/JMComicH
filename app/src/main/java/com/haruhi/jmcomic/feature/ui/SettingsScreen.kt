@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -862,7 +864,7 @@ private fun NetworkSection(
  * 1. **当前线路直接显示在分组里**，不用点开面板就知道自己在用哪一条（每行的第二行就是域名）；
  * 2. **没有「保存」按钮**：面板里点一条就写存储、下一次请求立刻走新线路；
  * 3. **点完不自动关面板**（用户 2026-10-18 要求）：可以接着点下一条比较，
- *    什么时候退出由用户自己决定（下滑面板 / 点遮罩，面板里不放「关闭」按钮）；
+ *    什么时候退出由用户自己决定（拖把手/标题区下滑、点遮罩，或面板里的「关闭」）；
  * 4. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
  *    面板里另给「恢复默认」（回到工程当前在用的那条）和接口线路的「全部测速」。
  */
@@ -877,6 +879,13 @@ private fun LineSection(
 ) {
     var showApiPicker by remember { mutableStateOf(false) }
     var showImagePicker by remember { mutableStateOf(false) }
+
+    // 两个面板的列表状态提到这里（而不是在 LinePickerSheet 里 remember）：
+    // 面板一关就整个移出组合，滚动位置会丢；提到这一层才能在"关掉再打开"之后
+    // 回到上次看到的那几条。误关（虽然已用 [sheetSwipeGuard] 挡住大部分）之后
+    // 重开也不用从头翻。
+    val apiListState = rememberLazyListState()
+    val imageListState = rememberLazyListState()
 
     SettingsSection("线路") {
         LineSummaryRow(
@@ -907,6 +916,7 @@ private fun LineSection(
             defaultHost = LineCatalog.DEFAULT_API_HOST,
             speedResults = state.speedResults,
             testing = state.speedTesting,
+            listState = apiListState,
             // 选中即生效，**面板不关**（用户要求）：可以接着点下一条比较，关不关由用户自己决定
             onSelect = { onSelectApiLine(it) },
             onReset = { onResetApiLine() },
@@ -926,6 +936,7 @@ private fun LineSection(
             // 图片线路暂不测速（用户明确不做），整列灯号都不显示
             speedResults = emptyMap(),
             testing = false,
+            listState = imageListState,
             onSelect = { onSelectImageLine(it) },
             onReset = { onResetImageLine() },
             onTest = null,
@@ -1036,7 +1047,12 @@ private fun LineSummaryRow(
  * 交互约定：
  * - **点一行 = 选中即生效，但面板保持打开**（用户 2026-10-18 要求）：灯号就摆在旁边，
  *   用户往往想"点一条、看有没有变快、再点下一条"，自动关掉会逼他反复重开面板。
- *   退出只有两条路：下滑面板 / 点遮罩（`ModalBottomSheet` 自带），面板里不放「关闭」按钮。
+ * - **在列表上滑只滚列表，不会误关面板**（用户 2026-10-19 要求）：列表内容超出可视区时，
+ *   [sheetSwipeGuard] 把向下的纵向手势吃掉，面板纹丝不动；一屏放得下的短列表
+ *   （接口线路只有 6 条）守门人不介入，行为和以前完全一样。
+ * - **退出有三条路**：拖把手/标题区下滑、点遮罩、点面板底部的「关闭」。
+ *   （「关闭」是 2026-10-19 从注释里放回来的：列表区既然不能再靠下滑关闭，
+ *   就得给一个不用猜的出口，否则用户会觉得"面板关不掉了"。）
  * - **不弹 Snackbar**：提示会被面板挡住、连点几次还会排队；反馈就是这一行的
  *   「使用中 + ✓」和分组里那行域名，两者都即时更新。
  * - 「全部测速」并发测所有接口线路，结果逐条回填到每行右边的灯号上；
@@ -1044,6 +1060,10 @@ private fun LineSummaryRow(
  *   让他先看一堆"未测速"再点一次按钮是多余的一步；同一页之后的打开复用已有结果。
  *
  * 图片线路的面板传 `onTest = null` 且 `autoTest = false`：图片线路暂不做测速。
+ *
+ * @param listState 列表状态**由调用方持有**（`LineSection`）：它要同时交给
+ *   [sheetSwipeGuard]（判断"列表滚到哪儿了"）和 `LazyColumn`，并且因为活在面板外面，
+ *   面板关掉再打开时滚动位置还在。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1055,6 +1075,7 @@ private fun LinePickerSheet(
     defaultHost: String,
     speedResults: Map<String, LineProbeResult>,
     testing: Boolean,
+    listState: LazyListState,
     onSelect: (String) -> Unit,
     onReset: () -> Unit,
     onTest: (() -> Unit)?,
@@ -1070,7 +1091,13 @@ private fun LinePickerSheet(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        // 挂在面板内容的外层：列表还能滚时，向下的纵向手势先被守门人吃掉，
+        // 不会再被转成"面板下滑关闭"（详见 SheetGestures.kt）。
+        modifier = Modifier.sheetSwipeGuard(listState),
+    ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
             Text(
                 text = title,
@@ -1109,7 +1136,10 @@ private fun LinePickerSheet(
                     Text("恢复默认")
                 }
             }
-            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
+            ) {
                 items(options, key = { it.host }) { option ->
                     LineOptionRow(
                         option = option,
@@ -1122,6 +1152,8 @@ private fun LinePickerSheet(
                     )
                 }
             }
+            // 显式出口：列表区不再能下滑关面板之后，这颗按钮是"不用猜"的那条路
+            // （见 KDoc 第 3 条）。2026-10-18 曾按用户要求注释掉，2026-10-19 恢复。
 //            Row(
 //                verticalAlignment = Alignment.CenterVertically,
 //                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),

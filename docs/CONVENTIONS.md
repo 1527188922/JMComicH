@@ -60,3 +60,44 @@ Cover(
       `adb logcat -s http:*` 里**没有**封面请求（只有 `/album` 等接口请求）。
 - [ ] 「从书库移除」「清空最近浏览」之后，对应封面按 `CoverCache.evict` 失效；
       "只删除本地文件"、以及仍能在书库/最近里看到的，封面**保留**。
+
+## 2. 底部面板里的可滚动列表：必须挂 `sheetSwipeGuard`
+
+### 规则（必须遵守）
+
+1. 面板里只要有 `LazyColumn` 这类**能滚**的列表（线路、章节、收藏夹……），就给面板挂
+   ```kotlin
+   val listState = rememberLazyListState()
+   ModalBottomSheet(
+       onDismissRequest = onDismiss,
+       sheetState = sheetState,
+       modifier = Modifier.sheetSwipeGuard(listState),   // 见 feature/ui/SheetGestures.kt
+   ) {
+       LazyColumn(state = listState) { … }               // 同一个 listState 也要给列表
+   }
+   ```
+2. 面板里**至少留一条"不靠猜"的关闭出口**：把手/标题区可下滑，或一颗「关闭」/「取消」按钮。
+   列表区被守门人保护之后，用户不能再靠"在列表上下滑"关面板了。
+3. **别用 `sheetGesturesEnabled = false` 图省事**：那会把把手的下滑一起禁掉，
+   面板只剩点遮罩/返回键能关（material3 1.4.0 起有这个参数，但不是本项目的做法）。
+
+### 为什么（真实踩过的坑）
+
+material3 1.4.0 的 `ModalBottomSheet` 内容上同时挂了两套手势：
+
+- `draggable`：按住**非滚动区域**（标题 / 提示 / 按钮行）上下滑 = 直接拖面板；
+- `nestedScroll(ConsumeSwipeWithinBottomSheetBoundsNestedScrollConnection)`：
+  `pre-up / post-down` —— 向上先给面板（面板已全展开时它只吞 0，余量落到列表），
+  **向下则是列表消费完之后的余量直接拿去拖面板**。
+
+也就是"列表一到顶，之后每一像素向下位移都变成面板位移"，而关闭判定只有
+`BottomSheetDefaults.PositionalThreshold = 56.dp` / `VelocityThreshold = 125.dp/s`
+（两个常量都读自 aar）。结果就是"往上翻列表时，手指往回收一点，面板关了"。
+2026-10-19 处理设置页线路面板误关时确认过，完整分析见 `docs/PROGRESS.md` 的同名小节。
+
+### 验收清单（改动面板手势后照着跑）
+
+- [ ] 列表中部上下滑：只滚列表，面板不动；
+- [ ] 列表滑到顶后继续向下拉 100dp 再松手：**不关**；
+- [ ] 在列表上快速向下甩一下：**不关**；
+- [ ] 按把手 / 标题区向下拖、点遮罩、点「关闭」、返回键：四条都还能关。

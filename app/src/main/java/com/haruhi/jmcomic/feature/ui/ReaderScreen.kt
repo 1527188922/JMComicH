@@ -212,8 +212,15 @@ fun ReaderScreen(
 
     if (state.showChapterPicker) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(onDismissRequest = onDismissSheets, sheetState = sheetState) {
-            ChapterPickerContent(state = state, onOpenChapter = onOpenChapter)
+        val listState = rememberLazyListState()
+        ModalBottomSheet(
+            onDismissRequest = onDismissSheets,
+            sheetState = sheetState,
+            // 章节可能几百话：列表还能滚时，向下的纵向手势只归列表，
+            // 别把"翻章"翻成"关面板"（详见 SheetGestures.kt）
+            modifier = Modifier.sheetSwipeGuard(listState),
+        ) {
+            ChapterPickerContent(state = state, onOpenChapter = onOpenChapter, listState = listState)
         }
     }
 
@@ -674,14 +681,19 @@ private fun ReaderEmptyState(
 }
 
 @Composable
-private fun ChapterPickerContent(state: ReaderUiState, onOpenChapter: (Int) -> Unit) {
+private fun ChapterPickerContent(
+    state: ReaderUiState,
+    onOpenChapter: (Int) -> Unit,
+    /** 列表状态由外层持有：它同时交给 [sheetSwipeGuard] 和 `LazyColumn`。 */
+    listState: LazyListState,
+) {
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
         Text(
             text = "选择章节（共 ${state.chapters.size} 话）",
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.padding(16.dp),
         )
-        LazyColumn(modifier = Modifier.fillMaxWidth().height(360.dp)) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().height(360.dp)) {
             itemsIndexed(state.chapters, key = { _, chapter -> chapter.chapterId }) { index, chapter ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

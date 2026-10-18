@@ -171,7 +171,7 @@ app/src/main/java/com/haruhi/jmcomic/
 | 项 | 改前 | 改后 |
 |---|---|---|
 | 线路录入 | 自由文本框（`一行一个，第一行生效`）+ 「保存」 | **底部面板选择**（`ModalBottomSheet`）+ **选中即生效**（无保存按钮） |
-| 选完面板 | — | **点完不自动关**（2026-10-18 追加要求）：可以连着点几条比较延迟，退出由用户自己下滑面板 / 点遮罩（面板里不放「关闭」按钮）；也不弹 Snackbar（会被面板挡住、连点会排队），反馈靠面板里的「使用中 ✓」+ 分组里那行域名 |
+| 选完面板 | — | **点完不自动关**（2026-10-18 追加要求）：可以连着点几条比较延迟，退出靠用户自己（下滑面板 / 点遮罩）；也不弹 Snackbar（会被面板挡住、连点会排队），反馈靠面板里的「使用中 ✓」+ 分组里那行域名。<br>**2026-10-19 修正**：列表区的下滑不再能关面板（翻列表时太容易误关），出口改成「拖把手/标题区下滑、点遮罩、面板底部『关闭』」，原因与做法见下面的「优化：线路面板不再被『下滑即关』误伤」 |
 | 可选值 | 用户随便填 | 硬编码清单 `core/protocol/LineCatalog.kt`（接口 6 条 / 图片 13 条，各自 `distinctBy` 去重） |
 | 当前线路 | 要点开看文本框 | 分组里直接显示域名（+ `线路 N` / `默认` 小标签），右侧「更换 ›」 |
 | 测速 | 无 | 「全部测速」：**所有接口线路并发**打 `/setting`，各出绿/橙/红灯号 |
@@ -230,6 +230,84 @@ app/src/main/java/com/haruhi/jmcomic/
   `/album?id=350234` 与 `/search?search_query=test` 都能解密出正常数据（`series=2` / `total=47`），
   图片线路侧 `cdn-msp*.jmapiproxy*.cc/media/albums/350234.jpg` 也能取到 43KB 的封面
   （另两条线路本次连不上，测速时会是红灯，属预期）。
+
+## 优化：线路面板不再被"下滑即关"误伤（2026-10-19）
+
+用户反馈：设置页「线路」的选择面板里线路一多就得上下滑，但**手指上下滑很容易触发面板本身的下滑关闭**，
+而不是滚动线路列表。
+
+### 1. 根因（读 material3 1.4.0 的 aar 字节码确认，不是猜）
+
+`ModalBottomSheet` 的内容 `Column` 上同时挂了两套手势：
+
+| 机制 | 行为 |
+|---|---|
+| `draggable(anchoredDraggableState)` | 按住**非滚动区域**（标题 / 提示 / 按钮行）上下滑 = 直接拖面板 |
+| `nestedScroll(ConsumeSwipeWithinBottomSheetBoundsNestedScrollConnection)` | 子列表滚不动之后，**向下的残余增量**被 `dispatchRawDelta` 进面板的拖拽状态 |
+
+这条内部连接是 `pre-up / post-down` 的：向上先交给面板（面板已全展开时它只吞 0，余量才落到列表），
+**向下则是列表消费完之后，把余量直接拿去拖面板** —— 也就是"列表一到顶，之后每一像素向下位移都变成面板位移"。
+
+关闭门槛又很低：`BottomSheetDefaults.PositionalThreshold = 56.dp`、`VelocityThreshold = 125.dp/s`
+（两个常量直接从 aar 里读出来的）——向下拨 1 厘米左右、或轻轻甩一下，就够关掉。
+再叠加两点：标题/按钮行不是滚动容器（手指落那儿直接拖面板）；列表固定 400dp 又没有任何
+"下面还有内容"的提示（用户不知道还剩 7 条，只能反复上下试）。
+
+### 2. 做什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 列表区的纵向手势 | 下滑到顶 = 关面板（56dp / 125dp/s 就够） | **列表能滚时，向下的手势被守门人吃掉**，面板不动；列表一屏放得下（滚不动）时守门人不介入，行为与以前完全一致 |
+| 关面板的出口 | 下滑面板 / 点遮罩 | 拖**把手·标题区**下滑 / 点遮罩 / 点面板底部**「关闭」**（原来注释掉的那颗，恢复） |
+| 面板滚动位置 | 每次打开都从头开始 | 两个 `LazyListState` 提到 `LineSection` 持有，关掉再打开回到上次位置 |
+| 另外三处同毛病 | 一样会误关 | 一并接入：下载面板（`AlbumDetailScreen`）/ 收藏夹面板（`Screens`）/ 阅读器章节面板（`ReaderScreen`） |
+
+新增 `feature/ui/SheetGestures.kt`：`Modifier.sheetSwipeGuard(listState)` 把一条自定义
+`NestedScrollConnection` 挂在 `ModalBottomSheet(modifier = …)` 上。**位置很关键**：这个 modifier
+比 material3 内部那条连接**更外层**，而 `onPreScroll` / `onPreFling` 的派发顺序是"外 → 内"，
+所以守门人先拿到增量、能把它吞掉。它不碰非滚动区域（标题区的拖动走的是面板自己的 `draggable`，
+不是嵌套滚动），所以"拖把手/标题区关面板"照旧。
+
+`onPreFling` 也要挡：快速向下一甩时位移可能没到阈值，但速度会走 `onPreFling → settle` 把面板关掉。
+
+### 3. 只在"列表真的能滚"时才生效
+
+判定抽成纯函数 `shouldConsumeSheetSwipeDown(deltaY, listScrollable, canScrollBackward)`：
+
+| 情形 | 结果 |
+|---|---|
+| 列表能滚 + 已在顶部 + 向下 | **吃掉**（面板不许动） |
+| 列表能滚 + 还能往回滚 | 放行（列表自己滚） |
+| 一屏放得下（`canScrollForward` / `canScrollBackward` 都是 false） | **不介入**，与改动前完全一致 |
+| 向上 / 零增量 | 放行 |
+
+于是"防误关"只作用在真正要滚的长列表上：接口线路面板（6 条）行为不变，
+图片线路面板（13 条）和下载面板（几百话）才被保护。
+
+### 4. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` ✅；唯一的 warning 是既有的
+  `Screens.kt:2092 LocalLifecycleOwner deprecation`，与本次改动无关；
+- `:app:lintDebug` ✅ **0 error**（报告 `app/build/reports/lint-results-debug.html`）；
+- `:app:testDebugUnitTest`：**318 个用例、7 个失败**，全部是既有问题：`AlbumCleanerTest` 3 个、
+  `ReaderAndTaskLogicTest` 3 个（这两组在 2026-10-18 那次跑就已经红着），外加 `DownloadManagerTest`
+  的 1 个 `waitUntil` 超时（`超时：追加的章节没有被下载`，15 秒没等到条件）。最后这条是**本机时序抖动**，
+  不是本次改动引入的：`git stash` 掉本次改动、在未改动的 HEAD 上跑同一个类，两次里也是**一次红一次绿**。
+  新增的 `feature.ui.SheetGestureTest` **5 个用例全绿**；
+- **手势本身没法自动化**：这台设备 Compose UI 测试拿不到窗口焦点、`adb shell input` 被禁
+  （见「P2 待验证」），所以下面是需要你真机点一遍的清单。
+
+### 5. 真机验收清单
+
+1. 图片线路面板（13 条）：列表中部上下滑 → 只滚列表，面板纹丝不动；
+2. 列表滚到顶后继续向下拉 100dp 再松手 → **不关**（改之前必关）；
+3. 在列表上快速向下甩一下 → **不关**；
+4. 按把手 / 标题区向下拖 → 能关；
+5. 点遮罩、返回键、面板底部「关闭」→ 三条都能关；
+6. 接口线路面板（6 条，滚不动）→ 行为与以前完全一致（列表区下滑仍能关）；
+7. 「全部测速」/「恢复默认」点按正常，不误触发拖拽；
+8. 关掉面板再打开 → 列表回到上次位置；
+9. 详情页下载面板（几百话）顺带验一次，同样不再误关。
 
 ## 阶段状态
 
@@ -1073,6 +1151,7 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `feature.jm.ui.LibraryPagingTest` | 3 | **书库分页拼页**：后续页追加在后面 / 跨页重复的 id 只留一条（重复 key 会崩）/ 没有后续页时走快路径 |
 | `feature.jm.ui.ReadingProgressLabelTest` | 4 | **「继续阅读」那行小字 + "导出中"状态文案**：有页码 / 只记到章节 / 章节名缺失 / 排队中·导出中 45%·等待网络 |
 | `core.storage.ExportPublisherFolderTest` | 5 | **「打开文件夹」的目录 URI**：API 34 给出带 `primary:` 卷名的正确文档 id / API 28 返回 null（私有目录别人看不到）/ 位置文案一致 / 多次调用稳定 |
+| `feature.jm.ui.SheetGestureTest` | 5 | **面板「列表优先」判定**：可滚且到顶才吃掉向下手势 / 还能往回滚时放行 / 一屏放得下时不介入 / 向上与零增量放行 |
 | `core.download.DownloadGateTest` | 5 | 下载网络策略矩阵（仅 Wi-Fi / 允许移动网络） |
 | `core.codec.DescramblerGoldenTest` | 5 | 解扰块布局 + 与参考实现逐像素一致 |
 | `core.codec.ArchiveWriterTest` | 5 | zip 结构（不套本子目录）/ 顺序 / 进度 / 不加密码 / 重新生成覆盖 |

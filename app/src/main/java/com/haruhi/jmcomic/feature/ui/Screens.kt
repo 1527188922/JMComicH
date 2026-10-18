@@ -550,8 +550,14 @@ private fun FavoritePickerForSelection(
     var showCreate by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val createFavorite = onCreate
+    val listState = rememberLazyListState()
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        // 收藏夹多起来时列表要滚：滚动时不把向下的手势让给面板（详见 SheetGestures.kt）
+        modifier = Modifier.sheetSwipeGuard(listState),
+    ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(
                 text = "修改收藏夹",
@@ -564,7 +570,10 @@ private fun FavoritePickerForSelection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
-            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+            ) {
                 items(favorites, key = { it.id }) { favorite ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

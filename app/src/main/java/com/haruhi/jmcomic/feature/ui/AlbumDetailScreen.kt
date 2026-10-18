@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -1509,8 +1510,14 @@ private fun DownloadSheet(
         mutableStateOf(state.defaultDownloadSelection)
     }
     val queued = state.queuedChapterIds
+    val listState = rememberLazyListState()
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        // 章节可能几百话、必须滚：滚动列表时不把向下的手势让给面板（详见 SheetGestures.kt）
+        modifier = Modifier.sheetSwipeGuard(listState),
+    ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(
                 text = "下载章节",
@@ -1532,7 +1539,10 @@ private fun DownloadSheet(
                 }
                 TextButton(onClick = { selected = emptySet() }) { Text("全不选") }
             }
-            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+            ) {
                 items(state.chapters, key = { it.chapterId }) { chapter ->
                     val inQueue = chapter.chapterId in queued
                     val checked = !inQueue && chapter.chapterId in selected
