@@ -383,6 +383,33 @@ GET https://{host}/setting?lang=TW      （带 Token/Tokenparam）
 > 硬编码成 `getSpeedLevel(500)`，所以开屏页的灯号**恒为绿色**（纯装饰）。
 > 真正测速在「我的 → 测速」页（`Member/SpeedTest.tsx`，每日 30 次、10 秒冷却）。
 
+#### 图片测速（`testImageLoadTime`，官方**有**这个功能）
+
+同一个文件里的 `testImageLoadTime` 就是官方的图片测速，`SpeedTest.tsx` 把它显示成
+「圖源順暢度」（`member.speed_test_image_ready_time`）。逐字行为（源码确认）：
+
+```ts
+const img = new Image();                       // ★ 用 <img>，不是 fetch
+const start = performance.now();
+img.onload  = () => resolve(performance.now() - start);   // 就绪时间
+img.onerror = () => resolve(null);             // 载入失败
+setTimeout(…resolve(null), 10000);             // 10 秒超时也算失败
+img.src = `${img_host}/media/users/nopic-.gif?v=0`;
+```
+
+| 要点 | 说明 |
+|---|---|
+| 为什么用 `<img>` | `img_host` **没开 CORS**，`fetch` 读不到内容，但浏览器加载 `<img>` 不受 CORS 限制（源码注释原话）。所以官方**拿不到字节数**，只能量时间，换不成 Mbps |
+| 探针图 | `{img_host}/media/users/nopic-.gif?v=0`，1～4 KB 的占位头像，一定存在、不需要登录 |
+| 量的是什么 | `imageLoadTime` 从**发出 `/setting` 请求之前**开始计时（`start` 在 `fetch` 之前取），到图片 `onload` 结束 —— 即「打 API 拿到 img_host → 载图」的**累计**等待，不是单纯的图片下载时间 |
+| 失败 | 10 秒超时 / `onerror` → `null` → 界面显示「無法載入」（`speed_test_image_load_fail`） |
+| 灯号 | `getSpeedLevel(latency)` **只看 API 延迟**，`imageLoadTime` 只作为一行数字显示，不参与分档 |
+| 测哪条 | **只测当前线路**：`img_host` 来自那条线路的 `/setting`。官方没有「图片线路清单」，所以没有"每条图片 CDN 各测一遍"的现成逻辑 |
+| 连接复用 | 注释写明「每次測速都是對海外線路發出全新請求（含 DNS + TLS 交握，無連線重用）」，所以阈值放到 600 / 1200 ms |
+
+> 计时还受每日 30 次 / 10 秒冷却限制，见 `SpeedTest.tsx` 的 `DAILY_LIMIT` / `COOLDOWN_MS`。
+> 我们的客户端没有这两条限制（测速是本地的、请求量只有十几张占位图）。
+
 ---
 
 ## 4. 分类页（`/categories`）

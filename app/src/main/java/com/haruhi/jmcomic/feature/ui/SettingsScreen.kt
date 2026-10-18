@@ -84,6 +84,7 @@ import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.core.settings.SettingLimits
 import com.haruhi.jmcomic.core.settings.SettingsRepository
 import com.haruhi.jmcomic.feature.api.ApiLineProbe
+import com.haruhi.jmcomic.feature.api.ImageLineProbe
 import com.haruhi.jmcomic.feature.api.LineProbeResult
 import com.haruhi.jmcomic.feature.api.LineSpeedLevel
 import kotlinx.coroutines.Dispatchers
@@ -169,8 +170,12 @@ data class SettingsUiState(
     val imageLine: ImageLine = LineCatalog.imageLines.first(),
     /** 接口线路的测速结果（key = 域名，见 [ApiLineProbe]）；空 = 这一页还没测过。 */
     val speedResults: Map<String, LineProbeResult> = emptyMap(),
-    /** 正在「全部测速」：六条线路并发跑，界面上按钮转圈、每条线路各自出灯号。 */
+    /** 正在「全部测速」：六条接口线路并发跑，界面上按钮转圈、每条线路各自出灯号。 */
     val speedTesting: Boolean = false,
+    /** 图片线路的测速结果（key = 域名，见 [ImageLineProbe]）；与接口线路分开存。 */
+    val imageSpeedResults: Map<String, LineProbeResult> = emptyMap(),
+    /** 正在「全部测速」图片线路：十几条 CDN 并发跑，同样逐条回填。 */
+    val imageSpeedTesting: Boolean = false,
     /** 当前生效的网络配置：下载网络那一行的"当前生效"文案用它。 */
     val resolved: ResolvedNetworkConfig? = null,
 
@@ -220,8 +225,10 @@ private fun sanitizeExportPassword(raw: String): String = filterExportPasswordIn
 class SettingsViewModel(
     private val settings: SettingsRepository,
     private val secrets: SecretStore,
-    /** 线路测速（「线路」面板里的「全部测速」）。 */
+    /** 接口线路测速（「线路 → 接口线路」面板里的「全部测速」）。 */
     private val lineProbe: ApiLineProbe,
+    /** 图片线路测速（「线路 → 图片线路」面板里的「全部测速」）。 */
+    private val imageLineProbe: ImageLineProbe,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -518,7 +525,7 @@ class SettingsViewModel(
     }
 
     /**
-     * 全部线路同时测速。
+     * 全部接口线路同时测速。
      *
      * **并发**（每条线路一个 `launch`，各自独立超时），并且**逐条回填**结果：
      * 快的线路先出灯号，慢的还在转，不用等最慢的那条。已经在测时重复点直接忽略。
@@ -541,6 +548,38 @@ class SettingsViewModel(
                 }
             } finally {
                 _state.update { it.copy(speedTesting = false) }
+            }
+        }
+    }
+
+    /**
+     * 全部图片线路同时测速。
+     *
+     * 打法与 [testAllApiLines] 完全一致（并发 + 逐条回填 + 在测时忽略重复点击），
+     * 只有探针不同：[ImageLineProbe] 是去每条 CDN 上取一张 1～4 KB 的探针图，
+     * 量"图片就绪"的耗时（官方 App 的「图源顺畅度」就是同一件事）。
+     *
+     * 结果存在**单独的一份** `imageSpeedResults` 里：两列灯号互不影响，
+     * 也不会因为切换过一次面板就串味。
+     */
+    fun testAllImageLines() {
+        if (_state.value.imageSpeedTesting) return
+        val hosts = LineCatalog.imageLines.map { it.host }
+        _state.update { it.copy(imageSpeedTesting = true, imageSpeedResults = emptyMap()) }
+        viewModelScope.launch {
+            try {
+                coroutineScope {
+                    hosts.forEach { host ->
+                        launch {
+                            val result = imageLineProbe.probe(host)
+                            _state.update { current ->
+                                current.copy(imageSpeedResults = current.imageSpeedResults + (host to result))
+                            }
+                        }
+                    }
+                }
+            } finally {
+                _state.update { it.copy(imageSpeedTesting = false) }
             }
         }
     }
@@ -619,6 +658,8 @@ fun SettingsScreen(
     onResetImageLine: () -> Unit,
     /** 「全部测速」：所有接口线路并发测一轮。 */
     onTestApiLines: () -> Unit,
+    /** 「全部测速」：所有图片线路并发测一轮（每条 CDN 取一张探针图）。 */
+    onTestImageLines: () -> Unit,
     // 高级
     onSetRetry: (RetryField, Int) -> Unit,
     // 恢复默认
@@ -690,6 +731,7 @@ fun SettingsScreen(
                     onResetApiLine = onResetApiLine,
                     onResetImageLine = onResetImageLine,
                     onTestApiLines = onTestApiLines,
+                    onTestImageLines = onTestImageLines,
                 )
                 AdvancedSection(state = state, onSetRetry = onSetRetry)
                 ResetSection(onReset = { confirmReset = true })
@@ -865,7 +907,8 @@ private fun NetworkSection(
  * 3. **点完不自动关面板**（用户 2026-10-18 要求）：可以接着点下一条比较，
  *    什么时候退出由用户自己决定（**拖把手下滑**、点遮罩，或面板里的「关闭」）；
  * 4. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
- *    面板里另给「恢复默认」（回到工程当前在用的那条）和接口线路的「全部测速」。
+ *    面板里另给「恢复默认」（回到工程当前在用的那条）和**两条线路各自的「全部测速」**
+ *    （接口线路打 `/setting`，图片线路取一张探针图，见 `ApiLineProbe` / `ImageLineProbe`）。
  */
 @Composable
 private fun LineSection(
@@ -875,6 +918,7 @@ private fun LineSection(
     onResetApiLine: () -> Unit,
     onResetImageLine: () -> Unit,
     onTestApiLines: () -> Unit,
+    onTestImageLines: () -> Unit,
 ) {
     var showApiPicker by remember { mutableStateOf(false) }
     var showImagePicker by remember { mutableStateOf(false) }
@@ -931,15 +975,15 @@ private fun LineSection(
             options = remember(state.imageLine) { imagePickerOptions(state.imageLine) },
             selectedHost = state.imageLine.host,
             defaultHost = LineCatalog.DEFAULT_IMAGE_HOST,
-            // 图片线路暂不测速（用户明确不做），整列灯号都不显示
-            speedResults = emptyMap(),
-            testing = false,
+            // 与接口线路同一套：自家那份结果、自家那个「测速中」标记，两边互不干扰
+            speedResults = state.imageSpeedResults,
+            testing = state.imageSpeedTesting,
             listState = imageListState,
             onSelect = { onSelectImageLine(it) },
             onReset = { onResetImageLine() },
-            onTest = null,
+            onTest = onTestImageLines,
             onDismiss = { showImagePicker = false },
-            autoTest = false,
+            autoTest = true,
         )
     }
 }
@@ -1057,11 +1101,11 @@ private fun LineSummaryRow(
  *   就得给一个不用猜的出口，否则用户会觉得"面板关不掉了"。）
  * - **不弹 Snackbar**：提示会被面板挡住、连点几次还会排队；反馈就是这一行的
  *   「使用中 + ✓」和分组里那行域名，两者都即时更新。
- * - 「全部测速」并发测所有接口线路，结果逐条回填到每行右边的灯号上；
+ * - 「全部测速」并发测所有线路，结果逐条回填到每行右边的灯号上；
+ *   接口线路与图片线路共用这一套界面，只是各自传自己那份结果 / 忙闲标记
+ *   （探针不同，见 `ApiLineProbe` / `ImageLineProbe`）；
  * - 面板**第一次打开会自动测一轮**（[autoTest]）：用户点开的目的就是找"哪条快"，
  *   让他先看一堆"未测速"再点一次按钮是多余的一步；同一页之后的打开复用已有结果。
- *
- * 图片线路的面板传 `onTest = null` 且 `autoTest = false`：图片线路暂不做测速。
  *
  * @param listState 列表状态**由调用方持有**（`LineSection`）：它交给 `LazyColumn`，
  *   并且因为活在面板外面，面板关掉再打开时滚动位置还在。
@@ -1079,14 +1123,14 @@ private fun LinePickerSheet(
     listState: LazyListState,
     onSelect: (String) -> Unit,
     onReset: () -> Unit,
-    onTest: (() -> Unit)?,
+    onTest: () -> Unit,
     onDismiss: () -> Unit,
     autoTest: Boolean,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // 第一次打开且还没有任何结果时，自动测一轮（见上面 KDoc）
-    if (autoTest && onTest != null) {
+    if (autoTest) {
         LaunchedEffect(Unit) {
             if (speedResults.isEmpty() && !testing) onTest()
         }
@@ -1116,19 +1160,17 @@ private fun LinePickerSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             ) {
-                if (onTest != null) {
-                    TextButton(onClick = onTest, enabled = !testing) {
-                        if (testing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                        Spacer(Modifier.size(6.dp))
-                        Text(if (testing) "测速中…" else "全部测速")
+                TextButton(onClick = onTest, enabled = !testing) {
+                    if (testing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
+                    Spacer(Modifier.size(6.dp))
+                    Text(if (testing) "测速中…" else "全部测速")
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onReset, enabled = selectedHost != defaultHost) {
@@ -1154,7 +1196,6 @@ private fun LinePickerSheet(
                             selected = option.host == selectedHost,
                             isDefault = option.host == defaultHost,
                             speed = speedResults[option.host],
-                            speedEnabled = onTest != null,
                             testing = testing,
                             onClick = { onSelect(option.host) },
                         )
@@ -1180,14 +1221,13 @@ private fun LinePickerSheet(
     }
 }
 
-/** 面板里的一行：标题 + 域名 + （可选）测速灯号 + 选中标记。 */
+/** 面板里的一行：标题 + 域名 + 测速灯号 + 选中标记。 */
 @Composable
 private fun LineOptionRow(
     option: LineOption,
     selected: Boolean,
     isDefault: Boolean,
     speed: LineProbeResult?,
-    speedEnabled: Boolean,
     /** 正在测速：还没有结果的行显示「测速中…」而不是「未测速」。 */
     testing: Boolean,
     onClick: () -> Unit,
@@ -1224,9 +1264,7 @@ private fun LineOptionRow(
                 )
             }
         }
-        if (speedEnabled) {
-            SpeedBadge(result = speed, pending = testing)
-        }
+        SpeedBadge(result = speed, pending = testing)
         if (selected) {
             Icon(
                 Icons.Default.Check,

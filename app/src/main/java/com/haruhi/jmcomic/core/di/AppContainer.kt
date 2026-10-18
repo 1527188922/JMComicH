@@ -214,6 +214,16 @@ class AppContainer(private val appContext: Context) {
     val apiLineProbe: com.haruhi.jmcomic.feature.api.ApiLineProbe
         get() = com.haruhi.jmcomic.feature.api.ApiLineProbe(clientProvider = { httpClient })
 
+    /**
+     * 图片线路测速（设置页「线路 → 图片线路 → 全部测速」用）。
+     *
+     * 与 [apiLineProbe] 同理，只是派生自 [imageHttpClient]（图片请求的超时 / 拦截器那一条），
+     * 并且**每条线路现派生一次**：探针会换上全新的空连接池，让 13 条线路都是冷连接
+     * （见 `ImageLineProbe.probeClient`）。
+     */
+    val imageLineProbe: com.haruhi.jmcomic.feature.api.ImageLineProbe
+        get() = com.haruhi.jmcomic.feature.api.ImageLineProbe(clientProvider = { imageHttpClient })
+
     /** JM 仓库（在线数据 ↔ 本地库）。 */
     val jmRepository: com.haruhi.jmcomic.feature.data.Repository by lazy {
         com.haruhi.jmcomic.feature.data.Repository(

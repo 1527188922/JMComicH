@@ -163,8 +163,8 @@ app/src/main/java/com/haruhi/jmcomic/
 
 用户要求：线路**不再让用户手填域名**，改成从清单里挑；清单硬编码进代码、不每次启动去拉；
 **取消保存按钮、选中即生效**；要有「测速」按钮（所有线路同时测）；图片线路同样可选、
-但先不做测速；当前线路要在设置页直接看得见；工程当前在用的两条线路必须留住，
-并且是「恢复默认」的落点。
+**测速先不做**（2026-10-18 晚补齐，见下一节「图片线路测速」）；当前线路要在设置页直接看得见；
+工程当前在用的两条线路必须留住，并且是「恢复默认」的落点。
 
 ### 1. 做什么
 
@@ -175,7 +175,7 @@ app/src/main/java/com/haruhi/jmcomic/
 | 可选值 | 用户随便填 | 硬编码清单 `core/protocol/LineCatalog.kt`（接口 6 条 / 图片 13 条，各自 `distinctBy` 去重） |
 | 当前线路 | 要点开看文本框 | 分组里直接显示域名（+ `线路 N` / `默认` 小标签），右侧「更换 ›」 |
 | 测速 | 无 | 「全部测速」：**所有接口线路并发**打 `/setting`，各出绿/橙/红灯号 |
-| 图片线路 | 同上（自由文本） | 同接口线路的选择面板，**不做测速**（用户要求） |
+| 图片线路 | 同上（自由文本） | 同接口线路的选择面板；测速同一轮里**没做**，2026-10-18 晚补齐为同样的「全部测速」（见「图片线路测速」） |
 | 恢复默认 | 无（只有一个"清空"） | 面板里的「恢复默认」= 回到工程当前在用的线路；全局「恢复默认设置」清掉偏好后也回落到它 |
 
 存储格式没变（`SettingKeys.Jm.API_DOMAINS` / `IMAGE_DOMAINS`），只是**现在只写一个域名**。
@@ -230,6 +230,70 @@ app/src/main/java/com/haruhi/jmcomic/
   `/album?id=350234` 与 `/search?search_query=test` 都能解密出正常数据（`series=2` / `total=47`），
   图片线路侧 `cdn-msp*.jmapiproxy*.cc/media/albums/350234.jpg` 也能取到 43KB 的封面
   （另两条线路本次连不上，测速时会是红灯，属预期）。
+
+## 图片线路测速（2026-10-18）
+
+上一节把图片线路做成"可选但先不测速"之后，用户问：图片线路能不能也跟接口线路一样有个
+「全部测速」，并且是**真的测**。结论：**能**，而且官方 App 本来就有图片测速
+（只是它测的不是"一串图片 CDN"，而是当前线路那一条）。
+
+### 1. 官方 App 是怎么测图片的（`main.9a45a3ff/speedTestUtil.ts`，从 sourcemap 里核出来的）
+
+| 项 | 官方做法 | 本工程的取舍 |
+|---|---|---|
+| 探针 | `<img>` 标签加载 `{img_host}/media/users/nopic-.gif?v=0` —— 1～4 KB 的占位头像，公开、免登录 | **照抄这张图和这个路径**（`ImageLineProbe.PROBE_PATH`），没有自己编一个探针地址 |
+| 为什么用 `<img>` | `img_host` **没开 CORS**，`fetch` 读不到内容；`<img>` 不受 CORS 限制（源码注释原话） | 原生端没有 CORS，直接 GET；顺带能读到字节数 |
+| 量什么 | `imageLoadTime`：从**发 `/setting` 之前**开始计时，到图片 `onload` 结束 —— 即「拿 img_host → 载图」的累计等待 | 我们的图片线路是用户自己选的，不需要先打 `/setting`，所以只量「发请求 → 整张图收完」 |
+| 失败 | 10 秒超时 / `onerror` → `null` → 界面「無法載入」（`speed_test_image_load_fail`） | 8 秒（连接/读/写各自 8 秒 + **整次调用也封顶 8 秒**，与接口探针同一个理由）→ 行内「超时 / 不可用」 |
+| 灯号 | `getSpeedLevel(latency)` **只看 API 延迟**；图片时间只作为一行数字显示，不参与分档 | 图片线路没有 API 延迟可测，所以**用图片就绪时间分档**，阈值仍照官方那组 600 / 1200 ms（两列灯号放一起才有可比性） |
+| 范围 | **只测当前线路**（`img_host` 来自那条线路的 `/setting`），官方没有"图片线路清单" | 清单是用户可选的，所以**每条图片线路各测一条**（13 条并发） |
+| 连接 | 每次都是全新请求、**无连接复用**（源码注释：阈值放到 600/1200 就是为冷连接） | **每次探测换一个空连接池**：不这样做，正在用的那条会命中 `imageHttpClient` 里的热连接，量出几十毫秒的假绿灯，另外 12 条却是冷连接 |
+| 限流 | 每日 30 次 / 10 秒冷却 | 不做（本地测速，一轮只有十几张占位图） |
+
+结论：**不需要另找"其他测延迟方案"**，官方这套就是最合适的——它量的正是用户能感知的
+"图能不能马上出来"，而且探针图是官方自己保证存在的公开资源。
+
+### 2. 实现
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/ImageLineProbe.kt` | **新增**（约 200 行）：`probe(host)` 打一次真实取图请求，量「发请求 → 整张图收完」，复用 `LineProbeResult` / `LineSpeedLevel` / `speedLevelOf`，所以灯号、阈值、失败文案与接口线路完全一套 |
+| `core/di/AppContainer.kt` | 新增 `imageLineProbe`：从 `imageHttpClient` 派生（代理 / UA / 拦截器与图片下载一致），与 `apiLineProbe` 并列 |
+| `feature/ui/SettingsScreen.kt` | `SettingsUiState` 加 `imageSpeedResults` / `imageSpeedTesting`（**与接口线路分开两份**）；`SettingsViewModel` 加 `imageLineProbe` 参数与 `testAllImageLines()`；图片线路上传 `onTest = onTestImageLines`、`autoTest = true` |
+| `feature/ui/ModeRoot.kt` | 接 `onTestImageLines = vm::testAllImageLines`，工厂里传 `container.imageLineProbe` |
+| `app/src/test/.../feature/api/ImageLineProbeTest.kt` | **新增** 9 个用例（见下） |
+
+几个刻意的判断：
+
+- **404 才换备用探针图**（`/media/users/nopic-Male.gif`，官方文档 §8.2 的头像兜底）：
+  个别镜像可能没有那张 gif，那不等于"这条 CDN 不能用"。超时 / 5xx **不换路径**——
+  换了也是白等一轮（`a server error is not retried on the fallback path` 锁住这条）；
+- **200 也可能是劫持页**：除了状态码，还要求"body 非空 + 首个有效字节不是 `<` +
+  content-type 不是 `text/html`"，否则判「返回内容异常」。这和接口探针那句
+  "只认看起来像 JM 信封的响应"是同一个思路；
+- **不带 `Token` / `Tokenparam`**：图片 CDN 不校验签名（章节图片下载本来就不带），
+  只带 `Defaults.USER_AGENT`（CDN 对 UA 有要求）；
+- 面板**第一次打开自动测一轮**，与接口线路面板一致；两边的"测速中"标记互不影响。
+
+### 3. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` / `:app:assembleDebug` / `:app:assembleRelease`（5.8 MB）✅，
+  唯一的 warning 是既有的 `Screens.kt LocalLifecycleOwner` deprecation；
+- `:app:lintDebug` ✅ **0 error / 30 warning**（与基线条数一致），本次改动的 5 个文件
+  **没有新增 warning**（SARIF 里对 `ImageLineProbe` / `SettingsScreen` 零命中）；
+- `:app:testDebugUnitTest`：**326 个用例、7 个失败**，失败的全是既有问题
+  （`AlbumCleanerTest` 3、`ReaderAndTaskLogicTest` 3、`DownloadManagerTest` 的
+  `waitUntil` 抖动 1 个，与上一轮记录一致，与本次改动无关）；
+- 新增 `feature.api.ImageLineProbeTest` **9 个用例全绿**：探针路径与 `?v=0` 对上官方 /
+  404 才走备用图 / 5xx 不重试 / HTML 劫持页（有 content-type、只有 body、空 body 三种）判不可用 /
+  超时归成"超时"且不给毫秒数 / `looksLikeHtml` 与 URL 拼接的纯函数打表；
+- **没在真机跑过**（这台机器上不了设备）。真机验收清单：
+  1. 设置 → 线路 → 图片线路面板：第一次打开自动测一轮，13 行各自先「测速中…」再出灯号；
+  2. 「全部测速」可重测；测速期间按钮转圈、不可重复点；
+  3. 当前在用的那条（`cdn-msp2.jmapiproxy2.cc`）与其它条量到同一个数量级
+     （如果它明显快一个数量级，说明连接池没隔离好，要回来查 `probeClient()`）；
+  4. 断网 / 代理指向黑洞：整轮在 ~8 秒内结束，行内显示「超时 / 不可用」，不会挂住；
+  5. 关面板再打开：不重测、结果还在（与接口线路同一套语义）。
 
 ## 优化：线路面板不再被"下滑即关"误伤（2026-10-19）
 
@@ -1240,6 +1304,7 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `feature.jm.data.RecentAndFavoriteTest` | 19 | 最近浏览倒序 / 浏览时间语义 / 点详情不入库 / **骨架行不算本地数据** / 收藏夹数量与封面来源 Flow |
 | `core.protocol.CryptoGoldenTest` | 14 | 签名 / AES-256 解密 / 块数，与参考实现逐值一致 |
 | `core.protocol.LineCatalogTest` | 12 | **线路清单**：默认项在清单里且排第一 / 两份清单去重且是裸域名 / 空值与老格式（多行取第一行）的解析 / 清单外手填值保留成"当前线路" / 域名规整 / 测速灯号 600·1200ms 阈值 |
+| `feature.api.ImageLineProbeTest` | 9 | **图片线路测速**：探针打官方那张 nopic 占位图（路径 + `?v=0`）/ 404 才换备用头像图、5xx 不重试 / 200 但是 HTML 劫持页或空 body 判不可用 / 超时归成"超时"且不给毫秒数 / `looksLikeHtml` 与 URL 拼接打表 |
 | `core.storage.FileNamingGoldenTest` | 14 | 文件名清洗 / 本子目录名 / 章节与图片排序 |
 | `core.database.DaoTest` | 14 | 书库分页排序（入库时间倒序）/ 标签 OR / 章节分组 / 收藏唯一索引 |
 | `feature.jm.data.DownloadManagerTest` | 13 | **下载编排**：逐字节一致（块数 0 不重编码）/ 跳过已存在 / 断点只补缺口 / 等待网络 / 取消 / 追加章节 / 重试 |
