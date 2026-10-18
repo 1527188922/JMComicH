@@ -14,31 +14,42 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +71,9 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.haruhi.jmcomic.core.protocol.ApiLine
+import com.haruhi.jmcomic.core.protocol.ImageLine
+import com.haruhi.jmcomic.core.protocol.LineCatalog
 import com.haruhi.jmcomic.core.settings.DownloadNetwork
 import com.haruhi.jmcomic.core.settings.ProxyType
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
@@ -68,7 +82,11 @@ import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.core.settings.SettingLimits
 import com.haruhi.jmcomic.core.settings.SettingsRepository
+import com.haruhi.jmcomic.feature.api.ApiLineProbe
+import com.haruhi.jmcomic.feature.api.LineProbeResult
+import com.haruhi.jmcomic.feature.api.LineSpeedLevel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -138,9 +156,20 @@ data class SettingsUiState(
     val proxyUsername: String = "",
     /** 代理密码原文（默认圆点显示；留空 = 不走认证）。 */
     val proxyPassword: String = "",
-    /** 接口线路 / 图片线路：换行分隔的域名列表，第一项是当前线路。 */
-    val apiDomains: String = "",
-    val imageDomains: String = "",
+    /**
+     * 当前接口线路 / 图片线路。
+     *
+     * **选中即生效**（没有「保存」按钮）：写存储后，`AppContainer.jmApi` 每次取用都会重新读
+     * 线路，所以下一次请求就走新线路，不需要重启。可选项是硬编码的
+     * [LineCatalog.apiLines] / [LineCatalog.imageLines]；老版本手填的清单外域名
+     * 会以 `builtIn = false` 的形式留在这里，不会凭空消失。
+     */
+    val apiLine: ApiLine = LineCatalog.apiLines.first(),
+    val imageLine: ImageLine = LineCatalog.imageLines.first(),
+    /** 接口线路的测速结果（key = 域名，见 [ApiLineProbe]）；空 = 这一页还没测过。 */
+    val speedResults: Map<String, LineProbeResult> = emptyMap(),
+    /** 正在「全部测速」：六条线路并发跑，界面上按钮转圈、每条线路各自出灯号。 */
+    val speedTesting: Boolean = false,
     /** 当前生效的网络配置：下载网络那一行的"当前生效"文案用它。 */
     val resolved: ResolvedNetworkConfig? = null,
 
@@ -180,7 +209,9 @@ private fun sanitizeExportPassword(raw: String): String = filterExportPasswordIn
  * - 开关、单选、**受范围约束的滑杆**（线程数、超时、重试）**即时保存**——
  *   它们的取值构造上不可能越界（滑杆就是范围本身），不需要草稿态和校验，
  *   这也符合"少一层状态、少一处能写错的地方"的取舍；
- * - **代理字段、密码与两条线路**是自由文本，保留「保存」按钮，代理还要先校验，失败保留原值；
+ * - **两条线路也是即时保存**（用户 2026-10-18 要求）：线路清单是硬编码的，
+ *   用户只能从清单里选一条，选中就写存储、下一次请求立刻生效，不再有「保存」按钮；
+ * - **代理字段与密码**是自由文本，保留「保存」按钮，代理还要先校验，失败保留原值；
  * - 密码三个（代理 / ZIP / PDF）原文仍然存在加密凭据存储里，页面读出来预填；
  *   代理密码默认用圆点遮住、点「显示」才看原文，
  *   **导出那两个（ZIP / PDF）按用户要求明文显示，输入框右边的按钮就是「保存」**。
@@ -188,6 +219,8 @@ private fun sanitizeExportPassword(raw: String): String = filterExportPasswordIn
 class SettingsViewModel(
     private val settings: SettingsRepository,
     private val secrets: SecretStore,
+    /** 线路测速（「线路」面板里的「全部测速」）。 */
+    private val lineProbe: ApiLineProbe,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -276,8 +309,9 @@ class SettingsViewModel(
                 proxyPort = proxyPort.takeIf { it > 0 }?.toString().orEmpty(),
                 proxyUsername = proxyUsername,
                 proxyPassword = proxyPassword,
-                apiDomains = apiDomains,
-                imageDomains = imageDomains,
+                // 存储里的域名 → 清单里的可选项（空值 = 默认线路；清单外的历史手填值原样保留）
+                apiLine = LineCatalog.apiLineOf(apiDomains),
+                imageLine = LineCatalog.imageLineOf(imageDomains),
                 resolved = resolved,
                 retryAlbum = retryAlbum,
                 retrySearch = retrySearch,
@@ -442,21 +476,74 @@ class SettingsViewModel(
         }
     }
 
-    fun saveApiDomains(raw: String) {
-        val normalized = normalizeDomains(raw)
-        _state.update { it.copy(apiDomains = normalized) }
+    /**
+     * 选一条接口线路：**即时生效**，没有「保存」按钮。
+     *
+     * 为什么写入后立刻就能用：`AppContainer.jmApi` 每次取用都重新构造，线路通过
+     * `apiDomainProvider` 现读存储，所以下一次请求就走新线路（进行中的请求不受影响）。
+     * 只写一个域名（不再写"换行列表"），读侧见 `LineCatalog.apiLineOf`。
+     */
+    fun selectApiLine(host: String) = applyApiLine(host, message = null)
+
+    /** 选一条图片线路：即时生效（章节图片与"边看边下"的取图都按它走）。 */
+    fun selectImageLine(host: String) = applyImageLine(host, message = null)
+
+    /** 接口线路「恢复默认」：回到工程当前在用的那条（[LineCatalog.DEFAULT_API_HOST]）。 */
+    fun resetApiLine() = applyApiLine(LineCatalog.DEFAULT_API_HOST, "已恢复默认接口线路")
+
+    /** 图片线路「恢复默认」：回到工程当前在用的那条（[LineCatalog.DEFAULT_IMAGE_HOST]）。 */
+    fun resetImageLine() = applyImageLine(LineCatalog.DEFAULT_IMAGE_HOST, "已恢复默认图片线路")
+
+    /**
+     * 立即生效：先改界面（选中态/外部那行文字马上跟上），再落存储。
+     *
+     * 提示语只有一处（避免"切换成功"和"已恢复默认"两条提示打架）：[message] 为 null 时
+     * 用默认文案。写失败（DataStore 写异常极少见）不特殊处理——界面已经切了，
+     * 下次进页面会按存储里的值显示回真实状态。
+     */
+    private fun applyApiLine(host: String, message: String?) {
+        val line = LineCatalog.apiLineOf(host)
+        _state.update { it.copy(apiLine = line) }
         viewModelScope.launch {
-            settings.putJmString(SettingKeys.Jm.API_DOMAINS, normalized)
-            notify(if (normalized.isEmpty()) "已清空接口线路，将使用默认域名" else "接口线路已保存")
+            settings.putJmString(SettingKeys.Jm.API_DOMAINS, line.host)
+            notify(message ?: "接口线路已切换：${line.host}")
         }
     }
 
-    fun saveImageDomains(raw: String) {
-        val normalized = normalizeDomains(raw)
-        _state.update { it.copy(imageDomains = normalized) }
+    private fun applyImageLine(host: String, message: String?) {
+        val line = LineCatalog.imageLineOf(host)
+        _state.update { it.copy(imageLine = line) }
         viewModelScope.launch {
-            settings.putJmString(SettingKeys.Jm.IMAGE_DOMAINS, normalized)
-            notify(if (normalized.isEmpty()) "已清空图片线路，将使用默认域名" else "图片线路已保存")
+            settings.putJmString(SettingKeys.Jm.IMAGE_DOMAINS, line.host)
+            notify(message ?: "图片线路已切换：${line.host}")
+        }
+    }
+
+    /**
+     * 全部线路同时测速。
+     *
+     * **并发**（每条线路一个 `launch`，各自独立超时），并且**逐条回填**结果：
+     * 快的线路先出灯号，慢的还在转，不用等最慢的那条。已经在测时重复点直接忽略。
+     */
+    fun testAllApiLines() {
+        if (_state.value.speedTesting) return
+        val hosts = LineCatalog.apiLines.map { it.host }
+        _state.update { it.copy(speedTesting = true, speedResults = emptyMap()) }
+        viewModelScope.launch {
+            try {
+                coroutineScope {
+                    hosts.forEach { host ->
+                        launch {
+                            val result = lineProbe.probe(host)
+                            _state.update { current ->
+                                current.copy(speedResults = current.speedResults + (host to result))
+                            }
+                        }
+                    }
+                }
+            } finally {
+                _state.update { it.copy(speedTesting = false) }
+            }
         }
     }
 
@@ -488,22 +575,10 @@ class SettingsViewModel(
         viewModelScope.launch {
             settings.resetJm()
             reload()
+            // 线路偏好被清掉后 reload 会回落到清单里的默认线路（工程当前在用的那两条），
+            // 所以「恢复默认」之后线路就是默认线路，不需要额外写一次。
             notify("已恢复默认设置")
         }
-    }
-
-    private companion object {
-        /**
-         * 线路文本规整：逐行去空白、丢空行，再用换行拼回去。
-         *
-         * 空串是合法结果——业务侧读到空列表会回落到默认域名（AppContainer 里那一层兜底），
-         * 所以这里不需要报错，也不需要禁止清空。
-         */
-        fun normalizeDomains(raw: String): String = raw
-            .lineSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .joinToString("\n")
     }
 }
 
@@ -536,8 +611,16 @@ fun SettingsScreen(
     onSetTimeoutSeconds: (Int) -> Unit,
     onSetImageTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
-    onSaveApiDomains: (String) -> Unit,
-    onSaveImageDomains: (String) -> Unit,
+    /** 从清单里选中一条接口线路（**选中即生效**，没有「保存」）。 */
+    onSelectApiLine: (String) -> Unit,
+    /** 从清单里选中一条图片线路（同上）。 */
+    onSelectImageLine: (String) -> Unit,
+    /** 接口线路「恢复默认」：回到工程当前在用的那条。 */
+    onResetApiLine: () -> Unit,
+    /** 图片线路「恢复默认」。 */
+    onResetImageLine: () -> Unit,
+    /** 「全部测速」：所有接口线路并发测一轮。 */
+    onTestApiLines: () -> Unit,
     // 高级
     onSetRetry: (RetryField, Int) -> Unit,
     // 恢复默认
@@ -601,8 +684,14 @@ fun SettingsScreen(
                     onSetTimeoutSeconds = onSetTimeoutSeconds,
                     onSetImageTimeoutSeconds = onSetImageTimeoutSeconds,
                     onSaveProxy = onSaveProxy,
-                    onSaveApiDomains = onSaveApiDomains,
-                    onSaveImageDomains = onSaveImageDomains,
+                )
+                LineSection(
+                    state = state,
+                    onSelectApiLine = onSelectApiLine,
+                    onSelectImageLine = onSelectImageLine,
+                    onResetApiLine = onResetApiLine,
+                    onResetImageLine = onResetImageLine,
+                    onTestApiLines = onTestApiLines,
                 )
                 AdvancedSection(state = state, onSetRetry = onSetRetry)
                 ResetSection(onReset = { confirmReset = true })
@@ -735,10 +824,9 @@ private fun NetworkSection(
     onSetTimeoutSeconds: (Int) -> Unit,
     onSetImageTimeoutSeconds: (Int) -> Unit,
     onSaveProxy: (ProxyDraft) -> Unit,
-    onSaveApiDomains: (String) -> Unit,
-    onSaveImageDomains: (String) -> Unit,
 ) {
-    SettingsSection("网络与线路") {
+    // 两条线路挪到了下面的「线路」分组（选中即生效），这里只剩超时与代理
+    SettingsSection("网络") {
         SliderRow(
             title = "请求超时",
             hint = "连接与单次读写的等待上限",
@@ -768,24 +856,407 @@ private fun NetworkSection(
         CardDivider()
         ProxyEditor(state = state, onSaveProxy = onSaveProxy)
     }
+}
+
+/**
+ * 「线路」分组：接口线路 + 图片线路，两行都是**点开选择面板 → 选中即生效**。
+ *
+ * 三条设计上的约定（对应用户要求）：
+ * 1. **当前线路直接显示在分组里**，不用点开面板就知道自己在用哪一条（每行的第二行就是域名）；
+ * 2. **没有「保存」按钮**：面板里点一条就关面板、写存储、提示一句，下一次请求就走新线路；
+ * 3. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
+ *    面板里另给「恢复默认」（回到工程当前在用的那条）和接口线路的「全部测速」。
+ */
+@Composable
+private fun LineSection(
+    state: SettingsUiState,
+    onSelectApiLine: (String) -> Unit,
+    onSelectImageLine: (String) -> Unit,
+    onResetApiLine: () -> Unit,
+    onResetImageLine: () -> Unit,
+    onTestApiLines: () -> Unit,
+) {
+    var showApiPicker by remember { mutableStateOf(false) }
+    var showImagePicker by remember { mutableStateOf(false) }
 
     SettingsSection("线路") {
-        DomainsEditor(
+        LineSummaryRow(
             title = "接口线路",
-            hint = "一行一个，放在第一行的域名将生效",
-            help = "获取漫画详情、图片列表清单和搜索将使用该域名，放在第一行的域名将生效；留空使用默认线路域名。",
-            value = state.apiDomains,
-            onSave = onSaveApiDomains,
+            hint = "获取漫画详情、图片清单与搜索都走这条线路",
+            host = state.apiLine.host,
+            label = state.apiLine.label,
+            isDefault = LineCatalog.isDefaultApi(state.apiLine.host),
+            onClick = { showApiPicker = true },
         )
         CardDivider()
-        DomainsEditor(
+        LineSummaryRow(
             title = "图片线路",
-            hint = "一行一个，放在第一行的域名将生效",
-            help = "下载漫画图片、封面使用该域名，放在第一行的域名将生效（留空使用默认线路域名）",
-            value = state.imageDomains,
-            onSave = onSaveImageDomains,
+            hint = "下载章节图片、边看边下取图都走这条线路",
+            host = state.imageLine.host,
+            label = null,
+            isDefault = LineCatalog.isDefaultImage(state.imageLine.host),
+            onClick = { showImagePicker = true },
         )
     }
+
+    if (showApiPicker) {
+        LinePickerSheet(
+            title = "接口线路",
+            options = remember(state.apiLine) { apiPickerOptions(state.apiLine) },
+            selectedHost = state.apiLine.host,
+            defaultHost = LineCatalog.DEFAULT_API_HOST,
+            speedResults = state.speedResults,
+            testing = state.speedTesting,
+            onSelect = {
+                onSelectApiLine(it)
+                showApiPicker = false
+            },
+            onReset = {
+                onResetApiLine()
+                showApiPicker = false
+            },
+            onTest = onTestApiLines,
+            onDismiss = { showApiPicker = false },
+            autoTest = true,
+        )
+    }
+
+    if (showImagePicker) {
+        LinePickerSheet(
+            title = "图片线路",
+//            hint = null,
+            options = remember(state.imageLine) { imagePickerOptions(state.imageLine) },
+            selectedHost = state.imageLine.host,
+            defaultHost = LineCatalog.DEFAULT_IMAGE_HOST,
+            // 图片线路暂不测速（用户明确不做），整列灯号都不显示
+            speedResults = emptyMap(),
+            testing = false,
+            onSelect = {
+                onSelectImageLine(it)
+                showImagePicker = false
+            },
+            onReset = {
+                onResetImageLine()
+                showImagePicker = false
+            },
+            onTest = null,
+            onDismiss = { showImagePicker = false },
+            autoTest = false,
+        )
+    }
+}
+
+/**
+ * 面板里的一行可选线路。
+ *
+ * @property title 主文字：接口线路是清单里的名字（`线路 2`），图片线路直接是域名。
+ * @property subtitle 次文字：接口线路显示域名；图片线路不重复显示。
+ */
+private data class LineOption(
+    val host: String,
+    val title: String,
+    val subtitle: String?,
+)
+
+/**
+ * 接口线路的可选项：清单 + （若当前是清单外的历史手填值）把它自己加在最前面。
+ *
+ * **为什么要把当前项补进去**：老版本允许手填域名，升级用户的线路可能不在清单里。
+ * 不补进去的话面板里没有任何一行是「使用中」，看起来像坏了；补进去还能让他随时切回清单里的线路。
+ */
+private fun apiPickerOptions(current: ApiLine): List<LineOption> = buildList {
+    fun option(line: ApiLine) = LineOption(host = line.host, title = line.label, subtitle = line.host)
+    if (!current.builtIn) add(option(current))
+    LineCatalog.apiLines.forEach { add(option(it)) }
+}.distinctBy { it.host }
+
+/** 图片线路的可选项，规则同上（清单外的手填值排第一）。 */
+private fun imagePickerOptions(current: ImageLine): List<LineOption> = buildList {
+    if (!current.builtIn) add(LineOption(host = current.host, title = current.host, subtitle = null))
+    LineCatalog.imageLines.forEach { add(LineOption(host = it.host, title = it.host, subtitle = null)) }
+}.distinctBy { it.host }
+
+/**
+ * 分组里的「当前线路」行：左边名称 + 当前域名，右边一颗「更换」。
+ *
+ * 整行可点（不是只有「更换」两个字可点）：手机上点一整行比点一个小按钮容易得多，
+ * 而且这一行的唯一动作就是"换线路"，不存在误触后果。
+ */
+@Composable
+private fun LineSummaryRow(
+    title: String,
+    hint: String,
+    host: String,
+    label: String?,
+    isDefault: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                // 名字（线路 2）跟在标题后面，当"这是清单里的第几条"的线索
+                if (label != null && label != host) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
+                if (isDefault) MiniTag(text = "默认", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (hint.isNotEmpty()) {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // ★ 当前线路在分组里直接可读，不用点开面板
+            Text(
+                text = host,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        Text(
+            text = "更换",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 8.dp),
+        )
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * 线路选择面板（底部弹出的列表）。
+ *
+ * 交互约定：
+ * - **点一行 = 选中并关闭**（选中即生效，没有确认按钮）；
+ * - 「全部测速」并发测所有接口线路，结果逐条回填到每行右边的灯号上；
+ * - 面板**第一次打开会自动测一轮**（[autoTest]）：用户点开的目的就是找"哪条快"，
+ *   让他先看一堆"未测速"再点一次按钮是多余的一步；同一页之后的打开复用已有结果。
+ *
+ * 图片线路的面板传 `onTest = null` 且 `autoTest = false`：图片线路暂不做测速。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LinePickerSheet(
+    title: String,
+    hint: String? = null,
+    options: List<LineOption>,
+    selectedHost: String,
+    defaultHost: String,
+    speedResults: Map<String, LineProbeResult>,
+    testing: Boolean,
+    onSelect: (String) -> Unit,
+    onReset: () -> Unit,
+    onTest: (() -> Unit)?,
+    onDismiss: () -> Unit,
+    autoTest: Boolean,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // 第一次打开且还没有任何结果时，自动测一轮（见上面 KDoc）
+    if (autoTest && onTest != null) {
+        LaunchedEffect(Unit) {
+            if (speedResults.isEmpty() && !testing) onTest()
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            hint?.let {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            ) {
+                if (onTest != null) {
+                    TextButton(onClick = onTest, enabled = !testing) {
+                        if (testing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        Spacer(Modifier.size(6.dp))
+                        Text(if (testing) "测速中…" else "全部测速")
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onReset, enabled = selectedHost != defaultHost) {
+                    Text("恢复默认")
+                }
+            }
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                items(options, key = { it.host }) { option ->
+                    LineOptionRow(
+                        option = option,
+                        selected = option.host == selectedHost,
+                        isDefault = option.host == defaultHost,
+                        speed = speedResults[option.host],
+                        speedEnabled = onTest != null,
+                        testing = testing,
+                        onClick = { onSelect(option.host) },
+                    )
+                }
+            }
+//            Row(
+//                verticalAlignment = Alignment.CenterVertically,
+//                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+//            ) {
+//                Spacer(Modifier.weight(1f))
+//                TextButton(onClick = onDismiss) { Text("关闭") }
+//            }
+        }
+    }
+}
+
+/** 面板里的一行：标题 + 域名 + （可选）测速灯号 + 选中标记。 */
+@Composable
+private fun LineOptionRow(
+    option: LineOption,
+    selected: Boolean,
+    isDefault: Boolean,
+    speed: LineProbeResult?,
+    speedEnabled: Boolean,
+    /** 正在测速：还没有结果的行显示「测速中…」而不是「未测速」。 */
+    testing: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            // 选中行铺一层很淡的主色：一眼能看出"在用哪条"，又不至于像标签一样抢眼
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else Color.Transparent,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = option.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                )
+                if (selected) {
+                    MiniTag(text = "使用中", color = MaterialTheme.colorScheme.primary)
+                } else if (isDefault) {
+                    MiniTag(text = "默认", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            option.subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (speedEnabled) {
+            SpeedBadge(result = speed, pending = testing)
+        }
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "当前使用",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp).size(18.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 测速灯号：一个圆点 + 一句短文案。
+ *
+ * 三档阈值与官方 App 一致（`feature/api/speedLevelOf`）；
+ * 失败只显示「超时 / 不可用」这种短词——完整原因（"连不上服务器，请检查网络或代理设置"）
+ * 放不进这一行，也没必要：用户要的是"这条能不能用"。
+ *
+ * @param pending 这一轮测速还没轮到自己（结果还没回填）时显示「测速中…」，
+ *   免得用户看到一整列「未测速」以为按钮没反应。
+ */
+@Composable
+private fun SpeedBadge(result: LineProbeResult?, pending: Boolean) {
+    val level = result?.level ?: LineSpeedLevel.UNKNOWN
+    val color = when (level) {
+        LineSpeedLevel.SMOOTH -> SpeedSmoothColor
+        LineSpeedLevel.NORMAL -> RestartHintColor
+        LineSpeedLevel.LAGGY, LineSpeedLevel.FAILED -> SpeedSlowColor
+        LineSpeedLevel.UNKNOWN -> MaterialTheme.colorScheme.outline
+    }
+    val text = when (level) {
+        LineSpeedLevel.UNKNOWN -> if (pending) "测速中…" else "未测速"
+        LineSpeedLevel.SMOOTH, LineSpeedLevel.NORMAL, LineSpeedLevel.LAGGY -> "${result?.latencyMs} ms"
+        LineSpeedLevel.FAILED -> when {
+            result?.error?.contains("超时") == true -> "超时"
+            result?.error?.contains("证书") == true -> "证书错误"
+            else -> "不可用"
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(color, CircleShape),
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (level == LineSpeedLevel.UNKNOWN) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                color
+            },
+        )
+    }
+}
+
+/** 小号标签（「使用中」「默认」）：细描边 + 主色/次要色文字，不抢标题的注意力。 */
+@Composable
+private fun MiniTag(text: String, color: Color) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+    )
 }
 
 @Composable
@@ -852,7 +1323,7 @@ private fun ResetSection(onReset: () -> Unit) {
 }
 
 // ======================================================================
-// 代理与线路的编辑块
+// 代理编辑块
 // ======================================================================
 
 /**
@@ -928,45 +1399,6 @@ private fun ProxyEditor(
     }
 }
 
-/**
- * 线路编辑块。
- *
- * 换行分隔的域名列表：也是自由文本，所以同样用「保存」提交。
- * 空值不禁止——业务侧读到空列表会用默认域名兜底。
- */
-@Composable
-private fun DomainsEditor(
-    title: String,
-    hint: String,
-    help: String? = null,
-    value: String,
-    onSave: (String) -> Unit,
-) {
-    var draft by remember(value) { mutableStateOf(value) }
-
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        SettingsTitleRow(title = title, help = help)
-        Text(
-            text = hint,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        OutlinedTextField(
-            value = draft,
-            onValueChange = { draft = it },
-            minLines = 2,
-            label = { Text("域名列表") },
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Button(onClick = { onSave(draft) }) { Text("保存") }
-        }
-    }
-}
-
 // ======================================================================
 // 基础行
 // ======================================================================
@@ -1013,6 +1445,17 @@ private fun CardDivider() {
  * 值偏深，浅色底上可读；深浅主题共用同一个值。
  */
 private val RestartHintColor = Color(0xFFE8590C)
+
+/**
+ * 线路测速灯号的两个固定色值。
+ *
+ * 与 [RestartHintColor] 同理：`MaterialTheme` 调色板里没有"绿 / 红"这种语义槽位
+ * （`primary` 是品牌蓝、`error` 只表示错误），而测速灯号需要和官方 App 一致的三档观感。
+ * 橙色直接复用 [RestartHintColor]。三个值都取偏深的色值，浅色底上可读，
+ * 深色主题下也只是偏暗一点，不刺眼。
+ */
+private val SpeedSmoothColor = Color(0xFF2E7D32)
+private val SpeedSlowColor = Color(0xFFC62828)
 
 /**
  * 行标题：标题 +（可选）问号图标。

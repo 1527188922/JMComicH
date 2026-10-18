@@ -2,7 +2,7 @@
 
 > 计划原文：`docs/android-app-plan.md`（= `2026-10-05-android-jm-bilibili-app.md`）
 > 跨功能硬约束：`docs/CONVENTIONS.md`（封面加载规范等）
-> 最后更新：2026-10-15
+> 最后更新：2026-10-18
 
 ## 目录结构决策
 
@@ -158,6 +158,76 @@ app/src/main/java/com/haruhi/jmcomic/
   `ReaderAndTaskLogicTest` 的 2 个底栏切换方向用例）。`git stash` 后在**干净工作区**跑
   同一批用例，这 6 个**全部复现**，所以与本次改动无关，是既有的未修问题；
 - 文档：`README.md` 与本文的目录树、P1 明细里的"三作用域 + 跟随全局继承"已同步。
+
+## 改造：线路改成"清单选择"（2026-10-18）
+
+用户要求：线路**不再让用户手填域名**，改成从清单里挑；清单硬编码进代码、不每次启动去拉；
+**取消保存按钮、选中即生效**；要有「测速」按钮（所有线路同时测）；图片线路同样可选、
+但先不做测速；当前线路要在设置页直接看得见；工程当前在用的两条线路必须留住，
+并且是「恢复默认」的落点。
+
+### 1. 做什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 线路录入 | 自由文本框（`一行一个，第一行生效`）+ 「保存」 | **底部面板选择**（`ModalBottomSheet`）+ **选中即生效**（无保存按钮） |
+| 可选值 | 用户随便填 | 硬编码清单 `core/protocol/LineCatalog.kt`（接口 6 条 / 图片 13 条，各自 `distinctBy` 去重） |
+| 当前线路 | 要点开看文本框 | 分组里直接显示域名（+ `线路 N` / `默认` 小标签），右侧「更换 ›」 |
+| 测速 | 无 | 「全部测速」：**所有接口线路并发**打 `/setting`，各出绿/橙/红灯号 |
+| 图片线路 | 同上（自由文本） | 同接口线路的选择面板，**不做测速**（用户要求） |
+| 恢复默认 | 无（只有一个"清空"） | 面板里的「恢复默认」= 回到工程当前在用的线路；全局「恢复默认设置」清掉偏好后也回落到它 |
+
+存储格式没变（`SettingKeys.Jm.API_DOMAINS` / `IMAGE_DOMAINS`），只是**现在只写一个域名**。
+老格式（换行列表）仍按"取第一行"解析，升级用户不会丢了自己的线路。
+
+### 2. 清单从哪来（硬编码进 `LineCatalog`）
+
+- **接口线路**：官方线路清单接口 `newsvr-2025.txt`（AES-256-ECB，key = `md5("diosfjckwpqpdfjkvnqQjsik")`）
+  解密出的 `jm3_Server`，2026-10-18 实测快照 = `www.cdnhjk.net` / `www.cdngwc.cc` /
+  `www.cdngwc.net` / `www.cdngwc.club` / `www.cdnutc.me`（`Server` 与 `jm3_Server` 两个字段去重后就是这 5 条）。
+  **再加工程当前在用的 `www.cdnbea.net`**（`Defaults.DEFAULT_API_DOMAIN`），放列表第一位、标「默认」。
+  清单里的第三份数据是"拉不到远端清单时用的内置兜底"（`www.cdnaspa.vip` / `cdnplaystation6.*` 那 4 条），
+  文档记录它们**基本全部失效**（404 / NXDOMAIN），所以**没有**收进可选列表。
+- **图片线路**：对每条接口线路 × 每个图源（`/setting?app_img_shunt=1..4`）实际请求，
+  收集 `img_host`，去重后 12 条（`cdn-msp{,2,3}.*` + `cdn-msp12` + `tencent.jmdanjonproxy.xyz`）；
+  **再加 `Defaults.IMAGE_DOMAIN` = `cdn-msp2.jmapiproxy2.cc`**（工程当前在用），同样放第一位。
+  注意 `img_host` 是**随机轮换**的（同一线路同一图源多次请求可能给不同 CDN），所以这份是
+  "实测出现过的全集"，不是接口能枚举出来的封闭集合；有新增就改 `LineCatalog` 再发版。
+
+### 3. 测速（`feature/api/ApiLineProbe.kt`）
+
+- 打的是文档 §3.6 的测速接口 `GET https://{host}/setting?app_img_shunt=1&lang=TW`，
+  带 `Token` / `Tokenparam` 签名。**实测这个接口不需要登录**（签名只依赖时间戳），
+  所以按用户"需要认证就不做"的前提**保留测速功能**；
+- 量**首字节耗时**（拿到响应头为止），灯号阈值照官方 `speedTestUtil.ts`：
+  `<600ms` 绿 / `600~1200ms` 橙 / `≥1200ms` 红，连不上算红（行内只显示「超时 / 不可用」）；
+- **超时固定 8 秒**，不跟随设置里默认 3 秒的「请求超时」（否则"能用但慢"的线路会被误判成红）；
+  客户端由 `httpClient.newBuilder()` 派生，代理 / UA 与其它请求一致，只有超时不同；
+- 所有线路**并发**测（每条一个 `launch`）、**逐条回填**结果；面板第一次打开会自动测一轮，
+  「全部测速」按钮可重测。
+
+### 4. 回归验证
+
+- `:app:compileDebugKotlin` / `:app:assembleDebug` / `:app:assembleRelease` 均通过；`:app:lintDebug` **0 error**，
+  本次改动的 6 个文件**没有新增 warning**；
+- `:app:testDebugUnitTest`：**313 个用例、6 个失败**，全部是既有问题（`AlbumCleanerTest` 3 个、
+  `ReaderAndTaskLogicTest` 的 3 个文案/底栏方向用例，与线路无关；见「取消全局设置作用域」一节的记录）。
+  另：`DownloadManagerTest` 那 1 个"超时：追加的章节没有被下载"是**与 release 构建并行跑时的偶发超时**，
+  单独跑该测试类通过；
+- 新增 `core.protocol.LineCatalogTest`（12 个用例：默认项在清单里且排第一 / 两份清单去重且是裸域名 /
+  空值与老格式多行的解析 / 清单外手填值保留 / 域名规整 / 600·1200ms 阈值打表），全部通过；
+- **模拟器上按真机流程点过一遍**（Pixel_10_Pro_XL / API 36，debug 包）：
+  设置页「线路」分组直接显示当前域名 → 点开接口线路面板 → 自动测速出灯号（默认线路/线路1-5，
+  成功显示 ms、失败显示「超时 / 不可用」）→ 点「线路 4」立刻关面板 + 外部行变成 `www.cdngwc.club` +
+  底部提示「接口线路已切换」→ 面板里「恢复默认」回到 `www.cdnbea.net`；
+  图片线路面板同样可选（13 条、无灯号）、选中后外部行与提示同步更新。
+  实测中 19.4 秒才回来的那次促成了"整次调用也封顶 8 秒"的修正（见上）；
+- 用 Node 复刻签名实测过：清单接口能解密；`/setting` 在 `www.cdnbea.net` / `www.cdnutc.me` /
+  `www.cdngwc.cc` 上返回 200；**换线路之后内容接口也通**——用工程现有的签名
+  （`18comicAPP` + `2.0.13`）在 `www.cdnutc.me` / `www.cdngwc.cc` / `www.cdngwc.club` 上
+  `/album?id=350234` 与 `/search?search_query=test` 都能解密出正常数据（`series=2` / `total=47`），
+  图片线路侧 `cdn-msp*.jmapiproxy*.cc/media/albums/350234.jpg` 也能取到 43KB 的封面
+  （另两条线路本次连不上，测速时会是红灯，属预期）。
 
 ## 阶段状态
 
@@ -882,8 +952,9 @@ Expected identity hash: 7ecd5cfc..., found: 31e452937...
 
 1. **release 签名 keystore 需备份**：`jmcomic-release.jks` 只在本地，丢了无法覆盖升级。
    （运维事项，不是代码问题。）
-2. **JM 图片线路默认值**：参考实现硬编码 `IMAGE_DOMAIN`，App 侧作为可编辑线路列出，
-   默认值沿用 `cdn-msp2.jmapiproxy2.cc`（见 `Defaults`）。这条只是记录，不是待确认项。
+2. **JM 图片线路默认值**：参考实现硬编码 `IMAGE_DOMAIN`，App 侧作为可选线路列出
+   （2026-10-18 起改成清单选择，见上方「线路改成"清单选择"」），
+   默认值沿用 `cdn-msp2.jmapiproxy2.cc`（见 `Defaults` / `LineCatalog`）。这条只是记录，不是待确认项。
 3. **PDF 单页尺寸上限**：参考实现不处理 14400×14400 上限，JM 长图可能超。
    P4 已按"**按高度均匀切片**"落地（理由与规则见上方 P4 明细），若你更希望"超限就拒绝导出"，
    说一声即可改回；当前选择是保证导出一定能拿到文件。
@@ -968,6 +1039,11 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 （27 条 warning 均为既有项），debug / release APK 均可构建（release 5.6 MB）；
 第二十四轮新增 / 同步 4 个用例（273 → 277）**未在本机运行**（无 Android/gradle 环境）。
 
+**2026-10-18 本机实跑**（线路改成清单选择之后）：`313 个单元测试`，其中 **6 个失败**全是既有的
+（`AlbumCleanerTest` 3 个、`ReaderAndTaskLogicTest` 3 个）；`lint 0 error / 30 warning`
+（本次改动的 6 个文件 0 warning）；`assembleDebug` 与 `assembleRelease`（5.8 MB）均通过。
+新增的 `core.protocol.LineCatalogTest` 12 个用例全绿。
+
 ### 测试清单（单元测试）
 
 | 测试类 | 用例数 | 覆盖内容 |
@@ -976,6 +1052,7 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `feature.jm.ui.ReaderAndTaskLogicTest` | 23 | 任务状态与进度文案 / 下载面板默认勾选与"已在队列" / **底栏切换方向** / 阅读器进度条与"待取 vs 失败" / 阅读偏好编解码 |
 | `feature.jm.data.RecentAndFavoriteTest` | 19 | 最近浏览倒序 / 浏览时间语义 / 点详情不入库 / **骨架行不算本地数据** / 收藏夹数量与封面来源 Flow |
 | `core.protocol.CryptoGoldenTest` | 14 | 签名 / AES-256 解密 / 块数，与参考实现逐值一致 |
+| `core.protocol.LineCatalogTest` | 12 | **线路清单**：默认项在清单里且排第一 / 两份清单去重且是裸域名 / 空值与老格式（多行取第一行）的解析 / 清单外手填值保留成"当前线路" / 域名规整 / 测速灯号 600·1200ms 阈值 |
 | `core.storage.FileNamingGoldenTest` | 14 | 文件名清洗 / 本子目录名 / 章节与图片排序 |
 | `core.database.DaoTest` | 14 | 书库分页排序（入库时间倒序）/ 标签 OR / 章节分组 / 收藏唯一索引 |
 | `feature.jm.data.DownloadManagerTest` | 13 | **下载编排**：逐字节一致（块数 0 不重编码）/ 跳过已存在 / 断点只补缺口 / 等待网络 / 取消 / 追加章节 / 重试 |

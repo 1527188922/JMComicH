@@ -63,13 +63,21 @@ object NetworkClientFactory {
      * 走 `newBuilder()` 而不是再调一次 [create]：结果**共享 ConnectionPool / Dispatcher /
      * 拦截器链 / Cache，只有三个超时不同**。所以「构建逻辑」仍然只有 [create] 一份，
      * 这里只是同一套逻辑的参数化结果（接口超时与图片下载超时分开配置时用）。
+     *
+     * @param callTimeoutSeconds 整次调用的总时长上限。**默认 0 = 不设上限**（大文件下载可以很久）；
+     *   只有"一次请求本身就很快"的场景才该给（例如线路测速：连接 / 读 / 写各自 8 秒时，
+     *   一次重试试着试着能拖到 20 秒，那已经失去"测速"的意义）。
      */
-    fun deriveWithTimeout(base: OkHttpClient, timeoutSeconds: Int): OkHttpClient =
+    fun deriveWithTimeout(
+        base: OkHttpClient,
+        timeoutSeconds: Int,
+        callTimeoutSeconds: Long = 0,
+    ): OkHttpClient =
         base.newBuilder()
             .connectTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
             .readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
             .writeTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
-            .callTimeout(0, TimeUnit.SECONDS)
+            .callTimeout(callTimeoutSeconds, TimeUnit.SECONDS)
             .build()
 
     private fun parseProxy(config: ResolvedNetworkConfig, proxyUrl: String): Proxy {

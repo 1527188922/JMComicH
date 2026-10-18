@@ -131,7 +131,7 @@ fun MoreScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         MoreEntryRow(
                             title = "应用设置",
-                            subtitle = "阅读与显示、下载、导出、网络与线路",
+                            subtitle = "阅读与显示、下载、导出、网络、线路",
                             badgeCount = 0,
                             onClick = onOpenSettings,
                         )

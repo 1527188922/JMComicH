@@ -57,10 +57,19 @@ internal object SettingKeys {
         const val SAVE_SEARCH_HISTORY = "save_search_history"
         const val SEARCH_HISTORY_LIMIT = "search_history_limit"
 
-        /** 接口线路（换行分隔的域名列表，第一项为当前线路） */
+        /**
+         * 选中的接口线路（**只存一个域名**，例如 `www.cdngwc.cc`）。
+         *
+         * 可选值来自硬编码清单 `core/protocol/LineCatalog.kt`（设置页只让用户从清单里选，
+         * 选中即生效，没有「保存」按钮）。空值 = 用工程当前的默认线路
+         * （`Defaults.DEFAULT_API_DOMAIN`），「恢复默认设置」清掉偏好后就是这一种。
+         *
+         * **兼容老格式**：这个 key 以前存的是「换行分隔的域名列表，第一行生效」，
+         * 升级用户的历史值仍按"取第一行"解析（见 `LineCatalog.apiLineOf`）。
+         */
         const val API_DOMAINS = "api_domains"
 
-        /** 图片线路（换行分隔的域名列表，第一项为当前线路） */
+        /** 选中的图片线路（只存一个域名）。规则与 [API_DOMAINS] 相同。 */
         const val IMAGE_DOMAINS = "image_domains"
 
         /** 请求超时（秒）：接口（详情 / 章节 / 搜索）用。 */

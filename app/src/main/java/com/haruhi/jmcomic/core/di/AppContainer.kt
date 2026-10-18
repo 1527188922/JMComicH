@@ -6,6 +6,7 @@ import com.haruhi.jmcomic.core.database.JmComicDatabase
 import com.haruhi.jmcomic.core.network.NetworkClientFactory
 import com.haruhi.jmcomic.core.network.NetworkMonitor
 import com.haruhi.jmcomic.core.protocol.Defaults
+import com.haruhi.jmcomic.core.protocol.LineCatalog
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
@@ -145,13 +146,8 @@ class AppContainer(private val appContext: Context) {
                 return SettingDefaults.Jm.normalizeDownloadThreads(configured)
             }
 
-            override suspend fun imageDomain(): String {
-                val first = settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS).first()
-                    .lineSequence()
-                    .map { it.trim() }
-                    .firstOrNull { it.isNotEmpty() }
-                return first ?: Defaults.IMAGE_DOMAIN
-            }
+            override suspend fun imageDomain(): String =
+                LineCatalog.imageLineOf(settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS).first()).host
 
             override suspend fun allowsTransfer(metered: Boolean): Boolean {
                 val policy = settings.resolveJmNetwork(secrets).downloadNetwork
@@ -197,14 +193,26 @@ class AppContainer(private val appContext: Context) {
         .jmInt(key, com.haruhi.jmcomic.core.settings.SettingDefaults.Jm.RETRY)
         .first()
 
-    /** 接口线路：取设置里列表的第一项；未配置时用参考实现的默认域名。 */
-    private suspend fun jmApiDomain(): String = settings
-        .jmString(SettingKeys.Jm.API_DOMAINS)
-        .first()
-        .lineSequence()
-        .map { it.trim() }
-        .firstOrNull { it.isNotEmpty() }
-        ?: com.haruhi.jmcomic.core.protocol.Defaults.DEFAULT_API_DOMAIN
+    /**
+     * 接口线路：取设置里选中的那一条；没设置过（或刚「恢复默认」）时用工程当前的默认线路。
+     *
+     * 线路清单是硬编码的（`core/protocol/LineCatalog.kt`），设置页只能从清单里选，
+     * 所以这里拿到的永远是清单里的域名；老版本手填的历史值也原样沿用
+     * （`LineCatalog.apiLineOf` 会把清单外的域名当成"当前线路"）。
+     */
+    private suspend fun jmApiDomain(): String = LineCatalog
+        .apiLineOf(settings.jmString(SettingKeys.Jm.API_DOMAINS).first())
+        .host
+
+    /**
+     * 线路测速（设置页「线路 → 全部测速」用）。
+     *
+     * 客户端取 [httpClient] 的派生：代理 / UA / 拦截器与其它请求一致，只有超时是测速
+     * 自己的固定值（见 `ApiLineProbe.DEFAULT_TIMEOUT_SECONDS`）。**每次取用重新派生**，
+     * 所以改完超时 / 代理后重启应用即生效，和接口请求的生效时机一致。
+     */
+    val apiLineProbe: com.haruhi.jmcomic.feature.api.ApiLineProbe
+        get() = com.haruhi.jmcomic.feature.api.ApiLineProbe(clientProvider = { httpClient })
 
     /** JM 仓库（在线数据 ↔ 本地库）。 */
     val jmRepository: com.haruhi.jmcomic.feature.data.Repository by lazy {

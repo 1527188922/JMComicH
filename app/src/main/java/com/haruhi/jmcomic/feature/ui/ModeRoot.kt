@@ -504,8 +504,12 @@ fun ModeRoot(
                         onSetTimeoutSeconds = vm::setTimeoutSeconds,
                         onSetImageTimeoutSeconds = vm::setImageTimeoutSeconds,
                         onSaveProxy = vm::saveProxy,
-                        onSaveApiDomains = vm::saveApiDomains,
-                        onSaveImageDomains = vm::saveImageDomains,
+                        // 线路：清单里选中即生效（没有「保存」按钮），面板里可「全部测速」
+                        onSelectApiLine = vm::selectApiLine,
+                        onSelectImageLine = vm::selectImageLine,
+                        onResetApiLine = vm::resetApiLine,
+                        onResetImageLine = vm::resetImageLine,
+                        onTestApiLines = vm::testAllApiLines,
                         // 高级
                         onSetRetry = vm::setRetry,
                         // 恢复默认：只重置偏好，不动书库与文件、不动凭据
@@ -834,7 +838,7 @@ class ViewModelFactory(
             MoreViewModel(container.jmRepository) as T
 
         modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
-            SettingsViewModel(container.settings, container.secrets) as T
+            SettingsViewModel(container.settings, container.secrets, container.apiLineProbe) as T
 
         modelClass.isAssignableFrom(ReaderViewModel::class.java) ->
             ReaderViewModel(
