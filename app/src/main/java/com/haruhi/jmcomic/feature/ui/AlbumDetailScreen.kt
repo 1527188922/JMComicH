@@ -1138,6 +1138,7 @@ private fun FavoritePickerSheet(
 ) {
     var newName by remember { mutableStateOf("") }
     var showCreate by remember { mutableStateOf(false) }
+    val favoritesState = rememberLazyListState()
 
     // 内容区不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
     HandleDragOnlyBottomSheet(onDismissRequest = onDismiss) {
@@ -1151,27 +1152,40 @@ private fun FavoritePickerSheet(
             )
             Spacer(Modifier.height(8.dp))
 
-            allFavorites.forEach { favorite ->
-                val joined = favorite.id in currentFavoriteIds
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(
-                        onClick = { if (joined) onRemove(favorite.id) else onAdd(favorite.id) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            text = if (joined) "✓ ${favorite.name}" else favorite.name,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    if (!joined) {
-                        TextButton(onClick = { onMoveTo(favorite.id) }) { Text("移动到") }
+            // 收藏夹多了必须能滚：以前这里是裸 `forEach`，超出的夹和下面的「新建收藏夹」
+            // 会被裁出屏幕、怎么滑都够不到。现在给列表一个上限 + 滚动条，
+            // 标题 / 说明 / 新建那一块留在列表外面，始终看得见。
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
+            ) {
+                LazyColumn(state = favoritesState, modifier = Modifier.fillMaxWidth()) {
+                    items(allFavorites, key = { it.id }) { favorite ->
+                        val joined = favorite.id in currentFavoriteIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(
+                                onClick = { if (joined) onRemove(favorite.id) else onAdd(favorite.id) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(
+                                    text = if (joined) "✓ ${favorite.name}" else favorite.name,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                            if (!joined) {
+                                TextButton(onClick = { onMoveTo(favorite.id) }) { Text("移动到") }
+                            }
+                        }
                     }
                 }
+                // 内容没超出时它什么都不画（见 Scrollbar.kt）
+                VerticalScrollbar(state = favoritesState, modifier = Modifier.matchParentSize())
             }
 
             Spacer(Modifier.height(4.dp))
@@ -1531,54 +1545,63 @@ private fun DownloadSheet(
                 }
                 TextButton(onClick = { selected = emptySet() }) { Text("全不选") }
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+            // 列表 + 右侧滚动条（下载章节可能几百话，得让人一眼看出"下面还有"）
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp),
             ) {
-                items(state.chapters, key = { it.chapterId }) { chapter ->
-                    val inQueue = chapter.chapterId in queued
-                    val checked = !inQueue && chapter.chapterId in selected
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            // 已在队列里的章节**不可选**：重复提交只会得到"已有任务"的提示
-                            .clickable(enabled = !inQueue) {
-                                selected = if (checked) {
-                                    selected - chapter.chapterId
-                                } else {
-                                    selected + chapter.chapterId
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(state.chapters, key = { it.chapterId }) { chapter ->
+                        val inQueue = chapter.chapterId in queued
+                        val checked = !inQueue && chapter.chapterId in selected
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                // 已在队列里的章节**不可选**：重复提交只会得到"已有任务"的提示
+                                .clickable(enabled = !inQueue) {
+                                    selected = if (checked) {
+                                        selected - chapter.chapterId
+                                    } else {
+                                        selected + chapter.chapterId
+                                    }
                                 }
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = null, enabled = !inQueue)
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = chapter.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    // 队列中的章节用次要颜色区分（用户要求第 3 点）
+                                    color = if (inQueue) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (inQueue) "已在下载队列" else chapter.statusText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (inQueue) {
+                                        MaterialTheme.colorScheme.tertiary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
                             }
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                    ) {
-                        Checkbox(checked = checked, onCheckedChange = null, enabled = !inQueue)
-                        Spacer(Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = chapter.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                // 队列中的章节用次要颜色区分（用户要求第 3 点）
-                                color = if (inQueue) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                text = if (inQueue) "已在下载队列" else chapter.statusText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (inQueue) {
-                                    MaterialTheme.colorScheme.tertiary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
                         }
                     }
                 }
+                // 内容没超出时它什么都不画（见 Scrollbar.kt）
+                VerticalScrollbar(state = listState, modifier = Modifier.matchParentSize())
             }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),

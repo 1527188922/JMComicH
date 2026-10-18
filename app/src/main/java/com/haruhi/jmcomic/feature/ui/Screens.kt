@@ -568,25 +568,31 @@ private fun FavoritePickerForSelection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+            // 列表 + 右侧滚动条（收藏夹多了要能翻，还得看得出"下面还有"）
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
             ) {
-                items(favorites, key = { it.id }) { favorite ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { checked = checked.toggle(favorite.id) }
-                            .padding(end = 16.dp),
-                    ) {
-                        Checkbox(
-                            checked = favorite.id in checked,
-                            onCheckedChange = { checked = checked.toggle(favorite.id) },
-                        )
-                        Text(favorite.name, style = MaterialTheme.typography.bodyMedium)
+                LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
+                    items(favorites, key = { it.id }) { favorite ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { checked = checked.toggle(favorite.id) }
+                                .padding(end = 16.dp),
+                        ) {
+                            Checkbox(
+                                checked = favorite.id in checked,
+                                onCheckedChange = { checked = checked.toggle(favorite.id) },
+                            )
+                            Text(favorite.name, style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                 }
+                // 内容没超出时它什么都不画（见 Scrollbar.kt）
+                VerticalScrollbar(state = listState, modifier = Modifier.matchParentSize())
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,

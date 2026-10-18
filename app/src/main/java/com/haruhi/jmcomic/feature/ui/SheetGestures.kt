@@ -4,8 +4,11 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -65,6 +68,14 @@ import kotlinx.coroutines.launch
  *
  * **代价**：拖动把手时，面板不会实时跟手移动（跟手移动只能由材质内部那套手势提供，
  * 而那正是会抢列表手势的东西）。要恢复跟手就得自己画面板皮肤并手动平移，属于另一件事。
+ *
+ * ## 内容太高时怎么办
+ *
+ * 面板本身不是滚动容器（material 的 sheet 内容不可滚），内容比窗口高就会被**裁掉**。
+ * 所以内容外面包了一层"兜底滚动"：`weight(1f, fill = false) + verticalScroll`——
+ * 内容不高时按内容收缩（观感不变），真的放不下时（超小屏 / 系统大字号）整块内容可以滚，
+ * 底部的按钮不会被裁出屏幕。列表自己有上限（`heightIn(max = …)`），
+ * 平时只有列表内部在滚；外层只在"整块都放不下"时才接管。
  *
  * ## 用法
  *
@@ -133,7 +144,18 @@ fun HandleDragOnlyBottomSheet(
             }
         },
     ) {
-        content()
+        // 兜底：整块内容比"窗口高度 - 已占"还高时（超小屏 / 系统大字号），
+        // 让内容整体可滚，别把底部的按钮裁出屏幕。
+        // `weight(1f, fill = false)` 的作用是"最多占满剩余高度，但内容不高时不撑满"——
+        // 所以正常尺寸下面板还是按内容收缩，观感不变；只有真的放不下时才会出现外层滚动。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            content()
+        }
     }
 }
 

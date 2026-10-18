@@ -691,27 +691,37 @@ private fun ChapterPickerContent(
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.padding(16.dp),
         )
-        LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().height(360.dp)) {
-            itemsIndexed(state.chapters, key = { _, chapter -> chapter.chapterId }) { index, chapter ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenChapter(index) }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                ) {
-                    Text(
-                        text = chapter.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (index == state.chapterIndex) {
-                        Text("当前", style = MaterialTheme.typography.labelSmall)
+        // 列表 + 右侧滚动条（几百话时得让人一眼看出"下面还有"）；
+        // 高度沿用固定的 360dp，面板尺寸每次打开都一样，不会因为章节数忽高忽低。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(360.dp),
+        ) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
+                itemsIndexed(state.chapters, key = { _, chapter -> chapter.chapterId }) { index, chapter ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenChapter(index) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            text = chapter.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (index == state.chapterIndex) {
+                            Text("当前", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             }
+            // 内容没超出时它什么都不画（见 Scrollbar.kt）
+            VerticalScrollbar(state = listState, modifier = Modifier.matchParentSize())
         }
     }
 }
