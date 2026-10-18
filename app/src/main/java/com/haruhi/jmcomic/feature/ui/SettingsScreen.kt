@@ -482,41 +482,38 @@ class SettingsViewModel(
      * 为什么写入后立刻就能用：`AppContainer.jmApi` 每次取用都重新构造，线路通过
      * `apiDomainProvider` 现读存储，所以下一次请求就走新线路（进行中的请求不受影响）。
      * 只写一个域名（不再写"换行列表"），读侧见 `LineCatalog.apiLineOf`。
+     *
+     * **不弹提示**（用户 2026-10-18 要求）：选择面板点完不关，用户可以接着试下一条，
+     * 每点一次弹一条 Snackbar 既吵又会被面板挡住；反馈由面板里的「使用中 + ✓」和
+     * 分组里那行域名负责（两者都是即时更新的）。
      */
-    fun selectApiLine(host: String) = applyApiLine(host, message = null)
+    fun selectApiLine(host: String) = applyApiLine(host)
 
-    /** 选一条图片线路：即时生效（章节图片与"边看边下"的取图都按它走）。 */
-    fun selectImageLine(host: String) = applyImageLine(host, message = null)
+    /** 选一条图片线路：即时生效（章节图片与"边看边下"的取图都按它走），同样不弹提示。 */
+    fun selectImageLine(host: String) = applyImageLine(host)
 
     /** 接口线路「恢复默认」：回到工程当前在用的那条（[LineCatalog.DEFAULT_API_HOST]）。 */
-    fun resetApiLine() = applyApiLine(LineCatalog.DEFAULT_API_HOST, "已恢复默认接口线路")
+    fun resetApiLine() = applyApiLine(LineCatalog.DEFAULT_API_HOST)
 
     /** 图片线路「恢复默认」：回到工程当前在用的那条（[LineCatalog.DEFAULT_IMAGE_HOST]）。 */
-    fun resetImageLine() = applyImageLine(LineCatalog.DEFAULT_IMAGE_HOST, "已恢复默认图片线路")
+    fun resetImageLine() = applyImageLine(LineCatalog.DEFAULT_IMAGE_HOST)
 
     /**
      * 立即生效：先改界面（选中态/外部那行文字马上跟上），再落存储。
      *
-     * 提示语只有一处（避免"切换成功"和"已恢复默认"两条提示打架）：[message] 为 null 时
-     * 用默认文案。写失败（DataStore 写异常极少见）不特殊处理——界面已经切了，
+     * 写失败（DataStore 写异常极少见）不特殊处理——界面已经切了，
      * 下次进页面会按存储里的值显示回真实状态。
      */
-    private fun applyApiLine(host: String, message: String?) {
+    private fun applyApiLine(host: String) {
         val line = LineCatalog.apiLineOf(host)
         _state.update { it.copy(apiLine = line) }
-        viewModelScope.launch {
-            settings.putJmString(SettingKeys.Jm.API_DOMAINS, line.host)
-            notify(message ?: "接口线路已切换：${line.host}")
-        }
+        viewModelScope.launch { settings.putJmString(SettingKeys.Jm.API_DOMAINS, line.host) }
     }
 
-    private fun applyImageLine(host: String, message: String?) {
+    private fun applyImageLine(host: String) {
         val line = LineCatalog.imageLineOf(host)
         _state.update { it.copy(imageLine = line) }
-        viewModelScope.launch {
-            settings.putJmString(SettingKeys.Jm.IMAGE_DOMAINS, line.host)
-            notify(message ?: "图片线路已切换：${line.host}")
-        }
+        viewModelScope.launch { settings.putJmString(SettingKeys.Jm.IMAGE_DOMAINS, line.host) }
     }
 
     /**
@@ -861,10 +858,12 @@ private fun NetworkSection(
 /**
  * 「线路」分组：接口线路 + 图片线路，两行都是**点开选择面板 → 选中即生效**。
  *
- * 三条设计上的约定（对应用户要求）：
+ * 四条设计上的约定（对应用户要求）：
  * 1. **当前线路直接显示在分组里**，不用点开面板就知道自己在用哪一条（每行的第二行就是域名）；
- * 2. **没有「保存」按钮**：面板里点一条就关面板、写存储、提示一句，下一次请求就走新线路；
- * 3. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
+ * 2. **没有「保存」按钮**：面板里点一条就写存储、下一次请求立刻走新线路；
+ * 3. **点完不自动关面板**（用户 2026-10-18 要求）：可以接着点下一条比较，
+ *    什么时候退出由用户自己决定（下滑面板 / 点遮罩，面板里不放「关闭」按钮）；
+ * 4. **可选值全部来自硬编码清单**（`LineCatalog`），用户不能再手填域名；
  *    面板里另给「恢复默认」（回到工程当前在用的那条）和接口线路的「全部测速」。
  */
 @Composable
@@ -902,19 +901,15 @@ private fun LineSection(
     if (showApiPicker) {
         LinePickerSheet(
             title = "接口线路",
+            hint = "不同网络下,同一条线路的延迟可能不同哦！",
             options = remember(state.apiLine) { apiPickerOptions(state.apiLine) },
             selectedHost = state.apiLine.host,
             defaultHost = LineCatalog.DEFAULT_API_HOST,
             speedResults = state.speedResults,
             testing = state.speedTesting,
-            onSelect = {
-                onSelectApiLine(it)
-                showApiPicker = false
-            },
-            onReset = {
-                onResetApiLine()
-                showApiPicker = false
-            },
+            // 选中即生效，**面板不关**（用户要求）：可以接着点下一条比较，关不关由用户自己决定
+            onSelect = { onSelectApiLine(it) },
+            onReset = { onResetApiLine() },
             onTest = onTestApiLines,
             onDismiss = { showApiPicker = false },
             autoTest = true,
@@ -931,14 +926,8 @@ private fun LineSection(
             // 图片线路暂不测速（用户明确不做），整列灯号都不显示
             speedResults = emptyMap(),
             testing = false,
-            onSelect = {
-                onSelectImageLine(it)
-                showImagePicker = false
-            },
-            onReset = {
-                onResetImageLine()
-                showImagePicker = false
-            },
+            onSelect = { onSelectImageLine(it) },
+            onReset = { onResetImageLine() },
             onTest = null,
             onDismiss = { showImagePicker = false },
             autoTest = false,
@@ -1045,7 +1034,11 @@ private fun LineSummaryRow(
  * 线路选择面板（底部弹出的列表）。
  *
  * 交互约定：
- * - **点一行 = 选中并关闭**（选中即生效，没有确认按钮）；
+ * - **点一行 = 选中即生效，但面板保持打开**（用户 2026-10-18 要求）：灯号就摆在旁边，
+ *   用户往往想"点一条、看有没有变快、再点下一条"，自动关掉会逼他反复重开面板。
+ *   退出只有两条路：下滑面板 / 点遮罩（`ModalBottomSheet` 自带），面板里不放「关闭」按钮。
+ * - **不弹 Snackbar**：提示会被面板挡住、连点几次还会排队；反馈就是这一行的
+ *   「使用中 + ✓」和分组里那行域名，两者都即时更新。
  * - 「全部测速」并发测所有接口线路，结果逐条回填到每行右边的灯号上；
  * - 面板**第一次打开会自动测一轮**（[autoTest]）：用户点开的目的就是找"哪条快"，
  *   让他先看一堆"未测速"再点一次按钮是多余的一步；同一页之后的打开复用已有结果。
