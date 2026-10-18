@@ -1049,6 +1049,9 @@ private fun LineSummaryRow(
  *   只归列表（或什么也不做），面板纹丝不动——以前"上下滑着找线路"很容易把面板滑没了。
  *   实现见 `SheetGestures.kt` 的 `HandleDragOnlyBottomSheet`：两条通道（指针拖动 +
  *   列表滚到头后的嵌套滚动余量）一起掐掉，**把手**照旧能拖。
+ * - **线路多到一屏放不下时右侧有滚动条**（用户本轮要求）：列表高度上限 400dp，
+ *   溢出时在右边缘画一根圆角胶囊（`Scrollbar.kt` 的 `VerticalScrollbar`），静止半透明、
+ *   滑动时加深；没溢出就什么都不画。
  * - **退出靠**：**拖顶部把手下滑**、点遮罩、返回键，或面板底部的「关闭」。
  *   （「关闭」是 2026-10-19 从注释里放回来的：内容区既然不能再靠下滑关闭，
  *   就得给一个不用猜的出口，否则用户会觉得"面板关不掉了"。）
@@ -1132,21 +1135,37 @@ private fun LinePickerSheet(
                     Text("恢复默认")
                 }
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
+            // 列表 + 右侧滚动条。为什么外面还要一层 Box：
+            // 列表本身高度不固定（≤ 400dp，行数少时按内容收缩），滚动条得"贴着列表的
+            // 可视高度"画，所以先把两者放进同一个 Box，滚动条用 matchParentSize 拿它的尺寸。
+            // 内容没超出时 `VerticalScrollbar` 自己什么都不画（见 Scrollbar.kt）。
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp),
             ) {
-                items(options, key = { it.host }) { option ->
-                    LineOptionRow(
-                        option = option,
-                        selected = option.host == selectedHost,
-                        isDefault = option.host == defaultHost,
-                        speed = speedResults[option.host],
-                        speedEnabled = onTest != null,
-                        testing = testing,
-                        onClick = { onSelect(option.host) },
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(options, key = { it.host }) { option ->
+                        LineOptionRow(
+                            option = option,
+                            selected = option.host == selectedHost,
+                            isDefault = option.host == defaultHost,
+                            speed = speedResults[option.host],
+                            speedEnabled = onTest != null,
+                            testing = testing,
+                            onClick = { onSelect(option.host) },
+                        )
+                    }
                 }
+                // 线路多到一屏放不下（接口线路 6 条起、小屏还会更挤）时的可视提示：
+                // 一根跟主题同色的圆角胶囊，静止半透明、滑动时加深（样式见 Scrollbar.kt）。
+                VerticalScrollbar(
+                    state = listState,
+                    modifier = Modifier.matchParentSize(),
+                )
             }
             // 显式出口：列表区不再能下滑关面板之后，这颗按钮是"不用猜"的那条路
             // （见 KDoc 第 3 条）。2026-10-18 曾按用户要求注释掉，2026-10-19 恢复。

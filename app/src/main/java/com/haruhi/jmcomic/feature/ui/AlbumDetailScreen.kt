@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -23,10 +22,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -306,13 +303,10 @@ fun AlbumDetailScreen(
         // 已经在刷新时不再重复发起（refresh() 里没有去重）。
         //
         // ⚠ 外圈必须是**可滚动**的内容：`PullToRefreshBox` 完全靠 nested-scroll 拿手势，
-        // 而 "加载中 / 本地没数据" 这两支（LoadingBox / EmptyBox）是普通的 Box、不参与
-        // nested-scroll，直接放进去是拉不动的。所以给它们套一层 `verticalScroll`
-        // ——纵向滚动容器会把没被消费的下拉派发给外层的 PullToRefreshBox。
-        // 高度必须显式给到"整屏"：`verticalScroll` 发给子项的是**无限高约束**
-        // （foundation/Scroll.kt 里 maxHeight = Infinity），LoadingBox / EmptyBox
-        // 内部都用 fillMaxSize，直接把无限高传下去会崩；而给成固定 dp，
-        // 空状态在平板上就不会居中了。所以用 BoxWithConstraints 读真实视口高度再填回去。
+        // 而 "加载中 / 没数据" 这两支（LoadingBox / EmptyBox）是普通的 Box、不参与
+        // nested-scroll，直接放进去是拉不动的。所以交给 `ScrollableFullScreenBox`
+        // （Screens.kt）：它把内容包进 `verticalScroll`，纵向滚动容器会把没被消费的下拉
+        // 派发给外层的 PullToRefreshBox；高度再按**保留下来视口高度**回填，居中也在那一层。
         //
         // ⚠⚠ `isRefreshing` 必须以 `state.album != null` 为前提：首屏联网加载时
         // `loading` 与 `refreshing` 是**同时为 true** 的（见 loadFromNetwork），
@@ -326,20 +320,19 @@ fun AlbumDetailScreen(
                 .padding(padding),
         ) {
             when {
-                state.loading || state.album == null -> BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    Box(modifier = Modifier.heightIn(min = maxHeight)) {
-                        if (state.loading) {
-                            LoadingBox()
-                        } else {
-                            EmptyBox(
-                                title = "本地没有这个本子的数据",
-                                hint = "请检查网络后下拉重试",
-                            )
-                        }
+                // 失败态曾经顶在屏幕最上面（用户报的 bug）：上一版在这里自己用
+                // `BoxWithConstraints` + `heightIn(min = maxHeight)` 回填高度，而垂直滚动
+                // 容器下 `maxHeight` 是 `Dp.Infinity` → 盒子被撑成 Int.MAX_VALUE 高，
+                // 内容按默认的 TopStart 贴在顶边。现在统一走 `ScrollableFullScreenBox`
+                // （minHeight 才是真实视口高度，且居中写在那一层），和搜索结果页的空态一致。
+                state.loading || state.album == null -> ScrollableFullScreenBox {
+                    if (state.loading) {
+                        LoadingBox()
+                    } else {
+                        EmptyBox(
+                            title = "获取漫画详情失败",
+                            hint = "请检查网络或更换线路后下拉重试",
+                        )
                     }
                 }
                 else -> LazyColumn(

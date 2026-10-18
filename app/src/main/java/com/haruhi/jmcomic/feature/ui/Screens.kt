@@ -1413,9 +1413,13 @@ fun SearchResultsScreen(
  *
  * 另外，居中要写在**这一层**：`EmptyBox` 自带的 `contentAlignment` 在"父级 min 被清零 +
  * 高度无界"时是不生效的——它内部那个 Box 根本没被展开过，居中没有参照物。
+ *
+ * 三个用到它的地方（搜索结果页 / 详情页）都踩过同一个坑，所以**别再在调用点手写**
+ * `BoxWithConstraints` + `heightIn(min = maxHeight)`：`maxHeight` 在滚动轴上是
+ * `Dp.Infinity`，拿它当最小高度会把内容顶到最上面（详情页「获取漫画详情失败」就是这么来的）。
  */
 @Composable
-private fun ScrollableFullScreenBox(content: @Composable () -> Unit) {
+internal fun ScrollableFullScreenBox(content: @Composable () -> Unit) {
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
