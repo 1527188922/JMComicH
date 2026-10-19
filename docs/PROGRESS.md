@@ -2,7 +2,7 @@
 
 > 计划原文：`docs/android-app-plan.md`（= `2026-10-05-android-jm-bilibili-app.md`）
 > 跨功能硬约束：`docs/CONVENTIONS.md`（封面加载规范等）
-> 最后更新：2026-10-18
+> 最后更新：2026-10-19
 
 ## 目录结构决策
 
@@ -583,6 +583,182 @@ app/src/main/java/com/haruhi/jmcomic/
 9. 断网进评论 tab → 整块"评论加载失败 + 重试"；恢复网络点「重试」能出来。
    滑到第 3 页断网 → **已加载的评论还在**，底部一行错误 + 「重试」。
 10. 从章节中部直接点「评论」→ 页面把 tab 栏顶到顶部，第一眼是评论开头（不是列表末尾）。
+
+## 功能：分类页（2026-10-19）
+
+用户要求（原话要点）：
+- 底栏加「分类」，位置在**书库右侧 / 发现左侧**；
+- 布局：标题下一行，**左边**是 `☰ 同人 · 漢化`（当前分类，点开左侧抽屉）、**右边**是排序菜单
+  （与收藏页同一套交互）；
+- 点分类按钮从**左侧**弹出**双层抽屉**：第一层主分类、第二层 sub 分类；
+- 页面支持**下拉刷新**；抽屉**默认选中「最新A漫」**主类；主类没有二级类时用「全部」**虚拟**一个，
+  并且选中主类时默认选中「全部」；
+- 滑到底部**不自动翻页**，点「加载更多」才加载下一页；
+- **分类数据只在打开 App 后第一次进分类页时加载一次**并入缓存，退出 App 清空；
+- **下拉刷新只刷当前分类的漫画数据**；漫画列表也要缓存，**切走再切回来还是上次那批**。
+
+### 1. 接口（本机实测 2026-10-19）
+
+| 项 | 结论 |
+|---|---|
+| 地址 | `GET /categories?lang=TW`、`GET /categories/filter?page=&o=&c=&lang=TW` |
+| 协议 | 与工程现有那一套**完全通用**：`Token = md5(ts+"18comicAPP")`、`Tokenparam = "{ts},2.0.13"`、响应 `data` 用 `md5(ts+"185Hcomic3PAPP7R")` 解。**不用换协议** |
+| 主分类 | 实测 **10** 个（逆向文档 §4.2 写 9 个）：最新A漫 / 同人 / 單本 / 短篇 / 其他類 / 韓漫 / English Manga / Cosplay / 3D / 禁漫漢化組 |
+| 无二级分类 | 最新A漫 / Cosplay / 3D / 禁漫漢化組（`sub_categories` 是 `[]`）→ 抽屉第二层只有虚拟的「全部」 |
+| 字段类型 | `id`、`total_albums` 是**数字与字符串混排**（最新A漫的 `id` 是数字 `0`，其余是 `"1"`）→ DTO 干脆不声明这两个字段 |
+| 列表 | 每页固定 **80** 条，`total` 被截断到 **10000**；实测 `total` 是**数字**（不是字符串）→ 用宽松标量读，两种形态都吃 |
+| 列表项 | `id,author,name,image,category,category_sub,liked,is_favorite,update_at,adddate`，与 `/search` 同构 → 复用 `SearchItemDto` |
+| `image` | 实测多数是**空串**（本工程封面 URL 一直按 `aid` 自己拼，不依赖这个字段） |
+| 排序 | `""` 最新 / `tf` 最多愛心 / `mv` 總排行 / `mv_m` 月排行 / `mp_w` 週排行；空值参数按 `fetchGet` 的规则**不传** |
+| lang | 固定 `TW`（官方 `fetchGet` 默认就追加）：分类名因此是官方那套繁体（`漢化` / `單本`），与用户描述的文案一致 |
+
+探测方式：临时 node 脚本按同一套签名/解密直接打接口（`.work/probe-categories.mjs`，未入库）。
+`www.cdngwc.cc` 一次通过；`c=doujin_chinese` 那次超时，重跑即通（镜像偶发超时，与文档描述一致）。
+
+### 2. 做了什么
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 底栏 | 书库 / 发现 / 收藏 / 更多 | **书库 / 分类 / 发现 / 收藏 / 更多**（分类夹在书库与发现之间） |
+| 分类页 | 无 | 标题「分类」+ 操作行（`☰ 当前分类` / `排序：最新 ▾`）+ 漫画列表 |
+| 分类选择 | 无 | 左侧**双层抽屉**：主分类一栏（灰底、选中的一行白底 + 主色 + 左侧竖条）、二级分类一栏（含「全部」） |
+| 排序 | 无 | 最新 / 最多愛心 / 總排行 / 月排行 / 週排行（週排行只给「最新A漫」，与官方 `Header.tsx` 一致） |
+| 翻页 | 无 | 每页 80 条，**只在底部点「加载更多（第 N 页）」时**请求下一页；到底显示「已经到底了」 |
+| 下拉刷新 | 无 | 只重拉**当前分类第一页**（不动分类树）；失败保留旧列表 + 一句提示 |
+| 分类树缓存 | 无 | `CategoryCache`：**本次进程只请求一次**，退出 App 清空 |
+| 列表缓存 | 无 | 按（主分类 / 二级分类 / 排序）分键存快照：切分类、切排序、切页面回来都是**瞬间回显、零请求** |
+| 失败 | 无 | 分类树失败 → 整块错误态 + 重试（抽屉里也有同样的兜底）；列表失败 → 整块错误态 + 重试；翻页失败只提示、不动已有列表 |
+
+### 3. 关键取舍
+
+1. **抽屉用 `ModalNavigationDrawer` + `ModalDrawerSheet`**，不自己画遮罩：返回键关闭、点遮罩关闭、
+   左边缘滑开、predictive back 都是组件自带的，自己实现只会漏掉其中一两条。宽度取窗口宽度的 88%
+   （`LocalWindowInfo.current.containerSize`，不是 `Configuration.screenWidthDp`：分屏下后者是整块屏幕），
+   上限 360dp（Material 自己的封顶）；面板的 `windowInsets` 置零，因为外层 Scaffold 已经让过状态栏。
+2. **每个主分类都垫一个「全部」**，不只是没有二级分类的那几个：官方 App 的主分类那一栏本身就表示
+   "整个主分类"，而我们的抽屉第二层是唯一可点的一层，垫上「全部」才能表达"看这个主分类的全部内容"。
+   用户明确要求的"没有二级分类时虚拟一个「全部」、选中主类默认选中「全部」"是这条规则的子集。
+3. **缓存挂在 `AppContainer.jmCategoryCache`（`CategoryCache`）而不是 ViewModel**：分类页被移出导航栈 /
+   页面重建都会换一个 ViewModel，挂容器上才能跨"进出页面"存活；容器跟进程走，退出 App 自然清空，
+   `handleAppExit()` 里再显式 `clear()` 一次（返回键退出时进程可能还被下载任务续着）。
+4. **列表缓存按（主分类 / 二级 / 排序）分键**：换排序就是另一批内容，不能命中旧列表；
+   最多留 24 份（9～10 个主分类 × 最多 5 种排序也才 50 份，24 份够用又不至于吃内存），
+   超出时丢最早写入的那份。
+5. **切分类时缓存优先**：命中缓存的组合**一次请求都不发**，直接摆出来；下拉刷新才是唯一的"强制重拉"入口。
+6. **不自动翻页**：分类列表**没有**用 `LoadMoreOnScroll` / `snapshotFlow` 监听滚动（搜索结果页那一套），
+   就是底部一颗「加载更多」按钮——用户明确要求"滑到底部不用自动加载下一页"。
+7. **分类页不摆「加入书库」**：它是浏览页，入库/移出走详情页，避免在列表里误触破坏性操作。
+   列表行与搜索结果页**共用** `OnlineResultRow`（两个动作回调改成可选，不传就整块不画）。
+8. **排序项随主分类变**：官方 `Header.tsx` 对 `slug != ""` 的分类 `slice(0, -1)` 掉週排行；
+   本工程照抄，并且换主分类时把不可用的排序**自动回落成「最新」**（否则选中的芯片和列表内容会对不上）。
+9. **`lang=TW`**：官方 `fetchGet` 默认追加，分类名因此是繁体（`漢化` / `單本`），与用户给的
+   `☰ 同人 · 漢化` 文案一致；`/search` 那边维持原样（不带 lang），两处互不影响。
+10. **标题**：按底栏名写成「分类」；用户说的"标题『发现』的下方一行"理解为**位置**（页面顶部、
+    标题行下方一行）——「发现」是相邻 tab 的名字，写成「发现」会和实际内容对不上。
+11. **换分类/排序时列表回到顶部**：用 `rememberSaveable` 记住"上次的组合"，只在组合真的变了时才
+    `scrollToItem(0)`；切 tab 回来不算换分类，滚动位置要保住。
+
+### 4. 代码落点
+
+| 文件 | 改动 |
+|---|---|
+| `core/protocol/Defaults.kt` | 新增 `CategorySort`（`o` 的 5 个取值 + 文案 + `optionsFor(主分类)`）、`CATEGORY_PAGE_SIZE`、`CATEGORY_LANG` |
+| `feature/api/JmModels.kt` | 新增 `CategoriesRespDto` / `CategoryGroupDto` / `CategorySubDto` / `CategoryFilterRespDto` + `LooseStringSerializer`（`total` 数字/字符串通吃） |
+| `feature/api/ApiClient.kt` | 新增 `categories()` / `categoryFilter(category, sort, page)`；重试次数沿用「在线搜索」那一项 |
+| `feature/data/Categories.kt`（新） | `CategoryGroup` / `CategorySub` / `CATEGORY_SUB_ALL` / `buildCategoryCatalog` / `categoryParam` / `categorySelectorLabel` / `CategorySelection` / `fixCategorySelection` / `CategoryAlbumPage` / `CategoryListSnapshot` / `CategoryCache` / `mergeCategoryItems` |
+| `feature/data/Repository.kt` | 新增 `categoryCatalog()` / `categoryAlbums(...)`（复用 `toItem`，带上"是否已入库"标记） |
+| `core/di/AppContainer.kt` | 新增 `jmCategoryCache`；`handleAppExit()` 里一并清空 |
+| `feature/ui/ViewModels.kt` | 新增 `CategoryUiState` + `CategoryViewModel`（分类树只拉一次、列表缓存优先、下拉刷新只刷当前分类、手动翻页、缓存修正选中项） |
+| `feature/ui/CategoryScreen.kt`（新） | 标题 + 操作行（分类选择器 / 排序菜单）+ 下拉刷新的漫画列表 + 左侧双层抽屉（两个面板各自带滚动条）+ 错误/空态 |
+| `feature/ui/Screens.kt` | `OnlineResultRow` 改成 `internal` 且两个动作回调可选（分类页复用它、不摆入库按钮） |
+| `feature/ui/ModeRoot.kt` | 底栏加 `CATEGORY`（书库与发现之间）；新路由 + 接线；工厂注入 `jmCategoryCache` |
+| `test/.../feature/data/CategoryCatalogTest.kt`（新） | 20 个用例：分类树映射（最新A漫置顶 / 虚拟「全部」/ 去重）、`c` 参数、选择器文案、排序项、选择修正、翻页去重、缓存（分键 / 上限 / 清空）、接口样本反序列化（数字型 `total`） |
+| `test/.../feature/ui/CategoryStateTest.kt`（新） | 4 个用例：默认选中项文案、抽屉按钮文案、排序项随主分类、翻页按钮出现条件 |
+| `test/.../feature/ui/ReaderAndTaskLogicTest.kt` | 两个底栏方向用例按**当前五项**重写（原来写的还是"书库/最近/发现/收藏/任务"那一版，早就是失败的陈旧断言） |
+
+### 5. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` ✅
+- `:app:testDebugUnitTest` —— **370 个用例、4 个失败**：
+  新增的 `CategoryCatalogTest` 20 个 + `CategoryStateTest` 4 个**全绿**；
+  失败的全是**既有失败**：`AlbumCleanerTest` 3 个 + `ReaderAndTaskLogicTest` 的
+  「reading option labels…」1 个（与改动前一致）。
+  （中间有一次整包跑还碰上 `DownloadManagerTest` 的「超时：追加的章节没有被下载」——
+  就是本文件前面几节记的那条 15s 时序抖动，重跑即过，与本次改动无关。）
+  顺带把该测试类里两个**陈旧**的底栏方向用例按当前五项修好
+  （原来写的是已不存在的「最近 / 任务」tab，改前就红）。
+- `:app:lintDebug` —— **0 error**（warning 30 条，全是既有项；新代码没有引入新的 warning：
+  抽屉宽度改用 `LocalWindowInfo` 就是为了消掉 `ConfigurationScreenWidthHeight`）。
+- `:app:assembleDebug` ✅ —— `app/build/outputs/apk/debug/app-debug.apk`
+- **真机**：这次设备是连着的（`adb devices`：Xiaomi `23116PN5BC`），已经
+  `adb install -r` 把新 debug 包装上去了（数据没清）；`am start` 冷启动**没有崩溃**，
+  截图确认底栏已经是 **书库 / 分类 / 发现 / 收藏 / 更多** 五项、分类图标在书库与发现之间。
+  但 `adb shell input` 被拒（`SecurityException: INJECT_EVENTS`，MIUI 要用户手动打开
+  「USB 调试（安全设置）」），**点不动屏幕**，所以分类页内部的抽屉/排序/下拉刷新
+  只能按下面的清单人工过一遍。
+
+### 6. 真机验收清单
+
+1. 底栏是 **书库 / 分类 / 发现 / 收藏 / 更多** 五项，「分类」在书库右边、发现左边；
+   左右切换 tab 的滑入方向跟位置一致。
+2. 进「分类」：标题「分类」下面一行，左边 `☰ 最新A漫 · 全部`、右边 `排序：最新 ▾`；下面开始出漫画。
+3. 点左边那颗 → 左侧滑出抽屉：**左栏主分类**（最新A漫选中，白底 + 蓝字 + 左侧竖条）、
+   **右栏二级分类**（第一项「全部」，带 ✓）。返回键 / 点遮罩 / 右上角 ✕ 都能关。
+4. 点「同人」→ 左栏高亮切到同人、右栏变成 `全部 / 漢化 / 日語 / CG圖集 / 禁漫去碼 / 禁漫上色`，
+   列表变成「同人 · 全部」；点「漢化」→ 抽屉收起、按钮变成 `☰ 同人 · 漢化`、列表换成漢化。
+5. 点「Cosplay」（没有二级分类）→ 抽屉**直接收起**，按钮是 `☰ Cosplay · 全部`。
+6. 右上角排序换成「總排行 / 月排行」→ 列表重拉；在「同人」下**看不到「週排行」**，
+   在「最新A漫」下能看到五项；从「最新A漫 + 週排行」切到「同人」→ 排序自动回到「最新」。
+7. 下拉 → 顶部转圈，只重拉当前分类第一页（分类抽屉里的分类树**不再请求**；
+   `adb logcat` 里只有一条 `/categories/filter`，没有 `/categories`）。
+8. 点「加载更多（第 2 页）」→ 底部转圈后追加 80 条（**不点就不加载**，滑到底也不会自己动）。
+9. 切到「书库」再切回「分类」→ 还是刚才那批漫画、那个分类，**不转圈、不请求**；
+   滚动位置也还在原处。
+10. 完全退出 App（返回键退出 / 划掉最近任务）再进来 → 分类树重新拉一次（内存缓存已清）。
+11. 断网进「分类」→ 整块"分类加载失败 + 重试"（抽屉里也是同样的提示 + 重试）；
+    有分类树但列表失败 → "没能加载这个分类 + 重试"；恢复网络点重试能出来。
+12. 分类列表里点任一本 → 进详情页；返回后分类页状态不变。
+
+### 7. 追加要求：抽屉样式 + 总数 + 更新时间 + 列表/卡片（2026-10-19 晚）
+
+用户第二轮要求（原话要点）：
+- 分类抽屉里**主类区域背景改成白色**；抽屉的**右上角、右下角不要圆角**；
+- 分类数据有总数字段时，**在分类右侧显示总数**，上千显示 `1.0k`、上万显示 `1.0w`；
+- 展示信息还要**展示更新时间**（有 `update_at` 就用它，没有就展示 `adddate`）；
+- **展示方式可切换列表 / 卡片**，卡片时**每行三个**；
+- **切换按钮与"数量 / 页码"那一行同一行**。
+
+做出来的样子：
+
+| 项 | 结论 |
+|---|---|
+| 抽屉主类栏 | 白底（`surface`）；选中项靠 **主色 + 加粗 + 左侧 3dp 竖条** 区分（白底上再铺底色反而脏） |
+| 抽屉圆角 | `ModalDrawerSheet(drawerShape = RectangleShape)`，右上/右下直角 |
+| 分类总数 | 接口 `total_albums`（数字/字符串混排，用宽松标量读）→ `formatCategoryCount`：`<1000` 原样、`<10000` 一位小数 + `k`、否则一位小数 + `w`；`0`（最新A漫 / Cosplay / 3D / 禁漫漢化組）**不显示** |
+| 更新时间 | `updateLabel(updateAt, addDate)`：`update_at` 是 10 位秒级时间戳 → 本地时区 `YYYY-MM-DD`；没有/为 0 时回落到 `adddate`；两者都没有就不展示 |
+| 列表模式 | 一行一本（沿用 `OnlineResultRow`），JM 号那一行变成 `JM1484011 · 更新 2026-10-19`（省一行高度） |
+| 卡片模式 | `LazyVerticalGrid(3 列)`，白卡 + 封面（0.72 宽高比）+ 两行标题 + `更新 YYYY-MM-DD`，与书库网格同一套观感 |
+| 切换按钮 | 「共 N 条 · 第 x/y 页」那一行的**右端**，32dp 的图标按钮；图标显示当前模式（列表图标 / 自绘的 2×2 网格图标），点一下切换 |
+| 切换后的记忆 | `CategoryCache.viewMode` 跟分类树/列表一起缓存，切 tab 回来还是上次那种模式 |
+
+**接口字段核对**（同一套签名/解密实测）：
+`/categories` 的主分类除 `id/name/slug/type` 外确实有 `total_albums`
+（最新A漫是数字 `0`，有内容的是字符串 `"354792"`）；`sub_categories` 只有 `CID/name/slug`，**没有总数**。
+`/categories/filter` 的每一条同时有 `update_at`（如 `1792418849`）与 `adddate`（`2026-10-19`）。
+
+代码落点：`JmModels.kt`（`total_albums` / `adddate` 字段）、`Categories.kt`
+（`formatCategoryCount` / `updateLabel` / `CategoryViewMode` / `CategoryCache.viewMode`）、
+`ViewModels.kt`（`CategoryUiState.viewMode` + `toggleViewMode`）、`CategoryScreen.kt`
+（白底主类栏、`RectangleShape`、总数、卡片网格、切换按钮、更新时间）、
+`Screens.kt`（`OnlineResultRow` 新增可选 `updateLabel`）、`ui/theme/Icons.kt`（自绘 `GridViewIcon`）、`ModeRoot.kt`（接线）。
+
+验证：`:app:compileDebugKotlin` ✅；整包 `:app:testDebugUnitTest` **375 个用例、4 个既有失败**
+（`AlbumCleanerTest` 3 + `ReaderAndTaskLogicTest` 文案 1），分类相关的 **29 个用例全绿**
+（新增 `formatCategoryCount` 边界、`updateLabel` 回落、`total_albums` 解析、展示方式切换与缓存）；
+`:app:assembleDebug` ✅。
+**注意**：这轮改完时手机的无线调试掉线了（`adb devices` 为空），
+所以新包没装上；抽屉白底/直角、总数、列表/卡片切换这些**还没在真机上用眼睛确认过**，
+按上面的清单第 3、6、7 条补看一眼即可。
 
 ## 阶段状态
 

@@ -180,6 +180,18 @@ class AppContainer(private val appContext: Context) {
         com.haruhi.jmcomic.feature.data.CommentCache()
     }
 
+    /**
+     * 分类页的**内存缓存**：分类树 + 每个（主分类 / 二级分类 / 排序）已加载的列表。
+     *
+     * 用户要求：分类树**只在打开 App 后第一次进分类页时加载一次**；漫画列表也要缓存，
+     * 切到别的页面再切回来还得是上次那批。挂在容器上（而不是 ViewModel 上）才能跨
+     * "分类页被移出导航栈 / 页面重建"存活；容器跟进程走，退出 App 自然清空，
+     * [handleAppExit] 里还会再显式清一次。
+     */
+    val jmCategoryCache: com.haruhi.jmcomic.feature.data.CategoryCache by lazy {
+        com.haruhi.jmcomic.feature.data.CategoryCache()
+    }
+
     // ---------------- JM ----------------
 
     /**
@@ -332,6 +344,10 @@ class AppContainer(private val appContext: Context) {
             // 免得进程还留在后台（下载/导出把进程续着）再被点开时又看到上次的评论。
             runCatching { jmCommentCache.clearAll() }
                 .onFailure { Timber.tag("app").w(it, "退出时清理评论缓存失败") }
+            // 分类页的分类树与列表同样是"退出 App 即清空"（用户要求）：
+            // 下次进来重新拉一次分类树，不会看到上次的分类/排序选择。
+            runCatching { jmCategoryCache.clear() }
+                .onFailure { Timber.tag("app").w(it, "退出时清理分类缓存失败") }
             com.haruhi.jmcomic.core.download.DownloadForegroundService.stop(appContext)
         }
     }

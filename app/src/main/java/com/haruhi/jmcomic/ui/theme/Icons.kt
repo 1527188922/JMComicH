@@ -53,6 +53,48 @@ val DownloadIcon: ImageVector = ImageVector.Builder(
 }.build()
 
 /**
+ * 网格图标：2×2 的四个方块。
+ *
+ * 分类页的「列表 / 卡片」切换按钮用它（core 里没有 GridView / Apps 之类的图标，
+ * 最近的 `List` 与 `Menu` 都是横向三行，跟"卡片"表达不出区别）。
+ * 方块留 2 的间距，缩到 20dp 渲染时四个块也不会糊成一片。
+ */
+val GridViewIcon: ImageVector = ImageVector.Builder(
+    name = "GridView",
+    defaultWidth = 24.dp,
+    defaultHeight = 24.dp,
+    viewportWidth = 24f,
+    viewportHeight = 24f,
+).apply {
+    path(fill = SolidColor(Color.Black)) {
+        // 左上
+        moveTo(3f, 3f)
+        lineTo(11f, 3f)
+        lineTo(11f, 11f)
+        lineTo(3f, 11f)
+        close()
+        // 右上
+        moveTo(13f, 3f)
+        lineTo(21f, 3f)
+        lineTo(21f, 11f)
+        lineTo(13f, 11f)
+        close()
+        // 左下
+        moveTo(3f, 13f)
+        lineTo(11f, 13f)
+        lineTo(11f, 21f)
+        lineTo(3f, 21f)
+        close()
+        // 右下
+        moveTo(13f, 13f)
+        lineTo(21f, 13f)
+        lineTo(21f, 21f)
+        lineTo(13f, 21f)
+        close()
+    }
+}.build()
+
+/**
  * 眼睛图标（详情页的观看数）。
  *
  * 外圈是上下两段三次贝塞尔围成的眼型，中间用**奇偶填充**挖出虹膜、

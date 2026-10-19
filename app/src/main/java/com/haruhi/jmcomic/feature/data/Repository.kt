@@ -15,6 +15,7 @@ import com.haruhi.jmcomic.core.database.entity.LibraryEntity
 import com.haruhi.jmcomic.core.database.entity.PlaybackKind
 import com.haruhi.jmcomic.core.database.entity.RecentAlbumEntity
 import com.haruhi.jmcomic.core.database.entity.SearchHistoryEntity
+import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.core.storage.FileNaming
@@ -249,6 +250,55 @@ class Repository(
                 if (exactId != null && item.id == exactId) item.copy(isExactIdMatch = true) else item
             },
             fromHistory = true,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 分类浏览（`/categories` + `/categories/filter`）
+    // ------------------------------------------------------------------
+
+    /**
+     * 拉分类树（`GET /categories`）。
+     *
+     * 只在**本次进程第一次进分类页**时调用：结果由 `CategoryCache` 缓存，退出 App 才清
+     * （用户要求）。映射规则（虚拟「全部」、最新A漫置顶等）在
+     * [buildCategoryCatalog]，那里是纯函数、有单测。
+     */
+    suspend fun categoryCatalog(): List<CategoryGroup> =
+        buildCategoryCatalog(api.categories().categories.orEmpty())
+
+    /**
+     * 拉某个分类的一页漫画（`GET /categories/filter`）。
+     *
+     * @param mainSlug 主分类 slug；空串 = 「最新A漫」。
+     * @param subSlug 二级分类 slug；空串 = 该主分类的「全部」。
+     * @param sort 排序，对应参数 `o`（[CategorySort.LATEST] 时**不传**）。
+     * @param page 页码，从 1 开始；接口每页固定 80 条、`total` 上限 10000。
+     *
+     * 结果条目与在线搜索**同构**，所以复用 `toItem`（顺带带上"是否已入库"标记：
+     * 分类页暂不放入库按钮，但标记本身是免费的，列表行都用得上）。
+     */
+    suspend fun categoryAlbums(
+        mainSlug: String,
+        subSlug: String,
+        sort: CategorySort = CategorySort.DEFAULT,
+        page: Int = 1,
+    ): CategoryAlbumPage {
+        val resp = api.categoryFilter(
+            category = categoryParam(mainSlug, subSlug),
+            sort = sort,
+            page = page,
+        )
+        val items = resp.content.orEmpty()
+        val ids = items.mapNotNull { it.id?.toLongOrNull() }
+        val localIds = if (ids.isEmpty()) emptySet() else albumDao.existingIds(ids).toSet()
+        val total = resp.total?.toLongOrNull() ?: items.size.toLong()
+        val pageSize = Defaults.CATEGORY_PAGE_SIZE
+        return CategoryAlbumPage(
+            page = page,
+            total = total,
+            totalPages = ((total + pageSize - 1) / pageSize).toInt().coerceAtLeast(1),
+            items = items.mapNotNull { it.toItem(localIds) },
         )
     }
 
@@ -1033,6 +1083,13 @@ data class OnlineSearchItem(
      * 界面据此标一个"精确匹配"，与普通搜索结果区分开（用户要求第 3 点）。
      */
     val isExactIdMatch: Boolean = false,
+    /**
+     * 上架日期 `YYYY-MM-DD`（接口 `adddate`）。
+     *
+     * 分类页的"更新时间"优先用 [updateAt]，没有它才回落到这个字段
+     * （见 `updateLabel`）；搜索结果页不展示时间，这个字段就闲置着。
+     */
+    val addDate: String? = null,
     val raw: SearchItemDto,
 )
 
@@ -1120,6 +1177,7 @@ private fun SearchItemDto.toItem(localIds: Set<Long>): OnlineSearchItem? {
         tags = listOfNotNull(category?.title, categorySub?.title).filter { it.isNotBlank() },
         updateAt = updateAt,
         existsLocal = jmId in localIds,
+        addDate = addDate,
         raw = this,
     )
 }

@@ -28,7 +28,7 @@ app/src/main/java/com/haruhi/jmcomic/
   feature/
     api/                     JM API client and response models
     data/                    repositories, image store, download/export, reading position
-    ui/                      Compose UI (library / recent / discover / favorites / tasks / reader)
+    ui/                      Compose UI (library / categories / recent / discover / favorites / tasks / reader)
   ui/theme/                  Compose theme
 ```
 
@@ -49,6 +49,7 @@ Install with `adb install -r app\build\outputs\apk\debug\app-debug.apk`.
 | Entry | Description |
 |---|---|
 | Library | Collected comics; filtering, batch actions, continue reading |
+| Categories | Official category browsing: main + sub categories (dual-pane drawer with counts), sort, pull to refresh, list/card toggle, manual load more |
 | Recent | Comics whose detail/reader page was opened |
 | Discover | Online search (a purely numeric keyword also looks that album up directly) |
 | Favorites | Favorite folder management (the default folder cannot be deleted or renamed) |

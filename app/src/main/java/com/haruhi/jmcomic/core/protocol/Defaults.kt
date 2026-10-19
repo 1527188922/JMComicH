@@ -29,6 +29,23 @@ object Defaults {
     /** JM /search 每页固定返回 80 条。 */
     const val SEARCH_PAGE_SIZE = 80
 
+    /**
+     * JM `/categories/filter` 每页固定返回 **80** 条（官方逆向文档 §4.3）。
+     *
+     * 与 [SEARCH_PAGE_SIZE] 同值但**不复用常量**：两者是不同接口的契约，
+     * 将来任一边变了都只该改自己那一行。
+     */
+    const val CATEGORY_PAGE_SIZE = 80
+
+    /**
+     * 分类接口的语言参数。
+     *
+     * 官方 App 的 `fetchGet` 会自动追加 `lang`（默认 `TW`，见文档 §2.4），
+     * 本工程的 `/search` 没带它也一直正常；但分类的**展示名**（`同人` / `漢化` /
+     * `最新A漫`）就是接口直接给的，带上 `TW` 才能拿到官方那套繁体文案。
+     */
+    const val CATEGORY_LANG = "TW"
+
     /** 在线搜索历史条数上限，参考实现 `jm.search.history.limit`。 */
     const val SEARCH_HISTORY_LIMIT = 20
 
@@ -108,5 +125,38 @@ enum class SearchSort(val code: String, val label: String) {
 
         fun fromCode(code: String?): SearchSort =
             entries.firstOrNull { it.code == code } ?: DEFAULT
+    }
+}
+
+/**
+ * 分类页的排序方式，对应 `/categories/filter` 的请求参数 `o`。
+ *
+ * 取值与文案逐条对齐官方 App 的 `assets/JsonData.ts` → `CatSortData`（文档 §4.3）。
+ * 与 [SearchSort] **不能混用**：搜索接口没有 `mv_m` / `mp_w`，分类接口没有 `mr` / `mp`。
+ */
+enum class CategorySort(val code: String, val label: String) {
+    /** 接口默认排序：`o` 直接**不传**（空串会被 `fetchGet` 丢掉）。 */
+    LATEST("", "最新"),
+    LIKE("tf", "最多愛心"),
+    RANK_TOTAL("mv", "總排行"),
+    RANK_MONTH("mv_m", "月排行"),
+    RANK_WEEK("mp_w", "週排行"),
+    ;
+
+    companion object {
+        val DEFAULT = LATEST
+
+        fun fromCode(code: String?): CategorySort =
+            entries.firstOrNull { it.code == code } ?: DEFAULT
+
+        /**
+         * 某个主分类可用的排序项。
+         *
+         * 官方 `Header.tsx` 的做法：`slug == ""`（最新A漫）时给**全部**排序，
+         * 其它主分类把最后一项（週排行 `mp_w`）`slice(0, -1)` 掉。
+         * 这里照抄，避免给分类页摆出一个点下去没结果的排序项。
+         */
+        fun optionsFor(mainSlug: String): List<CategorySort> =
+            if (mainSlug.isBlank()) entries.toList() else entries.filter { it != RANK_WEEK }
     }
 }

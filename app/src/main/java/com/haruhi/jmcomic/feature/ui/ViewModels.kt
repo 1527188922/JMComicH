@@ -7,10 +7,21 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.database.entity.SearchHistoryEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
+import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingKeys
+import com.haruhi.jmcomic.feature.data.CategoryAlbumPage
+import com.haruhi.jmcomic.feature.data.CategoryCache
+import com.haruhi.jmcomic.feature.data.CategoryGroup
+import com.haruhi.jmcomic.feature.data.CategoryListSnapshot
+import com.haruhi.jmcomic.feature.data.CategorySelection
+import com.haruhi.jmcomic.feature.data.CategorySub
+import com.haruhi.jmcomic.feature.data.CategoryViewMode
+import com.haruhi.jmcomic.feature.data.categorySelectorLabel
+import com.haruhi.jmcomic.feature.data.fixCategorySelection
+import com.haruhi.jmcomic.feature.data.mergeCategoryItems
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.FavoriteWriteResult
 import com.haruhi.jmcomic.feature.data.AlbumCleaner
@@ -965,6 +976,375 @@ class OnlineSearchViewModel(
                 ),
             )
         }
+    }
+}
+
+// ======================================================================
+// 分类（在线分类浏览）
+// ======================================================================
+
+/**
+ * 分类页的界面状态。
+ *
+ * 数据结构上分三块：
+ * - **分类树**：[catalog] + 当前选中的 [mainSlug] / [subSlug]；
+ * - **列表**：[albums] 与分页信息（[total] / [page] / [totalPages]）；
+ * - **加载态**：[catalogLoading]（只发生在"本次进程第一次进分类页"）、
+ *   [loading]（首屏 / 换分类）、[refreshing]（下拉刷新）、[loadingMore]（点加载更多）。
+ */
+data class CategoryUiState(
+    /** 分类树；`null` = 本次进程还没拉到（界面据此显示加载/错误态）。 */
+    val catalog: List<CategoryGroup>? = null,
+    val mainSlug: String = CategorySelection.DEFAULT.mainSlug,
+    val subSlug: String = CategorySelection.DEFAULT.subSlug,
+    val sort: CategorySort = CategorySort.DEFAULT,
+    val albums: List<OnlineSearchItem> = emptyList(),
+    val total: Long = 0L,
+    val page: Int = 0,
+    val totalPages: Int = 1,
+    val catalogLoading: Boolean = false,
+    /** 分类树加载失败（整块错误态 + 重试：抽屉与选择器都靠它）。 */
+    val catalogError: String? = null,
+    val loading: Boolean = false,
+    val refreshing: Boolean = false,
+    val loadingMore: Boolean = false,
+    /** 列表首屏 / 换分类失败（列表为空时展示"重试"）。 */
+    val error: String? = null,
+    /** 一次性提示（下拉刷新失败、加载更多失败），由根部 Snackbar 弹。 */
+    val message: String? = null,
+    /** 展示方式：一行一本 / 三列卡片（用户要求，可切换）。 */
+    val viewMode: CategoryViewMode = CategoryViewMode.DEFAULT,
+) {
+    val groups: List<CategoryGroup> get() = catalog.orEmpty()
+
+    val main: CategoryGroup? get() = catalog?.firstOrNull { it.slug == mainSlug }
+
+    val sub: CategorySub? get() = main?.subOf(subSlug)
+
+    val selection: CategorySelection get() = CategorySelection(mainSlug, subSlug, sort)
+
+    /** 当前主分类可用的排序项（官方：只有「最新A漫」给週排行）。 */
+    val sorts: List<CategorySort> get() = CategorySort.optionsFor(mainSlug)
+
+    /** 抽屉按钮文案：`同人 · 漢化`。 */
+    val selectorLabel: String get() = categorySelectorLabel(main, sub)
+
+    /** 还有没有下一页（底部「加载更多」按钮是否出现）。 */
+    val hasMore: Boolean get() = page in 1 until totalPages
+}
+
+/**
+ * 分类页。
+ *
+ * 用户要求（2026-10-19）：
+ * 1. 分类树**只在打开 App 后第一次进分类页时请求一次**，之后走缓存，退出 App 清空；
+ * 2. 漫画列表同样缓存，**切到别的页面再切回来还得是上次加载的那批**；
+ * 3. 下拉刷新**只刷新当前分类的漫画**，不重新拉分类树；
+ * 4. 滑到底部**不自动翻页**，由用户点「加载更多」手动翻（与搜索页的自动追加相反）；
+ * 5. 切换分类 / 排序时，**缓存里有就直接用**（不再发请求），没有才拉第一页。
+ *
+ * 缓存挂在 `AppContainer.jmCategoryCache` 上（进程级），ViewModel 只是它的读写者。
+ */
+class CategoryViewModel(
+    private val repo: Repository,
+    private val cache: CategoryCache,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(restoredState())
+    val state: StateFlow<CategoryUiState> = _state.asStateFlow()
+
+    private var listJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            val cached = cache.catalog
+            if (cached != null) {
+                // 本次进程已经拉过分类树（或上一次进分类页时拉过）：**不再请求**
+                _state.update { it.copy(catalog = cached, catalogLoading = false) }
+                ensureListLoaded()
+            } else {
+                loadCatalog()
+            }
+        }
+    }
+
+    /** 从缓存恢复"上次离开时"的样子（分类树 / 选中项 / 已加载的列表）。 */
+    private fun restoredState(): CategoryUiState {
+        val catalog = cache.catalog
+        val selection = if (catalog != null) {
+            fixCategorySelection(cache.selection, catalog)
+        } else {
+            cache.selection
+        }
+        val snapshot = cache.snapshot(selection)
+        return CategoryUiState(
+            catalog = catalog,
+            mainSlug = selection.mainSlug,
+            subSlug = selection.subSlug,
+            sort = selection.sort,
+            albums = snapshot?.items.orEmpty(),
+            total = snapshot?.total ?: 0L,
+            page = snapshot?.page ?: 0,
+            totalPages = snapshot?.totalPages ?: 1,
+            catalogLoading = catalog == null,
+            viewMode = cache.viewMode,
+        )
+    }
+
+    /** 切换"列表 / 卡片"（用户要求：切换按钮在数量页码那一行）。 */
+    fun toggleViewMode() {
+        val next = _state.value.viewMode.toggled()
+        cache.saveViewMode(next)
+        _state.update { it.copy(viewMode = next) }
+    }
+
+    /**
+     * 选中一个主分类。
+     *
+     * 主分类一被选中就**默认选中它的「全部」二级分类**（用户要求），列表随之切过去；
+     * 抽屉是否收起由界面决定（只有「全部」一项时界面会直接收起）。
+     */
+    fun selectMain(group: CategoryGroup) {
+        val main = _state.value.catalog?.firstOrNull { it.slug == group.slug } ?: group
+        applySelection(
+            CategorySelection(
+                mainSlug = main.slug,
+                subSlug = main.subs.firstOrNull()?.slug.orEmpty(),
+                sort = _state.value.sort,
+            ),
+        )
+    }
+
+    /** 选中一个二级分类。 */
+    fun selectSub(sub: CategorySub) {
+        applySelection(_state.value.selection.copy(subSlug = sub.slug))
+    }
+
+    /** 换排序；当前主分类不支持的排序项直接忽略（界面也不会摆出来）。 */
+    fun selectSort(sort: CategorySort) {
+        if (sort !in CategorySort.optionsFor(_state.value.mainSlug)) return
+        applySelection(_state.value.selection.copy(sort = sort))
+    }
+
+    /**
+     * 下拉刷新：**只重新拉当前分类的第一页**（用户要求），不动分类树。
+     *
+     * 已经在请求中时不重复发（与搜索页一致）；分类树还没拉到时退化成"重试分类树"。
+     */
+    fun refresh() {
+        val current = _state.value
+        if (current.loading || current.refreshing || current.loadingMore || current.catalogLoading) return
+        if (current.catalog == null) {
+            viewModelScope.launch { loadCatalog() }
+            return
+        }
+        // 列表还是空的（首屏失败 / 一次都没成功过）：当成"重新加载第一页"，
+        // 这样失败会落到整块错误态；不然界面会一边转下拉圈、一边写"这个分类下还没有漫画"。
+        loadFirstPage(refresh = current.albums.isNotEmpty())
+    }
+
+    /**
+     * 点「加载更多」：拉下一页并追加。
+     *
+     * **不监听滚动**（用户要求：滑到底部不自动加载）。失败只弹一句提示，
+     * 已经加载的列表保持不动。
+     */
+    fun loadMore() {
+        val current = _state.value
+        if (current.loading || current.refreshing || current.loadingMore) return
+        if (current.page <= 0 || current.page >= current.totalPages) return
+        val selection = current.selection
+        val nextPage = current.page + 1
+        listJob?.cancel()
+        listJob = viewModelScope.launch {
+            _state.update { it.copy(loadingMore = true, message = null) }
+            runCatching {
+                repo.categoryAlbums(selection.mainSlug, selection.subSlug, selection.sort, nextPage)
+            }.onSuccess { page ->
+                _state.update { state ->
+                    val items = mergeCategoryItems(state.albums, page.items)
+                    cache.putSnapshot(
+                        selection,
+                        CategoryListSnapshot(items, page.total, page.page, page.totalPages),
+                    )
+                    state.copy(
+                        albums = items,
+                        total = page.total,
+                        page = page.page,
+                        totalPages = page.totalPages,
+                        loadingMore = false,
+                        error = null,
+                    )
+                }
+            }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _state.update { it.copy(loadingMore = false, message = e.toUserMessage()) }
+            }
+        }
+    }
+
+    /** 整块错误态里的「重试」：分类树没拉到就重拉分类树，否则重拉当前分类第一页。 */
+    fun retry() {
+        if (_state.value.catalog == null) {
+            viewModelScope.launch { loadCatalog() }
+        } else {
+            loadFirstPage(refresh = false)
+        }
+    }
+
+    fun consumeMessage() = _state.update { it.copy(message = null) }
+
+    // ------------------------------------------------------------------
+    // 内部实现
+    // ------------------------------------------------------------------
+
+    private suspend fun loadCatalog() {
+        _state.update { it.copy(catalogLoading = true, catalogError = null) }
+        runCatching { repo.categoryCatalog() }
+            .onSuccess { groups ->
+                cache.saveCatalog(groups)
+                val fixed = fixCategorySelection(_state.value.selection, groups)
+                cache.saveSelection(fixed)
+                _state.update {
+                    it.copy(
+                        catalog = groups,
+                        catalogLoading = false,
+                        catalogError = null,
+                        mainSlug = fixed.mainSlug,
+                        subSlug = fixed.subSlug,
+                        sort = fixed.sort,
+                    )
+                }
+                ensureListLoaded()
+            }
+            .onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _state.update { it.copy(catalogLoading = false, catalogError = e.toUserMessage()) }
+            }
+    }
+
+    /** 缓存里已经有列表就什么都不做（用户要求：切回来还得是上次加载的漫画）。 */
+    private fun ensureListLoaded() {
+        if (_state.value.page > 0) return
+        loadFirstPage(refresh = false)
+    }
+
+    /**
+     * 拉第一页。
+     *
+     * @param refresh true = 下拉刷新：**保留旧列表**（列表不闪，只有顶部下拉圈在转），
+     *        失败也不清空；false = 首屏 / 换分类：清空并显示居中加载圈。
+     */
+    private fun loadFirstPage(refresh: Boolean) {
+        val selection = _state.value.selection
+        listJob?.cancel()
+        listJob = viewModelScope.launch {
+            _state.update { state ->
+                if (refresh) {
+                    state.copy(refreshing = true, error = null, message = null)
+                } else {
+                    state.copy(
+                        loading = true,
+                        error = null,
+                        message = null,
+                        albums = emptyList(),
+                        total = 0L,
+                        page = 0,
+                        totalPages = 1,
+                    )
+                }
+            }
+            runCatching {
+                repo.categoryAlbums(
+                    mainSlug = selection.mainSlug,
+                    subSlug = selection.subSlug,
+                    sort = selection.sort,
+                    page = 1,
+                )
+            }.onSuccess { page ->
+                applyPage(selection, page)
+            }.onFailure { e ->
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        refreshing = false,
+                        // 刷新失败：旧列表留着，只弹一句；首屏失败：给整块错误态
+                        error = if (refresh) it.error else e.toUserMessage(),
+                        message = if (refresh) e.toUserMessage() else null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun applyPage(selection: CategorySelection, page: CategoryAlbumPage) {
+        cache.putSnapshot(
+            selection,
+            CategoryListSnapshot(
+                items = page.items,
+                total = page.total,
+                page = page.page,
+                totalPages = page.totalPages,
+            ),
+        )
+        _state.update {
+            it.copy(
+                albums = page.items,
+                total = page.total,
+                page = page.page,
+                totalPages = page.totalPages,
+                loading = false,
+                refreshing = false,
+                loadingMore = false,
+                error = null,
+            )
+        }
+    }
+
+    /**
+     * 应用一个新选择。
+     *
+     * **缓存优先**：这份"分类 + 排序"之前加载过就直接摆出来，一次请求都不发；
+     * 没加载过才拉第一页。选中的组合没变而列表也还在时什么都不做
+     * （抽屉里重复点同一项不该触发刷新——刷新是下拉手势的事）。
+     */
+    private fun applySelection(newSelection: CategorySelection) {
+        val fixed = fixCategorySelection(newSelection, _state.value.groups)
+        if (fixed == _state.value.selection && _state.value.page > 0) return
+
+        cache.saveSelection(fixed)
+        val snapshot = cache.snapshot(fixed)
+        if (snapshot != null) {
+            listJob?.cancel()
+            _state.update {
+                it.copy(
+                    mainSlug = fixed.mainSlug,
+                    subSlug = fixed.subSlug,
+                    sort = fixed.sort,
+                    albums = snapshot.items,
+                    total = snapshot.total,
+                    page = snapshot.page,
+                    totalPages = snapshot.totalPages,
+                    loading = false,
+                    refreshing = false,
+                    loadingMore = false,
+                    error = null,
+                    message = null,
+                )
+            }
+            return
+        }
+
+        _state.update {
+            it.copy(
+                mainSlug = fixed.mainSlug,
+                subSlug = fixed.subSlug,
+                sort = fixed.sort,
+                message = null,
+            )
+        }
+        loadFirstPage(refresh = false)
     }
 }
 

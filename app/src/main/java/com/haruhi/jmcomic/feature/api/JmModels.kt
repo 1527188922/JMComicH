@@ -1,10 +1,19 @@
 package com.haruhi.jmcomic.feature.api
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * JM 接口的响应模型。
@@ -121,12 +130,105 @@ data class SearchItemDto(
     @SerialName("is_favorite") val isFavorite: Boolean? = null,
     /** 10 位时间戳。 */
     @SerialName("update_at") val updateAt: Long? = null,
+    /**
+     * 上架日期 `YYYY-MM-DD`。
+     *
+     * 分类列表的每一条都带它，而 `update_at` 偶尔缺失/为 0——
+     * 所以"更新时间"的展示规则是：有 [updateAt] 用它，没有就用 [addDate]（用户要求）。
+     * `/search` 也会返回这个字段，但那边界面不展示。
+     */
+    @SerialName("adddate") val addDate: String? = null,
 )
 
 @Serializable
 data class CategoryDto(
     @SerialName("id") val id: String? = null,
     @SerialName("title") val title: String? = null,
+)
+
+// ----------------------------------------------------------------------
+// 分类（`/categories`、`/categories/filter`）
+// ----------------------------------------------------------------------
+
+/**
+ * 「字符串优先」的宽松标量反序列化器。
+ *
+ * JM 的 `total` 在不同接口 / 不同时期有**数字**与**字符串**两种形态：
+ * 逆向文档 §4.3 写的是 `"total": 10000`，而 §6.3 的 `/forum` 实测是 `"total": "851"`。
+ * 声明成 `String` 遇到数字会整条响应解析失败（Java 实现里它是 `Object` 再 `toString`），
+ * 声明成 `Long` 又会在字符串上翻车。所以这里两边都当文本读。
+ *
+ * 注意 `JsonNull` 也是 [JsonPrimitive]（[JsonPrimitive.contentOrNull] 对它返回 null），
+ * 而可空属性本身由 kotlinx 的 nullable 包装处理，所以这里只处理"非空标量"。
+ */
+internal object LooseStringSerializer : KSerializer<String> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor(
+        "com.haruhi.jmcomic.LooseString",
+        PrimitiveKind.STRING,
+    )
+
+    override fun deserialize(decoder: Decoder): String {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeString()
+        return when (val element = json.decodeJsonElement()) {
+            is JsonPrimitive -> element.contentOrNull ?: ""
+            else -> element.toString()
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: String) {
+        encoder.encodeString(value)
+    }
+}
+
+/**
+ * `GET /categories` 的 `data` 解密后的 JSON（官方逆向文档 §4.2）。
+ *
+ * 响应里还有 `blocks`（主题标签组，点击走 `/search?filter=`）与每个分类的 `id`，
+ * 本工程不用：分类的下拉抽屉只按 `slug` 区分（`id` 是数字与字符串混排，
+ * 声明它反而要额外兼容）。`ignoreUnknownKeys = true` 会跳过它们。
+ */
+@Serializable
+data class CategoriesRespDto(
+    @SerialName("categories") val categories: List<CategoryGroupDto>? = null,
+)
+
+/** 一个主分类；`sub_categories` 可能缺省（最新A漫 / Cosplay / 3D / 禁漫漢化組就没有）。 */
+@Serializable
+data class CategoryGroupDto(
+    @SerialName("name") val name: String? = null,
+    @SerialName("slug") val slug: String? = null,
+    /**
+     * 该主分类下的漫画总数。
+     *
+     * 实测形态不统一：最新A漫 / Cosplay / 3D / 禁漫漢化組 是数字 `0`，
+     * 有内容的分类是字符串（`"354792"`）——所以同样用宽松标量读。
+     */
+    @SerialName("total_albums")
+    @Serializable(with = LooseStringSerializer::class)
+    val totalAlbums: String? = null,
+    @SerialName("sub_categories") val subCategories: List<CategorySubDto>? = null,
+)
+
+/** 一个二级分类，例如 `漢化`（`slug = "chinese"`）。 */
+@Serializable
+data class CategorySubDto(
+    @SerialName("name") val name: String? = null,
+    @SerialName("slug") val slug: String? = null,
+)
+
+/**
+ * `GET /categories/filter` 的 `data` 解密后的 JSON（官方逆向文档 §4.3）。
+ *
+ * `content` 的条目与 `/search` **完全同构**（唯一差别是分类列表没有 `description`），
+ * 所以直接复用 [SearchItemDto]；`tags` 是"本页出现的热门标签"，本工程不用。
+ * `total` 被服务端截断到 **10000**，前端据此算页数（最多 125 页）。
+ */
+@Serializable
+data class CategoryFilterRespDto(
+    @SerialName("total")
+    @Serializable(with = LooseStringSerializer::class)
+    val total: String? = null,
+    @SerialName("content") val content: List<SearchItemDto>? = null,
 )
 
 // ----------------------------------------------------------------------

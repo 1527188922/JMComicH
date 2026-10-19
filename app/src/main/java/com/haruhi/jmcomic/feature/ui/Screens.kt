@@ -1644,9 +1644,9 @@ private val ONLINE_ACTION_BUTTON_PADDING = PaddingValues(horizontal = 10.dp, ver
 private val ONLINE_ACTION_BUTTON_ZONE = 36.dp
 
 /**
- * 在线搜索结果的一行。
+ * 在线漫画列表的一行（搜索结果页与分类页共用）。
  *
- * 卡片右下角是**唯一**的动作按钮，两种状态各自一颗（用户本轮要求）：
+ * 卡片右下角是**唯一**的动作按钮，两种状态各自一颗：
  *
  * - 未入库：「加入书库」，次要色（要联网拉详情时转圈 + 不可点，
  *   见 `OnlineSearchUiState.addingIds`）；
@@ -1654,11 +1654,14 @@ private val ONLINE_ACTION_BUTTON_ZONE = 36.dp
  *   由上层先弹一次确认框（[SearchResultsScreen] 的 `ConfirmDialog`），
  *   本行只负责把点击转上去。
  *
- * 位置是**卡片的右下角**，不是"文字列的底部"（用户要求）：按钮 `align(BottomEnd)` 浮在
+ * 两个回调**都可以不传**：分类页是纯浏览页（入库走详情页），那里两个都不传，
+ * 整块动作按钮连同文字列的底部净空一起不画。
+ *
+ * 位置是**卡片的右下角**，不是"文字列的底部"：按钮 `align(BottomEnd)` 浮在
  * 整个卡片内容盒上，所以标题只有一行时它照样贴着卡片下沿，不会悬在半空。
  * 文字列底部用 [ONLINE_ACTION_BUTTON_ZONE] 留出净空，标题/作者不会被它压住。
  *
- * 视觉上是"小一号的无边框按钮"（用户本轮要求）：[OutlinedButton] 保留下来只是因为它的
+ * 视觉上是"小一号的无边框按钮"：[OutlinedButton] 保留下来只是因为它的
  * 容器是透明的、按下态与禁用态都是现成的，但 `border = null` 把描边去掉，
  * 再把高度收到 [ONLINE_ACTION_BUTTON_HEIGHT]、内边距收到 [ONLINE_ACTION_BUTTON_PADDING]——
  * 默认的 40dp 高 + 16dp 内边距放在卡片右下角太占地方，会抢封面的视觉重量。
@@ -1666,18 +1669,35 @@ private val ONLINE_ACTION_BUTTON_ZONE = 36.dp
  * 原来那行「已入库」小字被删掉了：状态已经写在按钮上，同一件事不摆两遍。
  */
 @Composable
-private fun OnlineResultRow(
+internal fun OnlineResultRow(
     item: OnlineSearchItem,
-    adding: Boolean,
-    removing: Boolean,
     onOpen: () -> Unit,
-    onAddToLibrary: () -> Unit,
-    onRequestRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+    adding: Boolean = false,
+    removing: Boolean = false,
+    /**
+     * 更新时间文案（`2026-10-19`），为 null 时不展示。
+     *
+     * 分类页传它（用户要求"展示信息还需要展示更新时间，没有就展示添加时间"）；
+     * 搜索结果页不传，那一行保持原样。
+     */
+    updateLabel: String? = null,
+    /**
+     * 右下角的动作按钮。**为 null 时整块不画**：分类页只是浏览，
+     * 入库/移出走详情页，不在这里堆两个按钮。
+     */
+    onAddToLibrary: (() -> Unit)? = null,
+    onRequestRemove: (() -> Unit)? = null,
 ) {
+    // 两个状态各自决定那颗按钮在不在：已入库看 onRequestRemove，未入库看 onAddToLibrary
+    val showAction = if (item.existsLocal) onRequestRemove != null else onAddToLibrary != null
+    // 不画按钮时这两个回调是 null，退化成空实现只为消除可空性（不会被执行到）
+    val addAction: () -> Unit = onAddToLibrary ?: {}
+    val removeAction: () -> Unit = onRequestRemove ?: {}
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         // 封面 + 文字在里层 Row 里，动作按钮**浮在同一个 Box 上、贴 BottomEnd**。
         //
@@ -1704,8 +1724,8 @@ private fun OnlineResultRow(
                     modifier = Modifier
                         .weight(1f)
                         // 给右下角那颗按钮留净空：它是浮上来的，下面不留白的话
-                        // 标题 / 作者会被它压住
-                        .padding(bottom = ONLINE_ACTION_BUTTON_ZONE),
+                        // 标题 / 作者会被它压住（没有按钮时不留空，文字自然贴底）
+                        .padding(bottom = if (showAction) ONLINE_ACTION_BUTTON_ZONE else 0.dp),
                 ) {
                     Text(
                         text = item.name.orEmpty().ifBlank { "JM${item.id}" },
@@ -1715,7 +1735,11 @@ private fun OnlineResultRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = "JM${item.id}",
+                        // 更新时间与 JM 号同一行，省一行高度（分类页要求展示更新时间）
+                        text = buildString {
+                            append("JM${item.id}")
+                            if (!updateLabel.isNullOrBlank()) append(" · 更新 $updateLabel")
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1730,73 +1754,68 @@ private fun OnlineResultRow(
                 }
             }
             // 动作按钮**固定贴卡片右下角**（用户要求），两个状态都在这一个位置上。
-            Row(
-                modifier = Modifier.align(Alignment.BottomEnd),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // 用户输入纯数字时由 /album 详情包装出来的那一条，标出来与普通搜索区分
-//                    if (item.isExactIdMatch) {
-//                        Text(
-//                            text = "精确匹配",
-//                            style = MaterialTheme.typography.labelSmall,
-//                            color = MaterialTheme.colorScheme.tertiary,
-//                        )
-//                        Spacer(Modifier.width(8.dp))
-//                    }
-                if (item.existsLocal) {
-                    // 已入库：字样变「已入库」并在前面加一个对勾图标，**用主色**标出"这本在库里"。
-                    // 再点一下 = 移出书库（用户本轮要求），销毁性操作由上层二次确认。
-                    OutlinedButton(
-                        onClick = onRequestRemove,
-                        enabled = !removing,
-                        border = null,
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.primary,
-                        ),
-                        contentPadding = ONLINE_ACTION_BUTTON_PADDING,
-                        modifier = ONLINE_ACTION_BUTTON_HEIGHT,
-                    ) {
-                        if (removing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        Text("已入库")
-                    }
-                } else {
-                    // 本地没有完整详情时，这一次入库要等一个 `/album` 往返，
-                    // 所以按钮上转圈并挡掉重复点按（用户本轮要求）。
-                    // 本地命中的那条路径不会进这个状态——VM 只在真要联网时才置 adding，
-                    // 否则"点一下就变已入库"会先闪一下 loading。
-                    //
-                    // 未入库不是"当前状态"，只是"可以做这件事"，所以用次要色，
-                    // 与已入库那颗主色按钮区分开（用户本轮要求：只有已入库用主色）。
-                    OutlinedButton(
-                        onClick = onAddToLibrary,
-                        enabled = !adding,
-                        border = null,
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                        contentPadding = ONLINE_ACTION_BUTTON_PADDING,
-                        modifier = ONLINE_ACTION_BUTTON_HEIGHT,
-                    ) {
-                        if (adding) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                            )
+            // 没有动作（分类页）时整块不画，文字列也就不会留出净空。
+            if (showAction) {
+                Row(
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 用户输入纯数字时由 /album 详情包装出来的那一条，标出来与普通搜索区分
+                    if (item.existsLocal) {
+                        // 已入库：字样变「已入库」并在前面加一个对勾图标，**用主色**标出"这本在库里"。
+                        // 再点一下 = 移出书库（用户本轮要求），销毁性操作由上层二次确认。
+                        OutlinedButton(
+                            onClick = removeAction,
+                            enabled = !removing,
+                            border = null,
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.primary,
+                            ),
+                            contentPadding = ONLINE_ACTION_BUTTON_PADDING,
+                            modifier = ONLINE_ACTION_BUTTON_HEIGHT,
+                        ) {
+                            if (removing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
                             Spacer(Modifier.width(6.dp))
+                            Text("已入库")
                         }
-                        Text("未入库")
+                    } else {
+                        // 本地没有完整详情时，这一次入库要等一个 `/album` 往返，
+                        // 所以按钮上转圈并挡掉重复点按（用户本轮要求）。
+                        // 本地命中的那条路径不会进这个状态——VM 只在真要联网时才置 adding，
+                        // 否则"点一下就变已入库"会先闪一下 loading。
+                        //
+                        // 未入库不是"当前状态"，只是"可以做这件事"，所以用次要色，
+                        // 与已入库那颗主色按钮区分开（用户本轮要求：只有已入库用主色）。
+                        OutlinedButton(
+                            onClick = addAction,
+                            enabled = !adding,
+                            border = null,
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                            contentPadding = ONLINE_ACTION_BUTTON_PADDING,
+                            modifier = ONLINE_ACTION_BUTTON_HEIGHT,
+                        ) {
+                            if (adding) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text("未入库")
+                        }
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.api
 
+import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.core.protocol.Crypto
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
@@ -20,7 +21,8 @@ import java.net.URLEncoder
  *
  * 覆盖计划 §10 P2 要求的四个接口 + 一个模板接口：
  * `/search`、`/album`、`/chapter`、`/chapter_view_template`；
- * 详情页「评论」tab 用的 `/forum` 也在这里。
+ * 详情页「评论」tab 用的 `/forum`，以及分类页用的 `/categories` + `/categories/filter`
+ * 也在这里。
  * **`/login` 不实现**（已确认不做 JM 账号）。
  *
  * 契约细节全部对齐参考实现 `JmcomicService`：
@@ -83,6 +85,52 @@ class ApiClient(
         params = listOf("id" to aid.toString()),
         retry = retryProvider().album,
         decode = { json -> ApiJson.decodeFromString(AlbumDto.serializer(), json) },
+    )
+
+    /**
+     * `/categories`：分类树（主分类 + 二级分类）。
+     *
+     * 官方文档 §4.2：9 个主分类，其中「最新A漫」的 `slug` 是**空串**、没有二级分类；
+     * 其余每个主分类带 2～6 个二级分类。真实响应里 `id` / `total_albums` 有数字与字符串
+     * 混排，所以 [CategoriesRespDto] 干脆不声明它们（见该类的注释）。
+     *
+     * 重试次数沿用「在线搜索」那一项：都是"拉一页列表"的只读接口，
+     * 不为分类单开一个设置项（与 `/forum` 沿用详情重试同一套理由）。
+     */
+    suspend fun categories(): CategoriesRespDto = getDecrypted(
+        path = "/categories",
+        params = listOf("lang" to Defaults.CATEGORY_LANG),
+        retry = retryProvider().search,
+        decode = { json -> ApiJson.decodeFromString(CategoriesRespDto.serializer(), json) },
+    )
+
+    /**
+     * `/categories/filter`：分类内容列表。
+     *
+     * | 参数 | 说明 |
+     * |---|---|
+     * | `page` | **从 1 开始**，每页固定 80 条 |
+     * | `c` | `slug` 或 `slug + "_" + 二级slug`；「最新A漫」传空串 → **不传** |
+     * | `o` | 排序码（[CategorySort]）；「最新」是空串 → **不传** |
+     * | `lang` | 固定 [Defaults.CATEGORY_LANG] |
+     *
+     * 空值参数按官方 `fetchGet` 的规则**直接丢掉**（文档 §2.4）：
+     * 传 `o=` / `c=` 空串与不传在服务端语义相同，但少一个参数少一次歧义。
+     */
+    suspend fun categoryFilter(
+        category: String,
+        sort: CategorySort = CategorySort.DEFAULT,
+        page: Int = 1,
+    ): CategoryFilterRespDto = getDecrypted(
+        path = "/categories/filter",
+        params = buildList {
+            add("page" to (if (page < 1) 1 else page).toString())
+            if (sort.code.isNotBlank()) add("o" to sort.code)
+            if (category.isNotBlank()) add("c" to category)
+            add("lang" to Defaults.CATEGORY_LANG)
+        },
+        retry = retryProvider().search,
+        decode = { json -> ApiJson.decodeFromString(CategoryFilterRespDto.serializer(), json) },
     )
 
     /**

@@ -10,6 +10,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+// 别名：直接 import `List` 会把 kotlin.collections.List 这个名字在文件里遮住，
+// 以后在这里写 `List<…>` 会莫名其妙解析到图标属性上。
+import androidx.compose.material.icons.automirrored.filled.List as CategoryListIcon
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
@@ -79,9 +82,17 @@ object Routes {
     const val TASKS = "jm/tasks"
 
     /**
-     * 「更多」tab（用户 2026-10-15 定的底栏第 4 项）。
+     * 「分类」tab（用户 2026-10-19 要求）。
      *
-     * 底栏固定为 **书库 / 发现 / 收藏 / 更多**；「最近浏览」「下载任务」「应用设置」
+     * 位置固定在**书库与发现之间**（用户口述：「分类页放到书库的右侧、发现页的左侧」）。
+     * 页面是纯在线分类浏览：分类树 + 双层抽屉 + 排序 + 下拉刷新 + 手动翻页。
+     */
+    const val CATEGORY = "jm/category"
+
+    /**
+     * 「更多」tab（用户 2026-10-15 定的底栏项）。
+     *
+     * 底栏固定为 **书库 / 分类 / 发现 / 收藏 / 更多**；「最近浏览」「下载任务」「应用设置」
      * 都收在这一页里，所以底栏不因为它们变长。
      */
     const val MORE = "jm/more"
@@ -135,19 +146,22 @@ object Routes {
 }
 
 /**
- * 底部导航的四个 tab（用户 2026-10-15 定的顺序：书库 / 发现 / 收藏 / 更多）。
+ * 底部导航的五个 tab（用户 2026-10-19 定的顺序：书库 / 分类 / 发现 / 收藏 / 更多）。
  *
  * **声明顺序就是底栏顺序**，也是页面切换动画方向的依据（见 [Tab.indexOfRoute]）。
+ * 「分类」夹在书库与发现之间：左边是"我有的"，中间是"按分类找"，右边是"按关键字搜"。
  *
  * 「最近浏览」与「下载任务」**不在这里**：它们收进了「更多」页当二级页，
- * 底栏因此从 5 项减到 4 项。代价是任务不再常驻底栏，靠 [TaskBadgeIcon] 的角标补可见性。
+ * 底栏因此没有继续变长。代价是任务不再常驻底栏，靠 [TaskBadgeIcon] 的角标补可见性。
  *
  * 图标只能用 `material-icons-core` 里有的：本工程**不引入 `material-icons-extended`**
  * （体积代价，见 `libs.versions.toml`）。"更多"用竖排三点（`MoreVert`），
- * 表示"还有别的东西收在这里面"。
+ * 表示"还有别的东西收在这里面"；"分类"用列表图标（`AutoMirrored.Filled.List`，
+ * RTL 下会自动镜像），和「书库」的房子、「发现」的放大镜都区分得开。
  */
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     LIBRARY(Routes.LIBRARY, "书库", Icons.Default.Home),
+    CATEGORY(Routes.CATEGORY, "分类", Icons.AutoMirrored.Filled.CategoryListIcon),
     DISCOVER(Routes.DISCOVER, "发现", Icons.Default.Search),
     FAVORITES(Routes.FAVORITES, "收藏", Icons.Default.Favorite),
     MORE(Routes.MORE, "更多", Icons.Default.MoreVert),
@@ -165,7 +179,7 @@ private const val PAGE_TRANSITION_MS = 260
 /**
  * 漫画模式的导航壳。
  *
- * 底部导航：**书库 / 发现 / 收藏 / 更多**（用户 2026-10-15 定的底栏）。
+ * 底部导航：**书库 / 分类 / 发现 / 收藏 / 更多**（分类是 2026-10-19 新增，夹在书库与发现之间）。
  * 「最近浏览」「下载任务」「应用设置」都收在「更多」页里当二级页。
  *
  * 详情页、阅读器以及「更多」下面的二级页都隐藏底栏
@@ -343,6 +357,26 @@ fun ModeRoot(
                         onOpenAlbum = { navController.navigate(Routes.detail(it)) },
                         onClearAll = vm::clearAll,
                         onRemoveAlbum = vm::remove,
+                    )
+                }
+
+                composable(Routes.CATEGORY) { entry ->
+                    val vm: CategoryViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    // 提示由分类页自己的 MessageEffect 消费后交给根部弹（与发现页同一套），
+                    // 这里**不再叠一层** MessageEffect，否则同一条提示会弹两次。
+                    CategoryScreen(
+                        state = state,
+                        onSelectMain = vm::selectMain,
+                        onSelectSub = vm::selectSub,
+                        onSortChange = vm::selectSort,
+                        onToggleViewMode = vm::toggleViewMode,
+                        onRefresh = vm::refresh,
+                        onLoadMore = vm::loadMore,
+                        onRetry = vm::retry,
+                        onOpenAlbum = { navController.navigate(Routes.detail(it)) },
+                        onMessage = showMessage,
+                        onConsumeMessage = vm::consumeMessage,
                     )
                 }
 
@@ -834,6 +868,13 @@ class ViewModelFactory(
                 repo = container.jmRepository,
                 cleaner = container.jmAlbumCleaner,
                 entry = searchEntry,
+            ) as T
+
+        // 分类页：分类树与列表的缓存在容器上（跨页面存活），ViewModel 只是读写者
+        modelClass.isAssignableFrom(CategoryViewModel::class.java) ->
+            CategoryViewModel(
+                repo = container.jmRepository,
+                cache = container.jmCategoryCache,
             ) as T
 
         modelClass.isAssignableFrom(FavoritesViewModel::class.java) ->
