@@ -156,6 +156,9 @@ class AppContainer(private val appContext: Context) {
             }
 
             override val networkState = networkMonitor.state
+
+            // 「等待网络」期间的兜底重读：漏掉系统回调时由下载执行器周期调用
+            override fun refreshNetwork() = networkMonitor.refresh()
         }
 
     /** 阅读位置与章节清单查询（阅读器与"继续阅读"入口）。 */

@@ -21,6 +21,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import timber.log.Timber
 import java.io.File
@@ -52,6 +53,15 @@ interface DownloadEnvironment {
 
     /** 网络状况，用于等待恢复。 */
     val networkState: StateFlow<NetworkState>
+
+    /**
+     * 请求网络监视器**立即重新读一次**当前网络状况。
+     *
+     * 这是"漏掉系统回调"的兜底：等待网络期间 [DownloadManager] 会周期调用它，
+     * 免得状态流长时间停在一次瞬时误判上、任务被永久挂在"等待网络"。
+     * 默认空实现，测试用的假环境不必关心。
+     */
+    fun refreshNetwork() {}
 }
 
 /** 下载任务的参数快照（`t_download_task.payload`）。**不放凭据**（计划 §D.2 第 6 条）。 */
@@ -475,12 +485,17 @@ class DownloadManager(
      * @param stage 恢复后要写回的任务阶段文案（保持"第几话"这类上下文不丢）
      */
     private suspend fun awaitNetworkPermission(taskId: Long, stage: String = STAGE_DOWNLOADING) {
-        val now = environment.networkState.value
-        if (now.online && environment.allowsTransfer(now.metered)) return
+        if (isNetworkAllowed(environment.networkState.value)) return
 
         tasks.markWaitingNetwork(taskId, WAITING_REASON)
-        environment.networkState.first { state ->
-            state.online && environment.allowsTransfer(state.metered)
+        while (true) {
+            // 状态流发了"允许"的值就立刻继续；超时则兜底重读一次网络。
+            // 这样即使漏掉一次系统回调（状态流停在一次瞬时误判上），任务也不会被永久挂住。
+            val allowed = withTimeoutOrNull(NETWORK_RECHECK_MS) {
+                environment.networkState.first { isNetworkAllowed(it) }
+            }
+            if (allowed != null) break
+            environment.refreshNetwork()
         }
         if (!isRunnable(taskId)) return
         tasks.markQueued(taskId)
@@ -488,6 +503,10 @@ class DownloadManager(
         // 恢复后把阶段文案写回去（等待网络时被 STAGE_WAITING_NETWORK 覆盖过）
         tasks.updateProgress(taskId, stageText = stage)
     }
+
+    /** 当前网络是否允许开始传输：在线且策略放行。 */
+    private suspend fun isNetworkAllowed(state: NetworkState): Boolean =
+        state.online && environment.allowsTransfer(state.metered)
 
     /**
      * 当前的阶段文案：`下载图片 · 第1话`。
@@ -520,6 +539,12 @@ class DownloadManager(
         const val MAX_CHAPTER_ROUNDS = 3
 
         const val WAITING_REASON = "当前网络不允许下载，已暂停传输"
+
+        /**
+         * 「等待网络」时的兜底重读周期（毫秒）：等这么久还没等到状态流放行，
+         * 就主动让 `NetworkMonitor` 重读一次当前网络，避免漏掉系统回调时一直被挂住。
+         */
+        const val NETWORK_RECHECK_MS = 1_000L
 
         /**
          * 进度心跳周期（毫秒）：把章节明细的聚合结果落一次任务行，

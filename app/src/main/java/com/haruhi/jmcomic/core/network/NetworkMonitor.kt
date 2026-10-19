@@ -35,7 +35,12 @@ class NetworkMonitor(context: Context) {
     private val manager: ConnectivityManager? =
         context.applicationContext.getSystemService(ConnectivityManager::class.java)
 
-    private val _state = MutableStateFlow(read())
+    /**
+     * 初值给"允许"的保守默认：真实值还没读出来之前，不要先把下载按住。
+     * 真正的判定在 [init] 的第一次 [refresh] 里取得（所以这里不能反过来调用 [read]——
+     * 那样会在 `_state` 自身初始化完成前读它）。
+     */
+    private val _state = MutableStateFlow(NetworkState())
 
     val state: StateFlow<NetworkState> = _state.asStateFlow()
 
@@ -44,10 +49,16 @@ class NetworkMonitor(context: Context) {
 
         override fun onLost(network: Network) = refresh()
 
-        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refresh()
+        // 直接用回调递进来的能力快照，不再回查 `activeNetwork`：
+        // 后者在回调触发的瞬间可能还没更新完，会读到与事件不一致（甚至为空）的瞬时快照。
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            _state.value = stateOf(capabilities)
+        }
     }
 
     init {
+        // 先读一次：即使回调注册失败（或没触发），也有一个已生效的初始状态
+        refresh()
         runCatching {
             // registerDefaultNetworkCallback 需要 ACCESS_NETWORK_STATE（Manifest 已声明）
             manager?.registerDefaultNetworkCallback(callback)
@@ -61,8 +72,16 @@ class NetworkMonitor(context: Context) {
 
     private fun read(): NetworkState {
         val cm = manager ?: return NetworkState(online = true, metered = false)
-        val caps = runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()
-            ?: return NetworkState(online = false, metered = false)
+        // 连默认网络句柄都取不到 = 真的没有可用网络
+        val active = cm.activeNetwork ?: return NetworkState(online = false, metered = false)
+        // 句柄在、能力却一时读不到（连接切换的瞬间很常见）：沿用上一次判定，
+        // 别把一次瞬时读数当成"离线"——那会让下载被永久挂在"等待网络"。
+        val caps = runCatching { cm.getNetworkCapabilities(active) }.getOrNull()
+            ?: return _state.value
+        return stateOf(caps)
+    }
+
+    private fun stateOf(caps: NetworkCapabilities): NetworkState {
         val online = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         // NET_CAPABILITY_NOT_METERED 缺失 = 计费网络
         val metered = !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
