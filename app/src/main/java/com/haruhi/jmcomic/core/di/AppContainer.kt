@@ -276,9 +276,10 @@ class AppContainer(private val appContext: Context) {
 
     /** PDF 生成器（pdfbox-android；超长图按高度切片）。 */
     val pdfWriter: com.haruhi.jmcomic.core.codec.PdfWriter by lazy {
-        // 传 cacheDir 作为 PDFBox 的临时落盘目录（必然存在且可写）：图片流写磁盘而不是
-        // 攒在堆内存里，避免"图片太多 → OOM 闪退"。见 PdfWriter.memoryUsage()。
-        com.haruhi.jmcomic.core.codec.PdfWriter(scratchDir = appContext.cacheDir)
+        // scratchDir 指向 libraryDirs.tmp：PDFBox 的临时文件（PDFBox*.tmp）落在既有的
+        // "可随时整体清理"临时目录里，能被 clearCache() 等半成品清理逻辑一并覆盖。
+        // 图片流写磁盘而不是攒在堆内存里，避免"图片太多 → OOM 闪退"。见 PdfWriter.memoryUsage()。
+        com.haruhi.jmcomic.core.codec.PdfWriter(scratchDir = libraryDirs.tmp)
     }
 
     /** 成品交付：API 29+ 走 MediaStore 的下载目录，老系统退到应用外部私有目录。 */

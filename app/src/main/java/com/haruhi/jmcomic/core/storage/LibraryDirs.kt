@@ -16,7 +16,7 @@ import java.io.File
  *       <章节文件夹>/           第N话
  *         00001.webp …
  *   covers/                    封面缓存（Coil 磁盘缓存）
- *   tmp/                       下载中转（.tmp / .part），可随时整体清理
+ *   tmp/                       下载中转（.tmp / .part）＋ PDF 生成临时文件（PDFBox*.tmp），可随时整体清理
  *   export/                    导出中转（打包完成后交给 SAF/MediaStore，随后删除）
  *   crash/                     崩溃日志
  * ```
@@ -34,7 +34,7 @@ class LibraryDirs(root: File) {
     /** 封面缓存根目录（不计入用户资产）。 */
     val covers: File = File(root, "covers")
 
-    /** 下载中转目录（`.tmp` / `.part`），可整体清理。 */
+    /** 临时目录：下载中转（`.tmp` / `.part`）与 PDF 生成临时文件（`PDFBox*.tmp`），可整体清理。 */
     val tmp: File = File(root, "tmp")
 
     /** 导出中转目录（zip/pdf 生成中），可整体清理。 */

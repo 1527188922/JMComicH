@@ -164,11 +164,18 @@ class PdfWriter(
      * 占用与图片张数基本无关。代价是多一轮磁盘 I/O（生成稍慢、需要与成品相当的临时空间），
      * 换来的是"多少张图都不会因为累积而 OOM"。
      *
-     * `scratchDir` 必须**已存在**：目录不存在时 PDFBox 会静默回退到纯内存（等于没改），
-     * 所以 [PdfWriter] 的默认构造（测试用）走系统临时目录，App 侧传必然存在的 cacheDir。
+     * `scratchDir` 必须**已存在**：目录不存在时 PDFBox 会静默回退到纯内存（等于没改）。
+     * 所以这里会先补建一次；App 侧传的是 `libraryDirs.tmp` —— 也就是"清理缓存"能一起清掉的
+     * 半成品目录，测试用的默认构造则走系统临时目录。
      */
     private fun memoryUsage(): MemoryUsageSetting =
-        MemoryUsageSetting.setupTempFileOnly().apply { scratchDir?.let { setTempDir(it) } }
+        MemoryUsageSetting.setupTempFileOnly().apply {
+            // 先补建目录：既容忍"清理缓存"把整个 tmp 目录删掉，也不依赖调用方保证目录已存在。
+            scratchDir?.let { dir ->
+                dir.mkdirs()
+                setTempDir(dir)
+            }
+        }
 
     private fun applyProtection(document: PDDocument, password: String?) {
         if (password.isNullOrEmpty()) return
