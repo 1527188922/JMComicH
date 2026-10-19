@@ -250,6 +250,9 @@ data class CategoryListSnapshot(
 /**
  * 分类页的展示方式（用户要求：列表 / 卡片，卡片每行三个）。
  *
+ * **默认卡片**（用户 2026-10-20 要求）：分类页第一次打开就是三列封面网格，
+ * 想看一行一本的详情信息再点右上角那颗按钮切到列表。
+ *
  * 放在数据层是因为它要跟着 [CategoryCache] 跨页面存活；界面只用它的两个取值。
  */
 enum class CategoryViewMode {
@@ -263,7 +266,8 @@ enum class CategoryViewMode {
     fun toggled(): CategoryViewMode = if (this == LIST) CARD else LIST
 
     companion object {
-        val DEFAULT = LIST
+        /** 首次进入分类页时用卡片模式（用户要求）。 */
+        val DEFAULT = CARD
     }
 }
 

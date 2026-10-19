@@ -160,8 +160,9 @@ class CategoryCatalogTest {
     }
 
     @Test
-    fun `view mode toggles between list and card`() {
-        assertThat(CategoryViewMode.DEFAULT).isEqualTo(CategoryViewMode.LIST)
+    fun `view mode defaults to card and toggles between both`() {
+        // 用户 2026-10-20 要求：分类页默认卡片展示
+        assertThat(CategoryViewMode.DEFAULT).isEqualTo(CategoryViewMode.CARD)
         assertThat(CategoryViewMode.LIST.toggled()).isEqualTo(CategoryViewMode.CARD)
         assertThat(CategoryViewMode.CARD.toggled()).isEqualTo(CategoryViewMode.LIST)
     }
@@ -425,10 +426,11 @@ class CategoryCatalogTest {
     @Test
     fun `cache remembers the chosen view mode`() {
         val cache = CategoryCache()
-        assertThat(cache.viewMode).isEqualTo(CategoryViewMode.LIST)
-
-        cache.saveViewMode(CategoryViewMode.CARD)
-
+        // 默认卡片（用户 2026-10-20 要求）
         assertThat(cache.viewMode).isEqualTo(CategoryViewMode.CARD)
+
+        cache.saveViewMode(CategoryViewMode.LIST)
+
+        assertThat(cache.viewMode).isEqualTo(CategoryViewMode.LIST)
     }
 }
