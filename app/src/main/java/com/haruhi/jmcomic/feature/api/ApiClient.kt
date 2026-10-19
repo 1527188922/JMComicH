@@ -48,6 +48,8 @@ class ApiClient(
         val album: Int = Defaults.RETRY_DEFAULT,
         val search: Int = Defaults.RETRY_DEFAULT,
         val chapter: Int = Defaults.RETRY_DEFAULT,
+        /** 「获取分类」（`/categories` + `/categories/filter`）单独一项。 */
+        val category: Int = Defaults.RETRY_DEFAULT,
     )
 
     private val apiDomain: String get() = apiDomainProvider().ifBlank { Defaults.DEFAULT_API_DOMAIN }
@@ -94,13 +96,12 @@ class ApiClient(
      * 其余每个主分类带 2～6 个二级分类。真实响应里 `id` / `total_albums` 有数字与字符串
      * 混排，所以 [CategoriesRespDto] 干脆不声明它们（见该类的注释）。
      *
-     * 重试次数沿用「在线搜索」那一项：都是"拉一页列表"的只读接口，
-     * 不为分类单开一个设置项（与 `/forum` 沿用详情重试同一套理由）。
+     * 重试次数用「获取分类」那一项（设置页「高级」里单独一项，默认 1 次）。
      */
     suspend fun categories(): CategoriesRespDto = getDecrypted(
         path = "/categories",
         params = listOf("lang" to Defaults.CATEGORY_LANG),
-        retry = retryProvider().search,
+        retry = retryProvider().category,
         decode = { json -> ApiJson.decodeFromString(CategoriesRespDto.serializer(), json) },
     )
 
@@ -129,7 +130,7 @@ class ApiClient(
             if (category.isNotBlank()) add("c" to category)
             add("lang" to Defaults.CATEGORY_LANG)
         },
-        retry = retryProvider().search,
+        retry = retryProvider().category,
         decode = { json -> ApiJson.decodeFromString(CategoryFilterRespDto.serializer(), json) },
     )
 

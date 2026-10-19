@@ -28,11 +28,11 @@ object SettingDefaults {
          */
         const val DOWNLOAD_NETWORK_ANY = 1
 
-        /** 请求超时：3 秒。 */
-        const val REQUEST_TIMEOUT_SECONDS = 3
+        /** 请求超时 */
+        const val REQUEST_TIMEOUT_SECONDS = 5
 
-        /** 图片下载超时：3 秒（与接口超时分开配置，默认值取一致）。 */
-        const val IMAGE_REQUEST_TIMEOUT_SECONDS = 3
+        /** 图片下载超时：**6 秒**（与接口超时分开配置，默认值同步改成 6 秒）。 */
+        const val IMAGE_REQUEST_TIMEOUT_SECONDS = 6
 
         /** [计划 §9.5] 代理：默认不使用。 */
         const val PROXY_NONE = 0
@@ -114,8 +114,14 @@ object SettingDefaults {
         /** [参考 `jm.search.history.limit=20`；计划 §9.3 范围 1～100] */
         const val SEARCH_HISTORY_LIMIT = 20
 
-        /** [参考 `jm.request.*.retry=0`，计划 §9.3 范围 0～5] */
-        const val RETRY = 0
+        /**
+         * 各接口「请求失败后自动重试」的默认次数：**1 次**。
+         *
+         * 参考实现 `jm.request.*.retry=0`、计划 §9.3 的范围是 0～5；
+         * 2026-10-20 用户要求把默认值从 0（不重试）改成 1（失败后再试一次），
+         * 漫画详情 / 搜索 / 章节图片 / 获取分类四个接口共用这一个默认值。
+         */
+        const val RETRY = 1
     }
 }
 

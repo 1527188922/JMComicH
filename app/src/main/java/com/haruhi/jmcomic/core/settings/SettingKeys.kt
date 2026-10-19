@@ -88,6 +88,14 @@ internal object SettingKeys {
         const val RETRY_ALBUM = "retry_album"
         const val RETRY_SEARCH = "retry_search"
         const val RETRY_CHAPTER = "retry_chapter"
+
+        /**
+         * 「获取分类」的重试次数（`/categories` + `/categories/filter`）。
+         *
+         * 2026-10-20 按用户要求单独开一项：分类树与分类列表都是"打开分类页就要打"的请求，
+         * 线路抖动时多试一次比让用户看到整块错误态更划算。默认与其他接口一致（1 次）。
+         */
+        const val RETRY_CATEGORY = "retry_category"
     }
 
     // ---------------- 敏感凭据（单独的安全存储，键名同样不外露） ----------------

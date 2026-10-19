@@ -98,11 +98,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** 三处「请求失败后重试」的区分（详情 / 搜索 / 章节）。 */
+/** 四处「请求失败后重试」的区分（详情 / 搜索 / 章节图片 / 获取分类）。 */
 enum class RetryField(val label: String, val key: String) {
     ALBUM("漫画详情", SettingKeys.Jm.RETRY_ALBUM),
     SEARCH("搜索", SettingKeys.Jm.RETRY_SEARCH),
     CHAPTER("章节图片", SettingKeys.Jm.RETRY_CHAPTER),
+
+    /** 「获取分类」：`/categories` 与 `/categories/filter` 共用这一项。 */
+    CATEGORY("获取分类", SettingKeys.Jm.RETRY_CATEGORY),
 }
 
 /** 代理编辑草稿：端口先按文本收，由 ViewModel 校验后再落存储。 */
@@ -180,9 +183,18 @@ data class SettingsUiState(
     val resolved: ResolvedNetworkConfig? = null,
 
     // 高级
-    val retryAlbum: Int = 0,
-    val retrySearch: Int = 0,
-    val retryChapter: Int = 0,
+    /**
+     * 各接口「请求失败后自动重试」的次数。
+     *
+     * 默认值取 [SettingDefaults.Jm.RETRY]（2026-10-20 起是 1：失败后再试一次），
+     * 首帧就按默认值画，真实值读回来只是数字变化。
+     */
+    val retryAlbum: Int = SettingDefaults.Jm.RETRY,
+    val retrySearch: Int = SettingDefaults.Jm.RETRY,
+    val retryChapter: Int = SettingDefaults.Jm.RETRY,
+
+    /** 「获取分类」（`/categories` + `/categories/filter`）的重试次数。 */
+    val retryCategory: Int = SettingDefaults.Jm.RETRY,
 
     val message: String? = null,
 )
@@ -280,6 +292,7 @@ class SettingsViewModel(
         val retryAlbum = settings.jmInt(SettingKeys.Jm.RETRY_ALBUM, SettingDefaults.Jm.RETRY).first()
         val retrySearch = settings.jmInt(SettingKeys.Jm.RETRY_SEARCH, SettingDefaults.Jm.RETRY).first()
         val retryChapter = settings.jmInt(SettingKeys.Jm.RETRY_CHAPTER, SettingDefaults.Jm.RETRY).first()
+        val retryCategory = settings.jmInt(SettingKeys.Jm.RETRY_CATEGORY, SettingDefaults.Jm.RETRY).first()
         val timeout = settings
             .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS)
             .first()
@@ -324,6 +337,7 @@ class SettingsViewModel(
                 retryAlbum = retryAlbum,
                 retrySearch = retrySearch,
                 retryChapter = retryChapter,
+                retryCategory = retryCategory,
             )
         }
     }
@@ -595,6 +609,7 @@ class SettingsViewModel(
                 RetryField.ALBUM -> it.copy(retryAlbum = clamped)
                 RetryField.SEARCH -> it.copy(retrySearch = clamped)
                 RetryField.CHAPTER -> it.copy(retryChapter = clamped)
+                RetryField.CATEGORY -> it.copy(retryCategory = clamped)
             }
         }
         viewModelScope.launch { settings.putJmInt(field.key, clamped) }
@@ -1354,6 +1369,8 @@ private fun AdvancedSection(
         RetrySlider(RetryField.SEARCH, state.retrySearch, onSetRetry)
         CardDivider()
         RetrySlider(RetryField.CHAPTER, state.retryChapter, onSetRetry)
+        CardDivider()
+        RetrySlider(RetryField.CATEGORY, state.retryCategory, onSetRetry)
     }
 }
 

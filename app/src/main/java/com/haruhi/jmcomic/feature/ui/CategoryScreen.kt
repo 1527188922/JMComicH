@@ -571,7 +571,13 @@ private fun CategoryMessageState(
     onRetry: () -> Unit,
 ) {
     ScrollableFullScreenBox {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        // 必须 `fillMaxWidth()`：`ScrollableFullScreenBox` 里那层 Box 只约束了高度，
+        // 宽度会收缩到内容宽度并靠左摆——这里让整列铺满宽度，才能真的左右居中。
+        // （`EmptyBox` 没这个问题，因为它自己带了 `fillMaxSize()`。）
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             if (!hint.isNullOrBlank()) {
                 Spacer(Modifier.height(6.dp))

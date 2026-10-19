@@ -210,6 +210,8 @@ class AppContainer(private val appContext: Context) {
                     album = runBlocking { jmRetry(SettingKeys.Jm.RETRY_ALBUM) },
                     search = runBlocking { jmRetry(SettingKeys.Jm.RETRY_SEARCH) },
                     chapter = runBlocking { jmRetry(SettingKeys.Jm.RETRY_CHAPTER) },
+                    // 「获取分类」（/categories + /categories/filter）单独一项
+                    category = runBlocking { jmRetry(SettingKeys.Jm.RETRY_CATEGORY) },
                 )
             },
             apiDomainProvider = { runBlocking { jmApiDomain() } },
