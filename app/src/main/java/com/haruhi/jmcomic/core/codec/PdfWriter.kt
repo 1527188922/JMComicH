@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.core.codec
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -65,6 +66,11 @@ class PdfWriter(
      * 默认走 [BitmapRegionDecoder]；测试里会注入一个基于整图裁切的实现。
      */
     private val regionFactory: (File, android.graphics.Rect) -> Bitmap? = ::decodeRegion,
+    /**
+     * PDF 生成期间，图片等流数据的**临时落盘目录**；`null` = 用系统默认临时目录。
+     * 见 [memoryUsage]：所有流数据都写到这里，不再在堆里累积（这正是"图片太多会闪退"的根因）。
+     */
+    private val scratchDir: File? = null,
 ) {
 
     /** 生成结果，用于给 UI 展示"已加密 / 未加密"以及页数。 */
@@ -107,7 +113,7 @@ class PdfWriter(
 
         out.parentFile?.mkdirs()
 
-        PDDocument().use { document ->
+        PDDocument(memoryUsage()).use { document ->
             applyProtection(document, password)
 
             val documentOutline = PDDocumentOutline()
@@ -148,6 +154,21 @@ class PdfWriter(
             )
         }
     }
+
+    /**
+     * PDFBox 默认把**每个页面的图片流**都留在堆内存里，直到最后 `document.save()`。
+     * 图片一多，堆占用随页数线性增长（每张图几十 KB～几百 KB 的编码数据全都攒着），
+     * 几百张图就能把中低端机撑到 OOM —— 表现为"图片太多时导出闪退"。
+     *
+     * 这里改用 `setupTempFileOnly()`：流数据一律写**临时文件**，堆里只剩少量字典对象，
+     * 占用与图片张数基本无关。代价是多一轮磁盘 I/O（生成稍慢、需要与成品相当的临时空间），
+     * 换来的是"多少张图都不会因为累积而 OOM"。
+     *
+     * `scratchDir` 必须**已存在**：目录不存在时 PDFBox 会静默回退到纯内存（等于没改），
+     * 所以 [PdfWriter] 的默认构造（测试用）走系统临时目录，App 侧传必然存在的 cacheDir。
+     */
+    private fun memoryUsage(): MemoryUsageSetting =
+        MemoryUsageSetting.setupTempFileOnly().apply { scratchDir?.let { setTempDir(it) } }
 
     private fun applyProtection(document: PDDocument, password: String?) {
         if (password.isNullOrEmpty()) return

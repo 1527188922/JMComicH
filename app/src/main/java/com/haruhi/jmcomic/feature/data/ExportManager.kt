@@ -349,6 +349,14 @@ class ExportManager(
                 runTask(taskId)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: OutOfMemoryError) {
+                // 兜底：即便流数据已经落盘，单张超大图解码仍可能耗尽内存。
+                // OutOfMemoryError 是 Error，不会被下面的 `catch (Exception)` 接住，
+                // 直接冒出去会把进程干掉（用户看到的就是闪退）。这里把它降级成"任务失败"。
+                Timber.tag("export").e(e, "导出任务 %d 内存不足", taskId)
+                if (tasks.findById(taskId)?.status?.isRunnable == true) {
+                    runCatching { tasks.markFailed(taskId, "内存不足，导出失败，请稍后重试或分批导出") }
+                }
             } catch (e: Exception) {
                 // 被取消/暂停时状态已经写好了，不能覆盖成"失败"
                 if (tasks.findById(taskId)?.status?.isRunnable != true) {
