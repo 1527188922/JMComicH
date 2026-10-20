@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadTaskChapterEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadTaskEntity
@@ -42,6 +44,9 @@ import com.haruhi.jmcomic.core.database.entity.PlaybackPositionEntity
  * （Room 会比对编译期生成的 identity hash 与库里的 `room_master_table`）——
  * 这种失败只在覆盖安装时暴露，全新安装不会复现。
  * **刻意不使用 `fallbackToDestructiveMigration()`**：用户的下载记录与漫画库是真实资产。
+ *
+ * **v5**：`t_jm_chapter_image` 加一列 `scramble_id`（可空），
+ * 用于把 `/comic_read` 一起返回的解扰参数随图片清单存下来（见 [MIGRATION_4_5]）。
  */
 @Database(
     entities = [
@@ -56,7 +61,7 @@ import com.haruhi.jmcomic.core.database.entity.PlaybackPositionEntity
         PlaybackPositionEntity::class,
         SearchHistoryEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -80,8 +85,22 @@ abstract class JmComicDatabase : RoomDatabase() {
          */
         const val NAME = "jmcomic.db"
 
+        /**
+         * v4 → v5：`t_jm_chapter_image` 加一列 `scramble_id`（可空）。
+         *
+         * 用 `ALTER TABLE ... ADD COLUMN`：旧行该列为 NULL（旧机制的章节行本来就没有这个值），
+         * 仓库层读到 NULL 会回落到接口，行为与升级前完全一致。
+         * 全新安装不跑迁移，直接按 v5 建表。
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE t_jm_chapter_image ADD COLUMN scramble_id INTEGER")
+            }
+        }
+
         fun create(context: Context): JmComicDatabase =
             Room.databaseBuilder(context.applicationContext, JmComicDatabase::class.java, NAME)
+                .addMigrations(MIGRATION_4_5)
                 .build()
     }
 }

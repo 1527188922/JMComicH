@@ -143,6 +143,14 @@ data class ChapterImageEntity(
     @ColumnInfo(name = "series_id") val seriesId: String? = null,
     @ColumnInfo(name = "liked") val liked: Boolean? = null,
     @ColumnInfo(name = "is_favorite") val isFavorite: Boolean? = null,
+    /**
+     * 本话的 `scramble_id`（解扰块数的输入），由 `/comic_read` 随图片清单一并给出。
+     *
+     * 可空且**允许为 null**是刻意的：旧机制的章节行（`/chapter` 不返回这个字段）
+     * 不会有值，那时由 `Repository.scrambleIdOf` 回落到 `/chapter_view_template`。
+     * 一个章节里所有图片行的值都相同（它是按"话"给的）。
+     */
+    @ColumnInfo(name = "scramble_id") val scrambleId: Long? = null,
     /** 接口返回的原始文件名，同时就是磁盘上的文件名。 */
     @ColumnInfo(name = "image_file") val imageFile: String,
     @ColumnInfo(name = "image_sort") val imageSort: Int? = null,

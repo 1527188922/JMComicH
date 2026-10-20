@@ -8,6 +8,7 @@ import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.download.FileDownloader
 import com.haruhi.jmcomic.core.download.ParallelImageDownloader
 import com.haruhi.jmcomic.core.network.NetworkState
+import com.haruhi.jmcomic.core.protocol.Crypto
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import com.haruhi.jmcomic.feature.api.ApiClient
 import kotlinx.coroutines.async
@@ -66,19 +67,20 @@ class ImageStoreTest {
     private val payload = ByteArray(512) { (it % 97).toByte() }
     private val requests = ConcurrentHashMap<String, AtomicInteger>()
 
+    /** 固定时钟：签名与解密都由 `ts` 派生，测试里必须是同一个值。 */
+    private val fixedTs = 1_700_000_000L
+
     @Before
     fun setUp() {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.url.encodedPath
-                if (path.endsWith("/chapter_view_template")) {
-                    requests.computeIfAbsent("template") { AtomicInteger() }.incrementAndGet()
+                // 默认机制（ChapterSource.COMIC_READ）：`/comic_read` 一次给出 scramble_id
+                if (path.endsWith("/comic_read")) {
+                    requests.computeIfAbsent("comic_read") { AtomicInteger() }.incrementAndGet()
                     // 远大于章节号 -> 块数 0 -> 图片原样落盘（不重新编码）
-                    return MockResponse.Builder()
-                        .code(200)
-                        .body(Buffer().writeUtf8("var scramble_id = 999999999;"))
-                        .build()
+                    return comicReadEnvelope()
                 }
                 val name = path.substringAfterLast('/')
                 requests.computeIfAbsent(name) { AtomicInteger() }.incrementAndGet()
@@ -114,6 +116,7 @@ class ImageStoreTest {
                 client = client,
                 config = { error("取图链路不读网络设置") },
                 apiDomainProvider = { server.hostName },
+                nowSeconds = { fixedTs },
             ),
             albumDao = db.albumDao(),
             chapterDao = db.chapterDao(),
@@ -201,7 +204,8 @@ class ImageStoreTest {
             store.file(album, chapterId, folder, "00001.webp")
             store.file(album, chapterId, folder, "00002.webp")
         }
-        assertThat(requests.getValue("template").get()).isEqualTo(1)
+        // `/comic_read` 一次同时给出图片清单与 scramble_id，所以这一话只打一次接口
+        assertThat(requests.getValue("comic_read").get()).isEqualTo(1)
     }
 
     @Test
@@ -246,6 +250,20 @@ class ImageStoreTest {
         // 两边看到的是同一个文件，且后续读取直接命中缓存
         assertThat(published).isEqualTo(File(chapterDir, imageFile))
         assertThat(store.cachedFile(album, folder, imageFile)).isEqualTo(published)
+    }
+
+    /**
+     * `/comic_read` 的加密信封：`{"data":"<密文>"}`，明文是 `{"scramble_id":"999999999"}`。
+     *
+     * 用 [Crypto.encryptDataForTest] 按固定 `ts` 加密，客户端就能用同一个 `ts` 解出来；
+     * `scramble_id` 远大于章节号，所以解扰块数为 0、图片原样落盘。
+     */
+    private fun comicReadEnvelope(): MockResponse {
+        val encrypted = Crypto.encryptDataForTest(fixedTs, """{"scramble_id":"999999999"}""")
+        return MockResponse.Builder()
+            .code(200)
+            .body(Buffer().writeUtf8("""{"data":"$encrypted"}"""))
+            .build()
     }
 
     private class FakeEnvironment : DownloadEnvironment {

@@ -226,13 +226,13 @@ interface ChapterImageDao {
         """
         SELECT MIN(id) AS id,
                album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-               chapter_add_time, series_id, liked, is_favorite,
+               chapter_add_time, series_id, liked, is_favorite, scramble_id,
                MIN(image_file) AS image_file,
                MIN(image_sort) AS image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId
         GROUP BY album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-                 chapter_add_time, series_id, liked, is_favorite
+                 chapter_add_time, series_id, liked, is_favorite, scramble_id
         ORDER BY CAST(chapter_sort AS INTEGER), CAST(chapter_id AS INTEGER)
         """,
     )
@@ -242,13 +242,13 @@ interface ChapterImageDao {
         """
         SELECT MIN(id) AS id,
                album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-               chapter_add_time, series_id, liked, is_favorite,
+               chapter_add_time, series_id, liked, is_favorite, scramble_id,
                MIN(image_file) AS image_file,
                MIN(image_sort) AS image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId
         GROUP BY album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-                 chapter_add_time, series_id, liked, is_favorite
+                 chapter_add_time, series_id, liked, is_favorite, scramble_id
         ORDER BY CAST(chapter_sort AS INTEGER), CAST(chapter_id AS INTEGER)
         """,
     )
@@ -258,7 +258,8 @@ interface ChapterImageDao {
     @Query(
         """
         SELECT id, album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-               chapter_add_time, series_id, liked, is_favorite, image_file, image_sort
+               chapter_add_time, series_id, liked, is_favorite, scramble_id,
+               image_file, image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId AND chapter_id = :chapterId
         ORDER BY image_sort, id
@@ -269,7 +270,8 @@ interface ChapterImageDao {
     @Query(
         """
         SELECT id, album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
-               chapter_add_time, series_id, liked, is_favorite, image_file, image_sort
+               chapter_add_time, series_id, liked, is_favorite, scramble_id,
+               image_file, image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId AND chapter_id = :chapterId
         ORDER BY image_sort, id
@@ -282,6 +284,22 @@ interface ChapterImageDao {
 
     @Query("SELECT chapter_id FROM t_jm_chapter_image WHERE album_id = :albumId GROUP BY chapter_id")
     suspend fun chapterIds(albumId: Long): List<Long>
+
+    /**
+     * 某章的 `scramble_id`（解扰块数的输入）。**只按 chapter id 查**：
+     * chapter id 在 JM 里全局唯一，而阅读器 / 下载任务手里只有它（不必再多带一个 albumId）。
+     *
+     * `scramble_id` 是按"话"给的，同一话所有图片行同值；只取一行即可。
+     * 没有值（旧机制的章节行）返回 null，由仓库层回落到接口。
+     */
+    @Query(
+        """
+        SELECT scramble_id FROM t_jm_chapter_image
+        WHERE chapter_id = :chapterId AND scramble_id IS NOT NULL
+        LIMIT 1
+        """,
+    )
+    suspend fun scrambleIdOfChapter(chapterId: Long): Long?
 
     @Query("DELETE FROM t_jm_chapter_image WHERE album_id = :albumId AND chapter_id = :chapterId")
     suspend fun deleteChapter(albumId: Long, chapterId: Long)

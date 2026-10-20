@@ -278,6 +278,8 @@ class RepositoryTest {
             name = "章节名",
             addTime = "2024-01-01",
             seriesId = "12345",
+            // `/comic_read` 会随图片清单一起给 scramble_id，入库时必须落库
+            scrambleId = "999999999",
         )
 
         repo.saveChapterImages(480854, chapter, SeriesDto(id = "500001", sort = "1", name = "章节名"))
@@ -289,6 +291,9 @@ class RepositoryTest {
         assertThat(images.map { it.imageSort }).containsExactly(1, 2, 3, 4).inOrder()
         assertThat(images[0].chapterTitle).isEqualTo("第1话")
         assertThat(images[0].chapterSort).isEqualTo("1")
+        // 同一话的每一行都带同一个 scramble_id；之后取它**先查库**，不再打接口
+        assertThat(images.map { it.scrambleId }).containsExactly(999999999L, 999999999L, 999999999L, 999999999L)
+        assertThat(repo.scrambleIdOf(500001)).isEqualTo(999999999L)
     }
 
     @Test

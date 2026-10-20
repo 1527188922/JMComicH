@@ -91,7 +91,10 @@ data class RelatedDto(
 )
 
 /**
- * 章节详情（`/chapter` 的 `data` 解密后的 JSON）：图片清单。
+ * 章节详情（图片清单）——**两代接口归一化后的同一个模型**。
+ *
+ * - 旧机制：[ApiClient] 直接反序列化 `/chapter` 的响应；
+ * - 官方 2.1.11：由 [ComicReadDto] 转换而来（完整 CDN URL 只取文件名）。
  *
  * 对应参考实现 `Chapter.java`。`images` 是接口原始文件名列表，
  * 入库前必须按 `FileNaming.sortImageFiles` 排序（参考实现也这么做）。
@@ -107,6 +110,56 @@ data class ChapterDto(
     @SerialName("series_id") val seriesId: String? = null,
     @SerialName("is_favorite") val isFavorite: Boolean? = null,
     @SerialName("liked") val liked: Boolean? = null,
+    /**
+     * 本话的 `scramble_id`（解扰块数的输入）。
+     *
+     * 旧机制 `/chapter` 里没有这个字段（那时另外走 `/chapter_view_template`），
+     * 所以为 null；官方 2.1.11 的 `/comic_read` 直接给（接口给的是**字符串**，
+     * 用 [LooseStringSerializer] 读，兼容将来改成数字）。
+     */
+    @SerialName("scramble_id")
+    @Serializable(with = LooseStringSerializer::class)
+    val scrambleId: String? = null,
+)
+
+/**
+ * `GET /comic_read` 的 `data` 解密后的 JSON（官方逆向文档 §7.5）。
+ *
+ * 实测形如：
+ * ```json
+ * { "id":114514, "scramble_id":"220980", "name":"…", "total_page":27,
+ *   "images":[{"page":1,"image":"https://{cdn}/media/photos/114514/00001.webp?t=…"}] }
+ * ```
+ *
+ * 两处与文档不一致、因此按宽松方式读：
+ * - `id` 文档是字符串、实测是数字 → 用 [LooseStringSerializer]；
+ * - `images[].image` 是**完整 URL**（指向接口当时给的 CDN），
+ *   本工程只从中取文件名，图片仍按用户选中的图片线路拼接（见 [ApiClient.comicRead]）。
+ */
+@Serializable
+data class ComicReadDto(
+    @SerialName("id")
+    @Serializable(with = LooseStringSerializer::class)
+    val id: String? = null,
+    @SerialName("scramble_id")
+    @Serializable(with = LooseStringSerializer::class)
+    val scrambleId: String? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("total_page")
+    @Serializable(with = LooseStringSerializer::class)
+    val totalPage: String? = null,
+    @SerialName("images") val images: List<ComicReadImageDto>? = null,
+    /** 实测的 key 是 `addtime`（不是文档其它接口那种 `add_time`）。 */
+    @SerialName("addtime") val addTime: String? = null,
+    @SerialName("series_id") val seriesId: String? = null,
+    @SerialName("is_favorite") val isFavorite: Boolean? = null,
+    @SerialName("liked") val liked: Boolean? = null,
+)
+
+/** `/comic_read` 的一页：`page` 用不上（入库前统一按文件名排序），只取完整 URL 里的文件名。 */
+@Serializable
+data class ComicReadImageDto(
+    @SerialName("image") val image: String? = null,
 )
 
 /** 搜索结果（`/search` 的 `data` 解密后的 JSON）。 */

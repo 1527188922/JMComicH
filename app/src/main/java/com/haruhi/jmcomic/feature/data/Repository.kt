@@ -601,8 +601,17 @@ class Repository(
             }
             ?.firstOrNull { it.id == chapterId.toString() }
 
-    /** 某章的 `scramble_id`（解扰块数的输入），异常时返回兜底值。 */
-    suspend fun scrambleIdOf(chapterId: Long): Long = api.scrambleId(chapterId)
+    /**
+     * 某章的 `scramble_id`（解扰块数的输入）。
+     *
+     * **先查库**：走 `/comic_read` 时它随图片清单一起入库（见 [saveChapterImages]），
+     * 所以"打开这一话就打一次接口"就够了，不用再为解扰单独打一次
+     * （`/chapter_view_template` 那条老路径就是为了这个）。
+     * 库里没有（旧机制的章节行、或清单还没入库）才回落到 [ApiClient.scrambleId]，
+     * 那里取不到时返回兜底值。
+     */
+    suspend fun scrambleIdOf(chapterId: Long): Long =
+        chapterDao.scrambleIdOfChapter(chapterId) ?: api.scrambleId(chapterId)
 
     /** 书库视角读一本（基础数据 + 成员关系）。未入库返回 null。 */
     suspend fun findAlbum(aid: Long): AlbumEntity? = albumDao.findLibraryAlbum(aid)
@@ -615,6 +624,9 @@ class Repository(
      *
      * 排序与 `imageSort` 起始值照抄参考实现：先 `sortImageFiles` 排序，
      * 再写 `imageSort = index + 1`。
+     *
+     * `scramble_id` 一并入库（走 `/comic_read` 时接口会给，见 [ChapterDto.scrambleId]）：
+     * 阅读器与下载任务之后按章节读它算解扰块数（[scrambleIdOf]），不必再打一次接口。
      */
     suspend fun saveChapterImages(albumId: Long, chapter: ChapterDto, series: SeriesDto? = null) {
         val rawImages = chapter.images.orEmpty()
@@ -627,6 +639,8 @@ class Repository(
         val effectiveSeries = series ?: singleChapterSeries(albumId, chapter.id)
         val sorted = FileNaming.sortImageFiles(rawImages)
         val title = chapterTitleOf(effectiveSeries, chapter)
+        // 接口给的是字符串（"220980"），解析失败按"没给"处理 -> 之后回落到接口/兜底值
+        val scrambleId = chapter.scrambleId?.toLongOrNull()
         val entities = sorted.mapIndexed { index, image ->
             ChapterImageEntity(
                 albumId = albumId,
@@ -639,6 +653,7 @@ class Repository(
                 seriesId = chapter.seriesId,
                 liked = chapter.liked,
                 isFavorite = chapter.isFavorite,
+                scrambleId = scrambleId,
                 imageFile = image,
                 imageSort = index + 1,
             )

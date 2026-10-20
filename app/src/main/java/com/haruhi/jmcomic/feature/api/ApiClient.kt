@@ -1,9 +1,11 @@
 package com.haruhi.jmcomic.feature.api
 
 import com.haruhi.jmcomic.core.protocol.CategorySort
+import com.haruhi.jmcomic.core.protocol.ChapterSource
 import com.haruhi.jmcomic.core.protocol.Crypto
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
+import com.haruhi.jmcomic.core.protocol.SignatureScheme
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.isNetworkTimeout
 import com.haruhi.jmcomic.core.network.isRetryableApiError
@@ -26,6 +28,9 @@ import java.net.URLEncoder
  * 也在这里。
  * **`/login` 不实现**（已确认不做 JM 账号）。
  *
+ * 官方 2.1.11 的两套协议面（`/comic_read` + 新签名）在这里按 [ChapterSource] /
+ * [SignatureScheme] 分派，默认走新的、旧的一并保留（见 `core/protocol/ApiScheme.kt`）。
+ *
  * 契约细节全部对齐参考实现 `JmcomicService`：
  * - 每次请求新建签名（`ts` 为秒级时间戳）；**重试时沿用第一次的 `ts`**，
  *   否则响应无法用同一个 key 解密（参考实现 `executeGet` 的注释明确写了这一点）；
@@ -43,6 +48,18 @@ class ApiClient(
     /** 接口线路；默认取 [Defaults.DEFAULT_API_DOMAIN]。 */
     private val apiDomainProvider: () -> String = { Defaults.DEFAULT_API_DOMAIN },
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    /**
+     * 请求签名用哪一套；默认 [SignatureScheme.DEFAULT]（官方 2.1.11）。
+     *
+     * 做成"每次取用"的闭包而不是构造时的快照：将来若要允许用户切换，
+     * 改值就能对新请求生效，不用重建客户端（与 `apiDomainProvider` 一致）。
+     */
+    private val signatureSchemeProvider: () -> SignatureScheme = { SignatureScheme.DEFAULT },
+    /**
+     * 章节图片清单 + `scramble_id` 用哪一套接口；
+     * 默认 [ChapterSource.DEFAULT]（`/comic_read`，一次拿两样）。
+     */
+    private val chapterSourceProvider: () -> ChapterSource = { ChapterSource.DEFAULT },
 ) {
 
     /** 各接口的重试次数（0 = 不自动重试）。对应 `jm.request.*.retry`。 */
@@ -162,26 +179,76 @@ class ApiClient(
         decode = { json -> ApiJson.decodeFromString(ForumRespDto.serializer(), json) },
     )
 
-    /** `/chapter`：章节详情，含图片文件名清单。 */
-    suspend fun chapter(chapterId: Long): ChapterDto = getDecrypted(
-        path = "/chapter",
+    /**
+     * 章节详情（图片文件名清单）——按 [ChapterSource] 分派到两代接口之一，
+     * 两条路径都返回**同一个** [ChapterDto]，上层只认这一个模型。
+     *
+     * - [ChapterSource.COMIC_READ]（默认）：`/comic_read`，一次拿到清单 + `scramble_id`；
+     * - [ChapterSource.LEGACY_CHAPTER]：`/chapter`（`scramble_id` 另走 [scrambleId]）。
+     */
+    suspend fun chapter(chapterId: Long): ChapterDto = when (chapterSourceProvider()) {
+        ChapterSource.COMIC_READ -> comicRead(chapterId)
+        ChapterSource.LEGACY_CHAPTER -> getDecrypted(
+            path = "/chapter",
+            params = listOf("id" to chapterId.toString()),
+            retry = retryProvider().chapter,
+            decode = { json -> ApiJson.decodeFromString(ChapterDto.serializer(), json) },
+        )
+    }
+
+    /**
+     * `/comic_read`：官方 2.1.11 的阅读接口，一次返回图片清单与 `scramble_id`。
+     *
+     * 响应里 `images[].image` 是**完整 URL**（指向接口当时给的 CDN），本工程只用它取文件名：
+     * 图片实际按**用户选中的图片线路**拼接（`Defaults.buildImgUrl`，见 `ImageStore` /
+     * `DownloadManager`），这样"图片线路"这个设置项才有意义，也不受接口临时换 CDN 影响
+     * （实测两处 CDN 取到的是同一张图）。
+     *
+     * 参数只带 `id`（章节 id）。文档 §2.4 说官方 `fetchGet` 会自动追加 `lang`，
+     * 与现有 `/chapter` 一样这里不带它——加上不影响结果，少一个参数少一次歧义。
+     */
+    private suspend fun comicRead(chapterId: Long): ChapterDto = getDecrypted(
+        path = "/comic_read",
         params = listOf("id" to chapterId.toString()),
         retry = retryProvider().chapter,
-        decode = { json -> ApiJson.decodeFromString(ChapterDto.serializer(), json) },
+        decode = { json ->
+            ApiJson.decodeFromString(ComicReadDto.serializer(), json).toChapterDto(chapterId)
+        },
     )
 
     /**
-     * `/chapter_view_template`：取该章节的 `scramble_id`，用于计算解扰块数。
+     * 该章节的 `scramble_id`（解扰块数的输入），按 [ChapterSource] 分派。
      *
-     * 这个接口用的是**另一个 secret**（`18comicAPPContent`），且响应是 HTML 不是 JSON，
+     * - 默认（[ChapterSource.COMIC_READ]）走 `/comic_read`：它顺带返回图片清单，
+     *   所以**不必再调** `/chapter_view_template`；
+     * - [ChapterSource.LEGACY_CHAPTER] 走 `/chapter_view_template`（旧机制，原样保留）。
+     *
+     * 两条路径取不到时都回落到兜底值 [Defaults.FALLBACK_SCRAMBLE_ID]，
+     * 与参考实现 `getScrambleId` 的 catch 分支一致。
+     */
+    suspend fun scrambleId(chapterId: Long): Long = try {
+        when (chapterSourceProvider()) {
+            ChapterSource.COMIC_READ -> comicRead(chapterId).scrambleId?.toLongOrNull()
+                ?: throw NetworkError.Malformed("/comic_read", "响应里没有 scramble_id")
+            ChapterSource.LEGACY_CHAPTER -> requestScrambleIdFromTemplate(chapterId)
+        }
+    } catch (e: Throwable) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        Timber.tag("jm").w(e, "取 scramble_id 失败，使用兜底值 chapterId=%d", chapterId)
+        Defaults.FALLBACK_SCRAMBLE_ID
+    }
+
+    /**
+     * `/chapter_view_template`：旧机制里取 `scramble_id` 的接口。
+     *
+     * 它用的是**另一个 secret**（`18comicAPPContent`），且响应是 HTML 不是 JSON，
      * 所以不走 [getDecrypted]。
      *
      * **重试**：与「章节图片」（`/chapter`）共用一个配置项（`jm.request.chapter.retry`）——
      * 它同样是"打开章节就要打"的前置调用，可重试的异常（超时 / 空体 / 响应不含标记）与
-     * 章节接口一致。重试次数耗尽后仍回落到兜底值 [Defaults.FALLBACK_SCRAMBLE_ID]，
-     * 与参考实现 `getScrambleId` 的 catch 分支一致。
+     * 章节接口一致。
      */
-    suspend fun scrambleId(chapterId: Long): Long {
+    private suspend fun requestScrambleIdFromTemplate(chapterId: Long): Long {
         val ts = nowSeconds()
         val headers = Crypto.contentHeaderParams(ts)
         val url = buildUrl(
@@ -195,27 +262,43 @@ class ApiClient(
                 "express" to "off",
             ),
         )
-        return try {
-            withTimeoutRetry(
-                maxRetry = retryProvider().chapter,
-                retryOn = { it.isRetryableApiError() },
-                onRetry = { attempt, total, cause ->
-                    Timber.tag("jm").d(
-                        "第 %d/%d 次重试 /chapter_view_template（%s）",
-                        attempt,
-                        total,
-                        cause.javaClass.simpleName,
-                    )
-                },
-            ) {
-                parseScrambleId(url, execute(url, headers.token, headers.tokenParam))
-            }
-        } catch (e: Throwable) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            Timber.tag("jm").w(e, "取 scramble_id 失败，使用兜底值 chapterId=%d", chapterId)
-            Defaults.FALLBACK_SCRAMBLE_ID
+        return withTimeoutRetry(
+            maxRetry = retryProvider().chapter,
+            retryOn = { it.isRetryableApiError() },
+            onRetry = { attempt, total, cause ->
+                Timber.tag("jm").d(
+                    "第 %d/%d 次重试 /chapter_view_template（%s）",
+                    attempt,
+                    total,
+                    cause.javaClass.simpleName,
+                )
+            },
+        ) {
+            parseScrambleId(url, execute(url, headers.token, headers.tokenParam))
         }
     }
+
+    /** `/comic_read` 响应 → 统一的 [ChapterDto]：完整 URL 只取文件名，其余字段原样带过去。 */
+    private fun ComicReadDto.toChapterDto(requestedChapterId: Long) = ChapterDto(
+        // `id` 文档是字符串、实测是数字，统一按文本读；实在拿不到就用请求里的章节号
+        id = id?.trim()?.toLongOrNull() ?: requestedChapterId,
+        name = name,
+        images = images.orEmpty().mapNotNull { item ->
+            item.image?.let(::imageFileName)?.takeIf { it.isNotEmpty() }
+        },
+        addTime = addTime,
+        seriesId = seriesId,
+        isFavorite = isFavorite,
+        liked = liked,
+        scrambleId = scrambleId?.trim()?.takeIf { it.isNotEmpty() },
+    )
+
+    /** `https://{cdn}/media/photos/{chapterId}/00001.webp?t=…` → `00001.webp`。 */
+    private fun imageFileName(url: String): String = url
+        .substringBefore('?')
+        .substringBefore('#')
+        .substringAfterLast('/')
+        .trim()
 
     // ------------------------------------------------------------------
     // 内部实现
@@ -237,7 +320,9 @@ class ApiClient(
         decode: (String) -> T,
     ): T {
         val ts = nowSeconds()
-        val headers = Crypto.headerParams(ts)
+        // 签名方案与解密方案必须同步取一次：两者都由 ts 派生，取两次可能拿到不同方案
+        val scheme = signatureSchemeProvider()
+        val headers = Crypto.headerParams(ts, scheme)
         val url = buildUrl("https://$apiDomain$path", params)
 
         val encrypted = withTimeoutRetry(
@@ -254,7 +339,7 @@ class ApiClient(
             throw NetworkError.Business("接口返回的 data 字段为空")
         }
 
-        val plain = runCatching { Crypto.decryptData(ts, encrypted) }.getOrElse { e ->
+        val plain = runCatching { Crypto.decryptData(ts, encrypted, scheme) }.getOrElse { e ->
             // 解密失败通常意味着 ts/密钥/接口版本不匹配，重试没有意义
             throw NetworkError.Business("响应解密失败，可能是接口版本已变更：${e.message}")
         }

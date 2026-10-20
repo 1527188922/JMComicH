@@ -13,6 +13,7 @@ import com.haruhi.jmcomic.core.download.DownloadTaskRepository
 import com.haruhi.jmcomic.core.download.FileDownloader
 import com.haruhi.jmcomic.core.download.ParallelImageDownloader
 import com.haruhi.jmcomic.core.network.NetworkState
+import com.haruhi.jmcomic.core.protocol.Crypto
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import com.haruhi.jmcomic.feature.api.ApiClient
 import kotlinx.coroutines.CoroutineScope
@@ -79,7 +80,10 @@ class DownloadManagerTest {
     /** 每张图的字节内容；同时用于校验落盘结果逐字节一致。 */
     private val payloads = ConcurrentHashMap<String, ByteArray>()
     private val imageRequests = ConcurrentHashMap<String, AtomicInteger>()
-    private val templateRequests = AtomicInteger()
+    private val comicReadRequests = AtomicInteger()
+
+    /** 固定时钟：签名与解密都由 `ts` 派生，测试里必须是同一个值。 */
+    private val fixedTs = 1_700_000_000L
 
     @Before
     fun setUp() {
@@ -111,6 +115,7 @@ class DownloadManagerTest {
                 client = client,
                 config = { error("下载链路不读网络设置") },
                 apiDomainProvider = { server.hostName },
+                nowSeconds = { fixedTs },
             ),
             albumDao = db.albumDao(),
             chapterDao = db.chapterDao(),
@@ -351,13 +356,13 @@ class DownloadManagerTest {
 
         downloadAndWait(chapterOne)
 
-        assertThat(templateRequests.get()).isEqualTo(1)
+        assertThat(comicReadRequests.get()).isEqualTo(1)
     }
 
     @Test
     fun `a chapter without an image manifest fails with a readable reason`() {
         seedAlbum()
-        // 没有入库章节清单，MockWebServer 的 /chapter 也返回 404 -> 拿不到清单
+        // 没有入库章节清单，MockWebServer 的 /comic_read 也不返回任何图片 -> 拿不到清单
         val taskId = downloadAndWait(chapterOne)
 
         val failed = task(taskId)
@@ -398,11 +403,13 @@ class DownloadManagerTest {
     private fun manifestDispatcher() = object : Dispatcher() {
         override fun dispatch(request: RecordedRequest): MockResponse {
             val path = request.url.encodedPath
-            if (path.endsWith("/chapter_view_template")) {
-                templateRequests.incrementAndGet()
+            // 默认机制（ChapterSource.COMIC_READ）：`/comic_read` 一次给出图片清单 + scramble_id
+            if (path.endsWith("/comic_read")) {
+                comicReadRequests.incrementAndGet()
+                val encrypted = Crypto.encryptDataForTest(fixedTs, """{"scramble_id":"999999999"}""")
                 return MockResponse.Builder()
                     .code(200)
-                    .body(Buffer().writeUtf8("var scramble_id = 999999999;"))
+                    .body(Buffer().writeUtf8("""{"data":"$encrypted"}"""))
                     .build()
             }
             val name = path.substringAfterLast('/')
