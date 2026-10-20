@@ -11,7 +11,8 @@ import timber.log.Timber
  *
  * 1. `maxRetry <= 0` 时**不包装**、直接执行一次（`jm.request.*.retry` 默认 0）；
  * 2. `maxRetry` 是"重试次数"，总尝试次数 = `maxRetry + 1`；
- * 3. **只有网络超时**才重试，其它异常（404、解密失败等）原样抛出，不做无意义重试；
+ * 3. **只重试 [retryOn] 判定为"值得重试"的异常**（默认 = 网络超时）；其它异常
+ *    （404、解密失败等）原样抛出，不做无意义重试；
  * 4. 指数退避：基础 1 秒，每轮翻倍（1s、2s、4s…）；
  * 5. 全部尝试耗尽后抛出的是**上一次的异常**。
  *
@@ -23,6 +24,8 @@ suspend fun <T> withTimeoutRetry(
     maxRetry: Int,
     baseDelayMs: Long = 1_000L,
     enableBackOff: Boolean = true,
+    /** 判定某个异常是否值得重试。**默认只认网络超时**（参考实现的原始语义）。 */
+    retryOn: (Throwable) -> Boolean = { it.isNetworkTimeout() },
     onRetry: ((attempt: Int, total: Int, cause: Throwable) -> Unit)? = null,
     action: suspend () -> T,
 ): T {
@@ -40,13 +43,13 @@ suspend fun <T> withTimeoutRetry(
             throw e
         } catch (e: Throwable) {
             lastError = e
-            if (!e.isNetworkTimeout()) {
+            if (!retryOn(e)) {
                 // 不允许重试的异常：原样抛出
                 throw e
             }
             if (attempt >= maxAttempt) break
             onRetry?.invoke(attempt, maxAttempt, e)
-            Timber.tag("net").d("第 %d/%d 次尝试超时，%dms 后重试", attempt, maxAttempt, currentDelay)
+            Timber.tag("net").d("第 %d/%d 次尝试失败（可重试），%dms 后重试", attempt, maxAttempt, currentDelay)
             delay(currentDelay)
             if (enableBackOff) currentDelay *= 2
         }

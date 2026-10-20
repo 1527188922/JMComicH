@@ -24,8 +24,18 @@ sealed class NetworkError(message: String, cause: Throwable? = null) : Exception
     /** 证书/HTTPS 握手问题——注意与"没网"区分，提示文案不同。 */
     class Tls(val url: String, cause: Throwable) : NetworkError("HTTPS 证书校验失败：$url", cause)
 
-    /** 响应体为空或结构不符合预期。 */
-    class Malformed(val url: String, val detail: String) : NetworkError("响应内容异常：$detail")
+    /**
+     * 响应体为空或结构不符合预期。
+     *
+     * [retryable] = true 表示"**响应内容不可用**"属于可重试的一类（空体 / 非 JSON 信封）——
+     * 多半是线路抖动时服务端回了个 HTML 错误页，重发一次有机会拿到正确响应。
+     * 默认 false：解密后的字段解析失败等**语义**问题重试拿不到不同结果。
+     */
+    class Malformed(
+        val url: String,
+        val detail: String,
+        val retryable: Boolean = false,
+    ) : NetworkError("响应内容异常：$detail")
 
     /** 响应能拿到但业务层判定失败（例如 JM 的 `data` 字段为空）。 */
     class Business(val detail: String) : NetworkError(detail)
@@ -69,6 +79,17 @@ fun Throwable.isNetworkTimeout(): Boolean {
     }
     return false
 }
+
+/**
+ * 接口请求可重试的异常判定 = **网络超时**，或**内容不可用的响应异常**
+ * （[NetworkError.Malformed.retryable]）。
+ *
+ * 与 [isNetworkTimeout] 的区别：后者是参考实现的原始语义（只有超时才重试），这里在其之上
+ * 补了"响应非 JSON / 空体"这一类——JM 线路抖动时可能返回空体或 HTML 错误页，重发一次
+ * 比直接把错误抛给用户划算。**解密失败、字段解析失败等语义错误不在其列**（重试无意义）。
+ */
+fun Throwable.isRetryableApiError(): Boolean =
+    isNetworkTimeout() || (this is NetworkError.Malformed && retryable)
 
 /** 调用方的取消异常：与"失败"区分，取消不重试、不记录为失败。 */
 class OperationCancelledException(message: String = "操作已取消") : Exception(message)

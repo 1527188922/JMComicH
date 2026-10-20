@@ -6,6 +6,7 @@ import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.isNetworkTimeout
+import com.haruhi.jmcomic.core.network.isRetryableApiError
 import com.haruhi.jmcomic.core.network.withTimeoutRetry
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
 import kotlinx.coroutines.Dispatchers
@@ -28,7 +29,8 @@ import java.net.URLEncoder
  * 契约细节全部对齐参考实现 `JmcomicService`：
  * - 每次请求新建签名（`ts` 为秒级时间戳）；**重试时沿用第一次的 `ts`**，
  *   否则响应无法用同一个 key 解密（参考实现 `executeGet` 的注释明确写了这一点）；
- * - 只有**网络超时**才重试，次数来自 `jm.request.{album,search,chapter}.retry`（默认 0）；
+ * - 只有**可重试的异常**才重试（网络超时，或响应空体 / 非 JSON 信封这类**内容异常**），
+ *   次数来自 `jm.request.{album,search,chapter}` 与单独一项「获取分类」；
  * - 响应 JSON 的 `data` 字段是密文，用 `ts` 派生 AES-256 密钥解密。
  *
  * `ts` 的作用域刻意放在**每次请求**（而不是每次尝试）里：
@@ -174,7 +176,9 @@ class ApiClient(
      * 这个接口用的是**另一个 secret**（`18comicAPPContent`），且响应是 HTML 不是 JSON，
      * 所以不走 [getDecrypted]。
      *
-     * 异常时返回兜底值 [Defaults.FALLBACK_SCRAMBLE_ID]（220980），
+     * **重试**：与「章节图片」（`/chapter`）共用一个配置项（`jm.request.chapter.retry`）——
+     * 它同样是"打开章节就要打"的前置调用，可重试的异常（超时 / 空体 / 响应不含标记）与
+     * 章节接口一致。重试次数耗尽后仍回落到兜底值 [Defaults.FALLBACK_SCRAMBLE_ID]，
      * 与参考实现 `getScrambleId` 的 catch 分支一致。
      */
     suspend fun scrambleId(chapterId: Long): Long {
@@ -192,8 +196,20 @@ class ApiClient(
             ),
         )
         return try {
-            val body = execute(url, headers.token, headers.tokenParam)
-            parseScrambleId(body)
+            withTimeoutRetry(
+                maxRetry = retryProvider().chapter,
+                retryOn = { it.isRetryableApiError() },
+                onRetry = { attempt, total, cause ->
+                    Timber.tag("jm").d(
+                        "第 %d/%d 次重试 /chapter_view_template（%s）",
+                        attempt,
+                        total,
+                        cause.javaClass.simpleName,
+                    )
+                },
+            ) {
+                parseScrambleId(url, execute(url, headers.token, headers.tokenParam))
+            }
         } catch (e: Throwable) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             Timber.tag("jm").w(e, "取 scramble_id 失败，使用兜底值 chapterId=%d", chapterId)
@@ -209,6 +225,10 @@ class ApiClient(
      * 请求 → 取 `data` → AES 解密 → 反序列化。
      *
      * `ts` 在**进入重试之前**确定一次，重试闭包复用它 —— 这是能解密的前提。
+     *
+     * 「发请求 + 解析 JSON 信封」都在重试动作里：线路抖动时接口可能返回**空体**或
+     * **非 JSON**（HTML 错误页），重发一次有机会拿到正确响应（见 [parseEnvelope]）。
+     * 解密与字段解析留在循环外——那两类失败重试拿不到不同结果。
      */
     private suspend fun <T> getDecrypted(
         path: String,
@@ -220,20 +240,16 @@ class ApiClient(
         val headers = Crypto.headerParams(ts)
         val url = buildUrl("https://$apiDomain$path", params)
 
-        val body = withTimeoutRetry(maxRetry = retry, onRetry = { attempt, total, cause ->
-            Timber.tag("jm").d("第 %d/%d 次重试 %s（%s）", attempt, total, path, cause.javaClass.simpleName)
-        }) {
-            execute(url, headers.token, headers.tokenParam)
+        val encrypted = withTimeoutRetry(
+            maxRetry = retry,
+            retryOn = { it.isRetryableApiError() },
+            onRetry = { attempt, total, cause ->
+                Timber.tag("jm").d("第 %d/%d 次重试 %s（%s）", attempt, total, path, cause.javaClass.simpleName)
+            },
+        ) {
+            parseEnvelope(url, execute(url, headers.token, headers.tokenParam))
         }
 
-        if (body.isBlank()) {
-            throw NetworkError.Malformed(url, "响应为空")
-        }
-        val encrypted = runCatching {
-            ApiJson.decodeFromString(ApiEnvelope.serializer(), body).data
-        }.getOrElse { e ->
-            throw NetworkError.Malformed(url, "响应不是合法 JSON：${e.message}")
-        }
         if (encrypted.isNullOrBlank()) {
             throw NetworkError.Business("接口返回的 data 字段为空")
         }
@@ -244,6 +260,23 @@ class ApiClient(
         }
         return runCatching { decode(plain) }.getOrElse { e ->
             throw NetworkError.Malformed(url, "响应字段与预期不符：${e.message}")
+        }
+    }
+
+    /**
+     * 响应体 → JSON 信封的 `data` 字段。
+     *
+     * 空体与非法 JSON 一律按**可重试**的内容异常抛（[NetworkError.Malformed.retryable]）：
+     * 这两类多半是线路抖动时服务端回了个非预期响应，重发一次比直接把错误抛给用户划算。
+     */
+    private fun parseEnvelope(url: String, body: String): String? {
+        if (body.isBlank()) {
+            throw NetworkError.Malformed(url, "响应为空", retryable = true)
+        }
+        return runCatching {
+            ApiJson.decodeFromString(ApiEnvelope.serializer(), body).data
+        }.getOrElse { e ->
+            throw NetworkError.Malformed(url, "响应不是合法 JSON：${e.message}", retryable = true)
         }
     }
 
@@ -271,15 +304,23 @@ class ApiClient(
             }
         }
 
-    /** `var scramble_id = 220980;` → 220980。拿不到时抛异常，由调用方兜底。 */
-    internal fun parseScrambleId(html: String): Long {
+    /**
+     * `var scramble_id = 220980;` → 220980。
+     *
+     * 拿不到时抛**可重试**的内容异常（[NetworkError.Malformed.retryable]）——多半是线路
+     * 抖动回了错误页；重试次数由调用方 [scrambleId] 控制，耗尽后由它兜底。
+     */
+    internal fun parseScrambleId(url: String, html: String): Long {
         val marker = "var scramble_id = "
         val start = html.indexOf(marker)
-        require(start >= 0) { "响应里没有 $marker" }
+        if (start < 0) {
+            throw NetworkError.Malformed(url, "响应里没有 $marker", retryable = true)
+        }
         val value = html.substring(start + marker.length)
             .substringBefore(';')
             .trim()
-        return value.toLongOrNull() ?: error("scramble_id 不是数字：$value")
+        return value.toLongOrNull()
+            ?: throw NetworkError.Malformed(url, "scramble_id 不是数字：$value", retryable = true)
     }
 
     private fun buildUrl(base: String, params: List<Pair<String, String>>): String {

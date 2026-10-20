@@ -87,6 +87,11 @@ internal object SettingKeys {
         /** 各接口重试次数（0 = 不自动重试） */
         const val RETRY_ALBUM = "retry_album"
         const val RETRY_SEARCH = "retry_search"
+
+        /**
+         * 「章节图片」的重试次数：`/chapter`（图片清单）与取解扰块的 `/chapter_view_template`
+         * **共用**这一项（后者是打开章节的前置调用，两者同属"章节数据"）。
+         */
         const val RETRY_CHAPTER = "retry_chapter"
 
         /**
