@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,6 +38,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
@@ -641,7 +644,12 @@ private fun ReaderTopBar(
  * 3. 操作：上一话 / **下载本话** / **阅读方式** / 下一话。
  *
  * 阅读方式按钮直接切换横向 / 纵向两种翻页方式，与阅读设置里共用同一份偏好。
+ *
+ * 箭头用 `Icons.Default.KeyboardArrowLeft / KeyboardArrowRight`（用户点名要这两个）：
+ * 它们表达的是"上一话 / 下一话"的固定语义，**不跟着阅读方向镜像**，
+ * 所以不换成 AutoMirrored 版本（那会在 RTL 下左右翻转）。
  */
+@Suppress("DEPRECATION")
 @Composable
 private fun ReaderBottomBar(
     state: ReaderUiState,
@@ -706,6 +714,14 @@ private fun ReaderBottomBar(
             ReaderBarSlot {
                 if (state.hasPreviousChapter) {
                     TextButton(onClick = onPreviousChapter, contentPadding = ReaderBarButtonPadding) {
+                        // 图标在文字左侧，间距与「下一话」用同一份 ReaderBarButtonGap
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowLeft,
+                            contentDescription = null,
+                            tint = contentColor,
+                            modifier = Modifier.size(ReaderBarIconSize),
+                        )
+                        Spacer(Modifier.width(ReaderBarButtonGap))
                         ReaderBarButtonText("上一话", contentColor)
                     }
                 }
@@ -734,7 +750,15 @@ private fun ReaderBottomBar(
             ReaderBarSlot {
                 if (state.hasNextChapter) {
                     TextButton(onClick = onNextChapter, contentPadding = ReaderBarButtonPadding) {
+                        // 图标在文字右侧，间距与「上一话」用同一份 ReaderBarButtonGap
                         ReaderBarButtonText("下一话", contentColor)
+                        Spacer(Modifier.width(ReaderBarButtonGap))
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = contentColor,
+                            modifier = Modifier.size(ReaderBarIconSize),
+                        )
                     }
                 }
             }
@@ -761,7 +785,7 @@ private fun RowScope.ReaderBarSlot(content: @Composable () -> Unit) {
  * 底栏按钮文字：单行 + 收紧左右内边距。
  *
  * 四等分之后单槽最多约 80dp，默认的 12dp 内边距下「下载本话」「上下翻页」这类
- * 四字文案在窄屏上会折行把底栏顶高，所以这里把内边距收到 4dp 并限制单行。
+ * 四字文案在窄屏上会折行把底栏顶高，所以这里把内边距收到 2dp 并限制单行。
  */
 @Composable
 private fun ReaderBarButtonText(text: String, contentColor: androidx.compose.ui.graphics.Color) {
@@ -774,8 +798,18 @@ private fun ReaderBarButtonText(text: String, contentColor: androidx.compose.ui.
     )
 }
 
-/** 底栏按钮内边距：四等分槽位里要留够文字宽度（见 [ReaderBarButtonText]）。 */
-private val ReaderBarButtonPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+/** 底栏按钮内边距：四等分槽位里要留够图标 + 文字宽度（见 [ReaderBarButtonText]）。 */
+private val ReaderBarButtonPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp)
+
+/**
+ * 上一话 / 下一话按钮里**文字与箭头的间距**。
+ *
+ * 两个按钮共用这一个值，所以「上一话◀」和「下一话▶」的图标距离完全一致。
+ */
+private val ReaderBarButtonGap = 2.dp
+
+/** 底栏箭头图标尺寸：四等分槽位里要留够文字宽度。 */
+private val ReaderBarIconSize = 20.dp
 
 @Composable
 private fun ReaderEmptyState(
