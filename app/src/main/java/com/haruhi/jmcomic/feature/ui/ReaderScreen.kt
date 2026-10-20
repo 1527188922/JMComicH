@@ -7,6 +7,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -61,8 +62,10 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalContext
@@ -79,8 +82,9 @@ import kotlin.math.abs
  *
  * 已实现的部分：
  * - **纵向连续**（默认）与**横向分页**两种方式，翻页方向可选右到左；
- * - 单击显隐控件栏；双指缩放、双击放大/还原；缩放后单指拖动看细节，
- *   此时**不带动列表滚动**；
+ * - 单击显隐控件栏；**双指缩放整块阅读区域**（不是单张图），放大后**仍能正常
+ *   上下滑动 / 左右翻页**（单指主轴交给列表），翻页时保持放大倍数；
+ *   双指拖动或交叉轴拖动用来查看放大后被裁掉的边缘；
  * - 控件栏：返回、章节名、章节选择、进度、上一话/下一话（未下载的下一话给"下载"出口）；
  * - 位置自动持久化（本子 + 章节 + 图片 + 页内比例），离开页面立刻落库；
  * - 长图用固定的宽高比占位，图片加载完成前后**布局不跳**；
@@ -123,38 +127,75 @@ fun ReaderScreen(
     ReaderWindowEffect(state.preferences)
 
     CompositionLocalProvider(LocalLayoutDirection provides state.preferences.layoutDirection) {
+        // 双指缩放作用于**整块阅读区域**（用户要求：不是单张图片各自放大）。
+        // 状态放在这一层：外层手势层修改它，内层 graphicsLayer 把整块内容一起变换。
+        val zoom = remember { ReaderZoomState() }
+        // 换话 / 换阅读方式时回到 1x，免得新的一话一进来就是放大的
+        LaunchedEffect(state.currentChapter?.chapterId, state.preferences.mode) { zoom.reset() }
+        // 放大后左右翻页：倍数**保持**（用户报过"翻到另一页大小复原"），
+        // 只把平移量归零，让新的一页仍然从正中开始看。
+        LaunchedEffect(state.currentPage, state.preferences.mode) {
+            if (state.preferences.mode == ReadingMode.HORIZONTAL) zoom.resetPan()
+        }
+
         Box(
             modifier = modifier
                 .fillMaxSize()
                 .background(background),
         ) {
-            when {
-                state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+            // 手势层**不带缩放**：坐标就是屏幕坐标，缩放锚点（手指中心）才好算；
+            // 内容层再加 graphicsLayer，整块（列表 / 分页器）一起放大、一起平移。
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .readerGestures(
+                        zoom = zoom,
+                        // 内容自己滚动的方向：纵向列表上下滚、横向分页器左右翻
+                        scrollAxis = if (state.preferences.mode == ReadingMode.HORIZONTAL) {
+                            Orientation.Horizontal
+                        } else {
+                            Orientation.Vertical
+                        },
+                        onTap = onToggleControls,
+                    ),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = zoom.scale
+                            scaleY = zoom.scale
+                            translationX = zoom.offset.x
+                            translationY = zoom.offset.y
+                        },
+                ) {
+                    when {
+                        state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+
+                        state.pages.isEmpty() -> ReaderEmptyState(
+                            state = state,
+                            contentColor = contentColor,
+                            onBack = onBack,
+                            onRetry = onRetryLoad,
+                        )
+
+                        state.preferences.mode == ReadingMode.HORIZONTAL -> HorizontalReader(
+                            state = state,
+                            onPositionChanged = onPositionChanged,
+                            onRequestPage = onRequestPage,
+                            onTapRetry = onRetryPage,
+                        )
+
+                        else -> VerticalReader(
+                            state = state,
+                            onPositionChanged = onPositionChanged,
+                            onRequestPage = onRequestPage,
+                            onTapRetry = onRetryPage,
+                        )
+                    }
                 }
-
-                state.pages.isEmpty() -> ReaderEmptyState(
-                    state = state,
-                    contentColor = contentColor,
-                    onBack = onBack,
-                    onRetry = onRetryLoad,
-                )
-
-                state.preferences.mode == ReadingMode.HORIZONTAL -> HorizontalReader(
-                    state = state,
-                    onPositionChanged = onPositionChanged,
-                    onToggleControls = onToggleControls,
-                    onRequestPage = onRequestPage,
-                    onTapRetry = onRetryPage,
-                )
-
-                else -> VerticalReader(
-                    state = state,
-                    onPositionChanged = onPositionChanged,
-                    onToggleControls = onToggleControls,
-                    onRequestPage = onRequestPage,
-                    onTapRetry = onRetryPage,
-                )
             }
 
             // 控件层：单击显隐，隐藏时完全不占位
@@ -248,7 +289,6 @@ fun ReaderScreen(
 private fun VerticalReader(
     state: ReaderUiState,
     onPositionChanged: (Int, Float) -> Unit,
-    onToggleControls: () -> Unit,
     onRequestPage: (Int) -> Unit,
     onTapRetry: (Int) -> Unit,
 ) {
@@ -294,7 +334,6 @@ private fun VerticalReader(
         itemsIndexed(state.pages, key = { _, page -> page.imageFile }) { _, page ->
             ReaderPageItem(
                 page = page,
-                onToggleControls = onToggleControls,
                 onRequest = { onRequestPage(page.index) },
                 onRetry = { onTapRetry(page.index) },
             )
@@ -306,7 +345,6 @@ private fun VerticalReader(
 private fun HorizontalReader(
     state: ReaderUiState,
     onPositionChanged: (Int, Float) -> Unit,
-    onToggleControls: () -> Unit,
     onRequestPage: (Int) -> Unit,
     onTapRetry: (Int) -> Unit,
 ) {
@@ -330,7 +368,6 @@ private fun HorizontalReader(
         val page = state.pages.getOrNull(pageIndex) ?: return@HorizontalPager
         ReaderPageItem(
             page = page,
-            onToggleControls = onToggleControls,
             onRequest = { onRequestPage(page.index) },
             onRetry = { onTapRetry(page.index) },
             fillHeight = true,
@@ -347,12 +384,12 @@ private fun HorizontalReader(
  *   [onRequest]。`LazyColumn` / `HorizontalPager` 只组合可见项，
  *   所以不会一进阅读器就把整话几十张图全拉下来；
  * - 取的过程中显示进度圈，只有真的失败才显示"取不回来 + 重试"；
- * - 手势：单击显隐控件、双击放大/还原、双指缩放、放大后单指拖动。
+ * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
+ *   （用户要求：双指放大是整个页面一起放大，不是单张图片单独放大）。
  */
 @Composable
 private fun ReaderPageItem(
     page: ReaderPage,
-    onToggleControls: () -> Unit,
     onRequest: () -> Unit,
     onRetry: () -> Unit,
     fillHeight: Boolean = false,
@@ -362,11 +399,9 @@ private fun ReaderPageItem(
         if (!page.available && page.state == ReaderPage.PageState.Pending) onRequest()
     }
 
-    val zoom = remember(page.imageFile) { PageZoomState() }
     val modifier = Modifier
         .fillMaxWidth()
         .then(if (fillHeight) Modifier.fillMaxHeight() else Modifier)
-        .pageGestures(zoom = zoom, onTap = onToggleControls)
 
     if (!page.available) {
         Box(
@@ -413,13 +448,7 @@ private fun ReaderPageItem(
             contentDescription = "第 ${page.index + 1} 页",
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f / page.aspectRatio)
-                .graphicsLayer {
-                    scaleX = zoom.scale
-                    scaleY = zoom.scale
-                    translationX = zoom.offset.x
-                    translationY = zoom.offset.y
-                },
+                .aspectRatio(1f / page.aspectRatio),
         )
     }
 }
@@ -429,40 +458,62 @@ private fun ReaderPageItem(
 // ======================================================================
 
 /**
- * 单页缩放状态。
+ * 阅读器整体的缩放状态（用户要求：双指放大是**整块阅读区域**一起放大，
+ * 不是单张图片各自放大）。
+ *
+ * 缩放状态**跨页保持**：放大后左右翻页，新的一页仍是同样的倍数（不会"大小复原"），
+ * 只有换话 / 换阅读方式才回到 1x（见 `ReaderScreen` 里的 `LaunchedEffect`）。
  *
  * 为什么自己写而不是用 `Modifier.transformable`：`transformable` 会把单指拖动
  * 也当成平移并消费掉，于是**没放大时列表就再也滚不动了**。
- * 这里只在"双指缩放"或"已放大后的拖动"时才消费事件，其余交给列表。
+ * 这里只在"双指缩放 / 双指拖动"时才消费事件，其余交给列表。
  */
-private class PageZoomState {
+private class ReaderZoomState {
     var scale by mutableFloatStateOf(1f)
     var offset by mutableStateOf(Offset.Zero)
+
+    /** 放大过没有：只有放大状态下才处理平移（否则交给列表滚动）。 */
+    val isZoomed: Boolean get() = scale > ZOOMED_THRESHOLD
 
     /**
      * 应用一次缩放/平移。
      *
-     * 缩放锚点用**手势中心**：`offset' = centroid - (centroid - offset) * ratio + pan`，
-     * 这样手指按住的那个点在图上的位置不动，符合直觉（否则放大时内容会"跑掉"）。
+     * [centroid] 传的是**相对视口中心**的手势中心（`graphicsLayer` 的默认
+     * transformOrigin 就是图层中心，两边用同一个原点才对得上）：
+     * `offset' = centroid - (centroid - offset) * ratio + pan`，
+     * 这样手指按住的那个点在屏幕上的位置不动，符合直觉（否则放大时内容会"跑掉"）。
+     *
+     * 平移量按放大倍数夹住，放大后内容不会被拖出屏幕。
      */
-    fun apply(zoomChange: Float, panChange: Offset, centroid: Offset) {
+    fun apply(zoomChange: Float, panChange: Offset, centroid: Offset, viewport: Size) {
         val next = (scale * zoomChange).coerceIn(MIN_SCALE, MAX_SCALE)
         val ratio = next / scale
-        offset = if (next <= 1f) Offset.Zero else centroid - (centroid - offset) * ratio + panChange
-        scale = next
-    }
-
-    /** 双击：直接在 1x 与 [target] 之间切换。 */
-    fun zoomTo(target: Float, focus: Offset) {
-        val next = target.coerceIn(MIN_SCALE, MAX_SCALE)
-        val ratio = next / scale
-        offset = if (next <= 1f) Offset.Zero else focus - (focus - offset) * ratio
+        offset = if (next <= MIN_SCALE) {
+            Offset.Zero
+        } else {
+            (centroid - (centroid - offset) * ratio + panChange).clampToViewport(next, viewport)
+        }
         scale = next
     }
 
     fun reset() {
         scale = 1f
         offset = Offset.Zero
+    }
+
+    /** 只把平移量归零（缩放倍数保留）：翻到新的一页时让内容重新居中。 */
+    fun resetPan() {
+        offset = Offset.Zero
+    }
+
+    /**
+     * 限制平移量：放大 `s` 倍后，内容边缘正好贴着视口边缘，
+     * 所以每个方向最多能平移 `(s - 1) * 尺寸 / 2`。
+     */
+    private fun Offset.clampToViewport(scale: Float, viewport: Size): Offset {
+        val maxX = ((scale - 1f) * viewport.width / 2f).coerceAtLeast(0f)
+        val maxY = ((scale - 1f) * viewport.height / 2f).coerceAtLeast(0f)
+        return Offset(x.coerceIn(-maxX, maxX), y.coerceIn(-maxY, maxY))
     }
 
     companion object {
@@ -472,40 +523,68 @@ private class PageZoomState {
 }
 
 /**
- * 页面手势：单击显隐控件、双击在 1x 与 2.5x 之间切换、双指缩放、放大后单指拖动。
+ * 阅读区域的手势：单击显隐控件、双指缩放整块内容、双指拖动平移。
  *
- * 两个 `pointerInput` 分工：第一个只认点击，第二个处理缩放/拖动。
- * 第二个在不缩放时的拖动**不消费**事件，所以列表照常滚动。
+ * **没有双击放大**（用户要求去掉）。
+ *
+ * 关键点（上一版把单指拖动全消费掉，结果**放大后既滑不动也翻不了页**，用户报的 bug）：
+ * - 缩放由内层 `graphicsLayer` 作用在整块内容上，不是单张图；
+ * - 事件在 [PointerEventPass.Initial] 读，但**单指拖动一律不消费**：
+ *   主轴（纵向模式 = 上下、横向模式 = 左右）原样交给列表 / 分页器，
+ *   所以放大后照样能往下滑、能左右翻页；我们只把**交叉轴**的位移当成平移
+ *   （纵向模式里左右拖、横向模式里上下拖），拿来查看放大后被裁掉的边缘；
+ * - 双指拖动 = 两个方向都能平移；缩放和双指拖动都要消费，否则列表会跟着滚。
+ *
+ * [scrollAxis] 是内容自己滚动的方向（纵向列表 / 横向分页器），用来区分主轴与交叉轴。
  */
-private fun Modifier.pageGestures(zoom: PageZoomState, onTap: () -> Unit): Modifier = this
+private fun Modifier.readerGestures(
+    zoom: ReaderZoomState,
+    scrollAxis: Orientation,
+    onTap: () -> Unit,
+): Modifier = this
     .pointerInput(Unit) {
-        detectTapGestures(
-            onTap = { onTap() },
-            onDoubleTap = { position ->
-                if (zoom.scale > 1.01f) zoom.reset() else zoom.zoomTo(DOUBLE_TAP_SCALE, position)
-            },
-        )
+        detectTapGestures(onTap = { onTap() })
     }
-    .pointerInput(Unit) {
+    .pointerInput(scrollAxis) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
+            val viewport = Size(size.width.toFloat(), size.height.toFloat())
+            val viewportCenter = Offset(size.width / 2f, size.height / 2f)
             while (true) {
-                val event: PointerEvent = awaitPointerEvent()
+                val event: PointerEvent = awaitPointerEvent(PointerEventPass.Initial)
                 val zoomChange = event.calculateZoom()
                 val panChange = event.calculatePan()
+                val pressed = event.changes.count { it.pressed }
                 val zooming = abs(zoomChange - 1f) > ZOOM_EPSILON
-                val panning = zoom.scale > 1.01f && panChange != Offset.Zero
-                if (zooming || panning) {
-                    zoom.apply(zoomChange, panChange, event.calculateCentroid())
+                val twoFingerPanning = pressed > 1 && panChange != Offset.Zero
+                if (zooming || twoFingerPanning) {
+                    zoom.apply(
+                        zoomChange = zoomChange,
+                        panChange = panChange,
+                        centroid = event.calculateCentroid() - viewportCenter,
+                        viewport = viewport,
+                    )
                     event.changes.forEach { change -> if (change.positionChanged()) change.consume() }
+                } else if (pressed == 1 && panChange != Offset.Zero && zoom.isZoomed) {
+                    // 单指：主轴留给翻页 / 滚动（**不消费**），只平移交叉轴
+                    val crossPan = when (scrollAxis) {
+                        Orientation.Vertical -> Offset(panChange.x, 0f)
+                        Orientation.Horizontal -> Offset(0f, panChange.y)
+                    }
+                    if (crossPan != Offset.Zero) {
+                        // zoomChange = 1、centroid = 0：只加平移量，不动缩放
+                        zoom.apply(1f, crossPan, Offset.Zero, viewport)
+                    }
                 }
                 if (!event.changes.any { it.pressed }) break
             }
         }
     }
 
-private const val DOUBLE_TAP_SCALE = 2.5f
 private const val ZOOM_EPSILON = 0.01f
+
+/** 超过这个倍数才算"放大状态"（浮点误差容差），放大后才处理平移。 */
+private const val ZOOMED_THRESHOLD = 1.01f
 
 // ======================================================================
 // 控件栏
