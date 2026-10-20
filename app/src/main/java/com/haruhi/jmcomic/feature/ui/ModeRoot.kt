@@ -548,8 +548,9 @@ fun ModeRoot(
                         onResetImageLine = vm::resetImageLine,
                         onTestApiLines = vm::testAllApiLines,
                         onTestImageLines = vm::testAllImageLines,
-                        // 高级
-                        onSetRetry = vm::setRetry,
+                        // 高级：接口请求重试（所有接口共用）与图片加载/下载重试（仅超时）
+                        onSetRequestRetry = vm::setRequestRetry,
+                        onSetImageRetry = vm::setImageRetry,
                         // 恢复默认：只重置偏好，不动书库与文件、不动凭据
                         onResetSettings = vm::resetSettings,
                     )
@@ -897,13 +898,13 @@ class ViewModelFactory(
                 container.secrets,
                 container.apiLineProbe,
                 container.imageLineProbe,
-                // 切完接口语言要清掉带语言的内存缓存（评论；分类树 / 列表由分类页自己
-                // 订阅语言热流重拉，这里再清一次是兜底"分类页的 ViewModel 已经不在"的情况），
-                // 否则用户切回分类页 / 详情页看到的还是上一门语言的中文
-                onApiLanguageChanged = {
-                    container.jmCategoryCache.clearCatalogAndLists()
-                    container.jmCommentCache.clearAll()
-                },
+                // 2026-10-20 用户要求：**切换接口语言不清理任何缓存**（分类树 / 列表 / 评论都保留），
+                // 所以这段接线先注释掉——不传就走 SettingsViewModel 里的默认空实现（什么都不做）。
+                // 以后需要清理时放开下面几行即可（接口本身没动）。
+                // onApiLanguageChanged = {
+                //     container.jmCategoryCache.clearCatalogAndLists()
+                //     container.jmCommentCache.clearAll()
+                // },
             ) as T
 
         modelClass.isAssignableFrom(ReaderViewModel::class.java) ->

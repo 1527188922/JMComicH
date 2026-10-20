@@ -81,7 +81,11 @@ class AppContainer(private val appContext: Context) {
             // 旧「全局作用域」的值一次性搬进漫画作用域（全新安装是空操作）。
             // **同步跑完再交出仓库**：网络客户端、下载环境都在后面按同一份偏好读取，
             // 异步迁移会和它们抢跑，让"升级后第一眼看到的还是旧值"。
-            runBlocking { repository.migrateLegacyGlobalScope(secrets) }
+            runBlocking {
+                repository.migrateLegacyGlobalScope(secrets)
+                // 合并前的四个「按接口分开的重试次数」→ 一个「请求重试次数」
+                repository.migrateLegacyRetryKeys()
+            }
         }
     }
 
@@ -114,11 +118,15 @@ class AppContainer(private val appContext: Context) {
      * 下载引擎。**每次取用都会按当前网络设置新建**：
      * 计划 §9.2 要求"线程数、超时、线路等对新任务或下次重试生效"，
      * 所以引擎不缓存客户端，而是持有 [imageHttpClient] 的引用。
+     *
+     * 「失败后再试几次」也做成现读的闭包（设置页「高级 → 图片加载/下载失败重试次数」）：
+     * 引擎要的是总尝试次数，所以 `+1`（0 次重试 = 只尝试一次）。
      */
     val fileDownloader: com.haruhi.jmcomic.core.download.FileDownloader by lazy {
         com.haruhi.jmcomic.core.download.FileDownloader(
             client = imageHttpClient,
             dirs = libraryDirs,
+            attemptsProvider = { settings.resolveJmImageRetry() + 1 },
         )
     }
 
@@ -231,23 +239,12 @@ class AppContainer(private val appContext: Context) {
         get() = com.haruhi.jmcomic.feature.api.ApiClient(
             client = httpClient,
             config = { runBlocking { settings.resolveJmNetwork(secrets) } },
-            retryProvider = {
-                com.haruhi.jmcomic.feature.api.ApiClient.RetrySettings(
-                    album = runBlocking { jmRetry(SettingKeys.Jm.RETRY_ALBUM) },
-                    search = runBlocking { jmRetry(SettingKeys.Jm.RETRY_SEARCH) },
-                    chapter = runBlocking { jmRetry(SettingKeys.Jm.RETRY_CHAPTER) },
-                    // 「获取分类」（/categories + /categories/filter）单独一项
-                    category = runBlocking { jmRetry(SettingKeys.Jm.RETRY_CATEGORY) },
-                )
-            },
+            // 所有接口共用同一项重试次数（设置页「高级 → 请求重试次数」）
+            retryProvider = { runBlocking { settings.resolveJmRequestRetry() } },
             apiDomainProvider = { runBlocking { jmApiDomain() } },
             // 接口语言（`lang`）：取容器的热流，切完语言新请求立刻生效
             languageProvider = { apiLanguage.value },
         )
-
-    private suspend fun jmRetry(key: String): Int = settings
-        .jmInt(key, com.haruhi.jmcomic.core.settings.SettingDefaults.Jm.RETRY)
-        .first()
 
     /**
      * 接口线路：取设置里选中的那一条；没设置过（或刚「恢复默认」）时用工程当前的默认线路。

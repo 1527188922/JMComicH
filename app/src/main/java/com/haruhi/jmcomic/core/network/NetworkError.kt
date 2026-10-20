@@ -91,5 +91,17 @@ fun Throwable.isNetworkTimeout(): Boolean {
 fun Throwable.isRetryableApiError(): Boolean =
     isNetworkTimeout() || (this is NetworkError.Malformed && retryable)
 
+/**
+ * 图片加载 / 下载可重试的判定：**只有网络超时**。
+ *
+ * 与接口请求的 [isRetryableApiError] 刻意不同（用户 2026-10-20 要求）：
+ * 连不上（DNS / 拒绝连接）、5xx、内容异常**都不重试**——图片是成批的大流量请求，
+ * 非超时类失败重发往往还是同一个结果，只会成倍放大流量与耗时。
+ *
+ * 总次数由设置页「高级 → 图片加载/下载失败重试次数」控制，这里只管"什么错误值得重发"。
+ */
+fun Throwable.isTimeoutRetryable(): Boolean =
+    this is NetworkError.Timeout || isNetworkTimeout()
+
 /** 调用方的取消异常：与"失败"区分，取消不重试、不记录为失败。 */
 class OperationCancelledException(message: String = "操作已取消") : Exception(message)

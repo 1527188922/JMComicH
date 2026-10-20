@@ -36,7 +36,7 @@ import java.net.URLEncoder
  * - 每次请求新建签名（`ts` 为秒级时间戳）；**重试时沿用第一次的 `ts`**，
  *   否则响应无法用同一个 key 解密（参考实现 `executeGet` 的注释明确写了这一点）；
  * - 只有**可重试的异常**才重试（网络超时，或响应空体 / 非 JSON 信封这类**内容异常**），
- *   次数来自 `jm.request.{album,search,chapter}` 与单独一项「获取分类」；
+ *   次数只有一个（设置页「高级 → 请求重试次数」，**所有接口共用**）；
  * - 响应 JSON 的 `data` 字段是密文，用 `ts` 派生 AES-256 密钥解密；
  * - **每个 GET 请求都带 `lang`**（设置页「语言 → 接口语言」，默认简中）：官方
  *   `fetchGet` 就是这么做的，`/categories` 的分类名、`/album` 的标签与简介、
@@ -48,7 +48,14 @@ import java.net.URLEncoder
 class ApiClient(
     private val client: OkHttpClient,
     private val config: () -> ResolvedNetworkConfig,
-    private val retryProvider: () -> RetrySettings = { RetrySettings() },
+    /**
+     * 接口请求「失败后自动重试」的次数（0 = 不自动重试）。
+     *
+     * **所有接口共用这一项**（设置页「高级 → 请求重试次数」）：以前按接口分成
+     * 详情 / 搜索 / 章节 / 分类四项，2026-10-20 按用户要求合并成一个。
+     * 只管"重发几次"，**不影响什么错误值得重发**（那由 `isRetryableApiError()` 决定）。
+     */
+    private val retryProvider: () -> Int = { Defaults.RETRY_DEFAULT },
     /** 接口线路；默认取 [Defaults.DEFAULT_API_DOMAIN]。 */
     private val apiDomainProvider: () -> String = { Defaults.DEFAULT_API_DOMAIN },
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
@@ -76,15 +83,6 @@ class ApiClient(
     private val languageProvider: () -> ApiLanguage = { ApiLanguage.DEFAULT },
 ) {
 
-    /** 各接口的重试次数（0 = 不自动重试）。对应 `jm.request.*.retry`。 */
-    data class RetrySettings(
-        val album: Int = Defaults.RETRY_DEFAULT,
-        val search: Int = Defaults.RETRY_DEFAULT,
-        val chapter: Int = Defaults.RETRY_DEFAULT,
-        /** 「获取分类」（`/categories` + `/categories/filter`）单独一项。 */
-        val category: Int = Defaults.RETRY_DEFAULT,
-    )
-
     private val apiDomain: String get() = apiDomainProvider().ifBlank { Defaults.DEFAULT_API_DOMAIN }
 
     // ------------------------------------------------------------------
@@ -109,7 +107,7 @@ class ApiClient(
                 "page" to safePage.toString(),
                 "o" to sort.code,
             ),
-            retry = retryProvider().search,
+            retry = retryProvider(),
             decode = { json -> ApiJson.decodeFromString(SearchRespDto.serializer(), json) },
         )
     }
@@ -118,7 +116,7 @@ class ApiClient(
     suspend fun album(aid: Long): AlbumDto = getDecrypted(
         path = "/album",
         params = listOf("id" to aid.toString()),
-        retry = retryProvider().album,
+        retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(AlbumDto.serializer(), json) },
     )
 
@@ -133,12 +131,12 @@ class ApiClient(
      * `lang` 变（简中 `汉化` / 繁中 `漢化`）；`lang` 由 [getDecrypted] 统一补，
      * 取值来自设置页「语言 → 接口语言」。
      *
-     * 重试次数用「获取分类」那一项（设置页「高级」里单独一项，默认 1 次）。
+     * 重试次数用「请求重试次数」那一项（设置页「高级」，所有接口共用）。
      */
     suspend fun categories(): CategoriesRespDto = getDecrypted(
         path = "/categories",
         params = emptyList(),
-        retry = retryProvider().category,
+        retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(CategoriesRespDto.serializer(), json) },
     )
 
@@ -166,7 +164,7 @@ class ApiClient(
             if (sort.code.isNotBlank()) add("o" to sort.code)
             if (category.isNotBlank()) add("c" to category)
         },
-        retry = retryProvider().category,
+        retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(CategoryFilterRespDto.serializer(), json) },
     )
 
@@ -182,8 +180,7 @@ class ApiClient(
      * `total` 被服务端截断到 5000，所以最多 500 页。**匿名可读**（实测无登录态也返回 200），
      * 与本工程"不做 JM 账号"的定位一致。
      *
-     * 重试次数沿用「漫画详情」那一项（`jm.request.album.retry`）：评论和详情同属详情页数据，
-     * 不为它单开一个设置项。
+     * 重试次数用统一的「请求重试次数」那一项（所有接口共用，评论不再单开设置项）。
      */
     suspend fun forum(aid: Long, page: Int = 1, mode: String = "all"): ForumRespDto = getDecrypted(
         path = "/forum",
@@ -192,7 +189,7 @@ class ApiClient(
             "page" to (if (page < 1) 1 else page).toString(),
             "aid" to aid.toString(),
         ),
-        retry = retryProvider().album,
+        retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(ForumRespDto.serializer(), json) },
     )
 
@@ -208,7 +205,7 @@ class ApiClient(
         ChapterSource.LEGACY_CHAPTER -> getDecrypted(
             path = "/chapter",
             params = listOf("id" to chapterId.toString()),
-            retry = retryProvider().chapter,
+            retry = retryProvider(),
             decode = { json -> ApiJson.decodeFromString(ChapterDto.serializer(), json) },
         )
     }
@@ -227,7 +224,7 @@ class ApiClient(
     private suspend fun comicRead(chapterId: Long): ChapterDto = getDecrypted(
         path = "/comic_read",
         params = listOf("id" to chapterId.toString()),
-        retry = retryProvider().chapter,
+        retry = retryProvider(),
         decode = { json ->
             ApiJson.decodeFromString(ComicReadDto.serializer(), json).toChapterDto(chapterId)
         },
@@ -261,9 +258,8 @@ class ApiClient(
      * 它用的是**另一个 secret**（`18comicAPPContent`），且响应是 HTML 不是 JSON，
      * 所以不走 [getDecrypted]。
      *
-     * **重试**：与「章节图片」（`/chapter`）共用一个配置项（`jm.request.chapter.retry`）——
-     * 它同样是"打开章节就要打"的前置调用，可重试的异常（超时 / 空体 / 响应不含标记）与
-     * 章节接口一致。
+     * **重试**：与其它接口共用同一个「请求重试次数」——它同样是"打开章节就要打"的
+     * 前置调用，可重试的异常（超时 / 空体 / 响应不含标记）与章节接口一致。
      *
      * **不带 `lang`**：它不是 `fetchGet` 的 JSON 接口，而是旧版阅读页的 HTML 模板地址，
      * 官方那一版的 URL 里就没有语言参数（文档 §7.5 也只给 `id`），这里保持原样。
@@ -283,7 +279,7 @@ class ApiClient(
             ),
         )
         return withTimeoutRetry(
-            maxRetry = retryProvider().chapter,
+            maxRetry = retryProvider(),
             retryOn = { it.isRetryableApiError() },
             onRetry = { attempt, total, cause ->
                 Timber.tag("jm").d(

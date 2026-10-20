@@ -99,16 +99,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** 四处「请求失败后重试」的区分（详情 / 搜索 / 章节图片 / 获取分类）。 */
-enum class RetryField(val label: String, val key: String) {
-    ALBUM("漫画详情", SettingKeys.Jm.RETRY_ALBUM),
-    SEARCH("搜索", SettingKeys.Jm.RETRY_SEARCH),
-    CHAPTER("章节图片", SettingKeys.Jm.RETRY_CHAPTER),
-
-    /** 「获取分类」：`/categories` 与 `/categories/filter` 共用这一项。 */
-    CATEGORY("获取分类", SettingKeys.Jm.RETRY_CATEGORY),
-}
-
 /** 代理编辑草稿：端口先按文本收，由 ViewModel 校验后再落存储。 */
 data class ProxyDraft(
     val type: ProxyType,
@@ -195,17 +185,22 @@ data class SettingsUiState(
 
     // 高级
     /**
-     * 各接口「请求失败后自动重试」的次数。
+     * **所有接口**「请求失败后自动重试」的次数（0 = 不自动重试）。
      *
-     * 默认值取 [SettingDefaults.Jm.RETRY]（2026-10-20 起是 1：失败后再试一次），
-     * 首帧就按默认值画，真实值读回来只是数字变化。
+     * 合并前按接口分四项（详情 / 搜索 / 章节图片 / 获取分类），2026-10-20 按用户要求
+     * 合成一项：凡是接口请求都用它。默认值取 [SettingDefaults.Jm.RETRY]（1：失败后再试一次）。
+     *
+     * 可重试的异常类型与这个次数无关（超时 / 空体 / 非 JSON 才重试，见 `ApiClient`）。
      */
-    val retryAlbum: Int = SettingDefaults.Jm.RETRY,
-    val retrySearch: Int = SettingDefaults.Jm.RETRY,
-    val retryChapter: Int = SettingDefaults.Jm.RETRY,
+    val requestRetry: Int = SettingDefaults.Jm.RETRY,
 
-    /** 「获取分类」（`/categories` + `/categories/filter`）的重试次数。 */
-    val retryCategory: Int = SettingDefaults.Jm.RETRY,
+    /**
+     * 图片加载 / 下载「失败后自动重试」的次数（0 = 不自动重试）。
+     *
+     * 只管章节图片（阅读器按需取图与下载任务共用同一个引擎），
+     * 且**只有网络超时才会重试**（连不上 / 5xx / 内容异常直接判失败）。
+     */
+    val imageRetry: Int = SettingDefaults.Jm.RETRY_IMAGE,
 
     val message: String? = null,
 )
@@ -253,18 +248,16 @@ class SettingsViewModel(
     /** 图片线路测速（「线路 → 图片线路」面板里的「全部测速」）。 */
     private val imageLineProbe: ImageLineProbe,
     /**
-     * 切完接口语言之后的收尾：把**带语言的内存缓存**清掉。
+     * 切完接口语言之后的收尾入口：**留给"清掉带语言的内存缓存"用**。
      *
      * 分类树 / 分类列表（`CategoryCache`）与评论（`CommentCache`）里的中文都是按请求时的
-     * `lang` 拿回来的——分类名（`汉化` / `漢化`）、评论等级名、`addtime` 格式都跟着语言变；
-     * 不清的话用户切完语言再进这些页面看到的还是上一门语言。
-     * 官方 App 切换语言时同样会清列表重拉（`SettingList.switchLanguage` 里的
-     * `CLEAR_MAIN_LIST`）。
+     * `lang` 拿回来的——分类名（`汉化` / `漢化`）、评论等级名、`addtime` 格式都跟着语言变。
      *
-     * 分类页自己还订阅了 `AppContainer.apiLanguage`（语言一变就重拉整页），
-     * 所以这里主要管两件事：评论缓存，以及"分类页的 ViewModel 已经不在"时的那份分类缓存。
-     *
-     * 用回调而不是直接注入两个缓存：缓存归容器管，设置页只负责"通知它该清了"。
+     * **目前是空实现、什么都不做**（用户 2026-10-20 要求：切换语言不清理任何缓存）。
+     * 真正的清理代码注释在 `ModeRoot` 的 `SettingsViewModel` 工厂里，
+     * 连同分类页那段"语言一变就重拉"一起关着；以后要恢复清理，放开那边的注释即可，
+     * 这里和调用点都不用改。用回调而不是直接注入两个缓存：
+     * 缓存归容器管，设置页只负责"通知它"。
      */
     private val onApiLanguageChanged: () -> Unit = {},
 ) : ViewModel() {
@@ -315,10 +308,8 @@ class SettingsViewModel(
         val proxyType = ResolvedNetworkConfig.proxyTypeOf(
             settings.jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.Jm.PROXY_NONE).first(),
         )
-        val retryAlbum = settings.jmInt(SettingKeys.Jm.RETRY_ALBUM, SettingDefaults.Jm.RETRY).first()
-        val retrySearch = settings.jmInt(SettingKeys.Jm.RETRY_SEARCH, SettingDefaults.Jm.RETRY).first()
-        val retryChapter = settings.jmInt(SettingKeys.Jm.RETRY_CHAPTER, SettingDefaults.Jm.RETRY).first()
-        val retryCategory = settings.jmInt(SettingKeys.Jm.RETRY_CATEGORY, SettingDefaults.Jm.RETRY).first()
+        val requestRetry = settings.resolveJmRequestRetry()
+        val imageRetry = settings.resolveJmImageRetry()
         val timeout = settings
             .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS)
             .first()
@@ -362,10 +353,8 @@ class SettingsViewModel(
                 apiLine = LineCatalog.apiLineOf(apiDomains),
                 imageLine = LineCatalog.imageLineOf(imageDomains),
                 resolved = resolved,
-                retryAlbum = retryAlbum,
-                retrySearch = retrySearch,
-                retryChapter = retryChapter,
-                retryCategory = retryCategory,
+                requestRetry = requestRetry,
+                imageRetry = imageRetry,
             )
         }
     }
@@ -433,17 +422,21 @@ class SettingsViewModel(
      * 切换接口语言（`lang`）：**即时生效**，下一次请求就带新语言。
      *
      * 生效链路：写存储 → 下一次 `AppContainer.jmApi` 取用时 `languageProvider` 现读 →
-     * `ApiClient` 给请求补上新的 `lang`。这里额外清一次带语言的内存缓存
-     * （见 [onApiLanguageChanged]），否则已经拉过的分类树 / 评论还是上一门语言，
-     * 用户会以为没切成功。
+     * `ApiClient` 给请求补上新的 `lang`。
      *
-     * 同一门语言重复点直接忽略（不写存储、不清缓存）。
+     * **不清理任何缓存**（用户 2026-10-20 要求）：[onApiLanguageChanged] 现在接的是默认空实现，
+     * 所以已经拉过的分类树 / 列表 / 评论会保留切换前的文案（下次冷启动清空内存缓存后更新）。
+     * 清理入口与调用点都还在，放开 `ModeRoot` 里注释掉的接线即可恢复。
+     *
+     * 同一门语言重复点直接忽略（不写存储）。
      */
     fun setApiLanguage(language: ApiLanguage) {
         if (_state.value.apiLanguage == language) return
         _state.update { it.copy(apiLanguage = language) }
         viewModelScope.launch {
             settings.putJmString(SettingKeys.Jm.API_LANGUAGE, language.code)
+            // 走空实现（不清理缓存）；要恢复清理就把 ModeRoot 里那段接线放开，
+            // 这一行本身不用改。
             onApiLanguageChanged()
             notify("接口语言已切换为${language.label}")
         }
@@ -654,17 +647,28 @@ class SettingsViewModel(
     // 高级
     // ------------------------------------------------------------------
 
-    fun setRetry(field: RetryField, value: Int) {
-        val clamped = value.coerceIn(SettingLimits.JM_RETRY.first, SettingLimits.JM_RETRY.last)
-        _state.update {
-            when (field) {
-                RetryField.ALBUM -> it.copy(retryAlbum = clamped)
-                RetryField.SEARCH -> it.copy(retrySearch = clamped)
-                RetryField.CHAPTER -> it.copy(retryChapter = clamped)
-                RetryField.CATEGORY -> it.copy(retryCategory = clamped)
-            }
-        }
-        viewModelScope.launch { settings.putJmInt(field.key, clamped) }
+    /**
+     * 「请求重试次数」：**所有接口共用**（合并前是详情 / 搜索 / 章节图片 / 获取分类四项）。
+     *
+     * 即时保存：下一次请求就按新次数重试（`AppContainer.jmApi` 每次取用都现读）。
+     * 可重试的异常类型不受这个值影响——超时与"空体 / 非 JSON"才重试。
+     */
+    fun setRequestRetry(value: Int) {
+        val clamped = value.coerceIn(SettingLimits.JM_RETRY)
+        _state.update { it.copy(requestRetry = clamped) }
+        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.RETRY_REQUEST, clamped) }
+    }
+
+    /**
+     * 「图片加载/下载失败重试次数」：只管章节图片，且**仅网络超时**会重试。
+     *
+     * 同样即时保存：引擎每次下载现读（`FileDownloader.attemptsProvider`），
+     * 所以改完下一次取图 / 下载就生效，不用重启。
+     */
+    fun setImageRetry(value: Int) {
+        val clamped = value.coerceIn(SettingLimits.JM_RETRY)
+        _state.update { it.copy(imageRetry = clamped) }
+        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.RETRY_IMAGE, clamped) }
     }
 
     // ------------------------------------------------------------------
@@ -679,8 +683,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             settings.resetJm()
             reload()
-            // 语言偏好也被清掉了（回到默认简中）：带语言的内存缓存同样要失效，
-            // 否则从繁中重置回简中后，已经拉过的分类 / 评论还是繁中。
+            // 语言偏好也被清掉了（回到默认简中）：这里本来要顺带让带语言的内存缓存失效，
+            // 但当前 [onApiLanguageChanged] 是空实现（见它的说明），所以什么都不做；
+            // 要恢复清理逻辑时，放开 ModeRoot 里那段接线即可，这一行不用改。
             onApiLanguageChanged()
             // 线路偏好被清掉后 reload 会回落到清单里的默认线路（工程当前在用的那两条），
             // 所以「恢复默认」之后线路就是默认线路，不需要额外写一次。
@@ -733,7 +738,10 @@ fun SettingsScreen(
     /** 「全部测速」：所有图片线路并发测一轮（每条 CDN 取一张探针图）。 */
     onTestImageLines: () -> Unit,
     // 高级
-    onSetRetry: (RetryField, Int) -> Unit,
+    /** 「请求重试次数」：所有接口共用。 */
+    onSetRequestRetry: (Int) -> Unit,
+    /** 「图片加载/下载失败重试次数」：只管章节图片，且仅网络超时重试。 */
+    onSetImageRetry: (Int) -> Unit,
     // 恢复默认
     onResetSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -809,7 +817,11 @@ fun SettingsScreen(
                     onTestApiLines = onTestApiLines,
                     onTestImageLines = onTestImageLines,
                 )
-                AdvancedSection(state = state, onSetRetry = onSetRetry)
+                AdvancedSection(
+                    state = state,
+                    onSetRequestRetry = onSetRequestRetry,
+                    onSetImageRetry = onSetImageRetry,
+                )
                 ResetSection(onReset = { confirmReset = true })
                 Spacer(Modifier.height(24.dp))
             }
@@ -927,7 +939,8 @@ private fun LanguageSection(
             title = "接口语言",
             hint = "接口返回的中文用简中还是繁中（分类名、标签、简介等）",
             help = "对应官方 App 的设置 → 语言。只影响接口返回的内容文案，应用界面本身只有简体一种。" +
-                "切换后下一次请求就用新语言；已经加载过的分类与评论会被清掉重新拉取。",
+                "切换后下一次请求就用新语言；已经拉过的分类与评论会保留切换前的文案" +
+                "（重启应用后内存缓存清空，再进来就是新语言）。",
             options = ApiLanguage.entries.map { it.label },
             selectedIndex = ApiLanguage.entries.indexOf(state.apiLanguage),
             onSelect = { onSetApiLanguage(ApiLanguage.entries[it]) },
@@ -1443,7 +1456,8 @@ private fun MiniTag(text: String, color: Color) {
 @Composable
 private fun AdvancedSection(
     state: SettingsUiState,
-    onSetRetry: (RetryField, Int) -> Unit,
+    onSetRequestRetry: (Int) -> Unit,
+    onSetImageRetry: (Int) -> Unit,
 ) {
     SettingsSection("高级") {
         Text(
@@ -1452,29 +1466,50 @@ private fun AdvancedSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
-        RetrySlider(RetryField.ALBUM, state.retryAlbum, onSetRetry)
+        // 合并前这里是四项（详情 / 搜索 / 章节图片 / 获取分类），现在只剩一项——
+        // 用户 2026-10-20 要求：凡是接口请求都用同一个次数。
+        RetrySlider(
+            title = "请求重试次数",
+            hint = "所有接口共用：详情、搜索、章节、分类、评论等",
+            help = "覆盖全部接口请求。网络超时、响应空体或非 JSON 这类" +
+                "「过一会儿重发可能就好了」的失败会重试；" +
+                "404、解密/解析失败等重试也没有意义的错误会直接报错。",
+            value = state.requestRetry,
+            onCommit = onSetRequestRetry,
+        )
         CardDivider()
-        RetrySlider(RetryField.SEARCH, state.retrySearch, onSetRetry)
-        CardDivider()
-        RetrySlider(RetryField.CHAPTER, state.retryChapter, onSetRetry)
-        CardDivider()
-        RetrySlider(RetryField.CATEGORY, state.retryCategory, onSetRetry)
+        RetrySlider(
+            title = "图片加载/下载失败重试次数",
+            hint = "阅读时取图与下载章节图片共用；只重试网络超时",
+            help = "只管章节图片（封面等其它图片不算）。只有网络超时才会重试：" +
+                "连不上、服务器 5xx、响应内容异常都不重试，直接判失败" +
+                "（阅读器里失败的那一页可以单独手动重试）。",
+            value = state.imageRetry,
+            onCommit = onSetImageRetry,
+        )
     }
 }
 
+/**
+ * 「重试次数」滑杆：两个重试项共用一套范围与文案（0 显示成「不自动重试」）。
+ */
 @Composable
 private fun RetrySlider(
-    field: RetryField,
+    title: String,
+    hint: String?,
+    help: String?,
     value: Int,
-    onSetRetry: (RetryField, Int) -> Unit,
+    onCommit: (Int) -> Unit,
 ) {
     SliderRow(
-        title = field.label,
+        title = title,
+        hint = hint,
+        help = help,
         value = value.toFloat(),
         range = SettingLimits.JM_RETRY.first.toFloat()..SettingLimits.JM_RETRY.last.toFloat(),
         steps = SettingLimits.JM_RETRY.last - SettingLimits.JM_RETRY.first - 1,
         label = { if (it.roundToInt() == 0) "不自动重试" else "${it.roundToInt()} 次" },
-        onCommit = { onSetRetry(field, it.roundToInt()) },
+        onCommit = { onCommit(it.roundToInt()) },
     )
 }
 

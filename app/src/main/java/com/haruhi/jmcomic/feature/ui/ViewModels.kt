@@ -46,7 +46,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -1054,9 +1053,14 @@ class CategoryViewModel(
      * 当前接口语言（`AppContainer.apiLanguage` 的热流）。
      *
      * 分类树与分类列表里的中文（分类名、标签）都是服务端按请求时的 `lang` 渲染的：
-     * 用户在设置页切了语言，**这一页还在导航栈里不一定会重建**，所以这里订阅它，
-     * 语言一变就清缓存按新语言重拉（官方 App 切换语言时也是清列表重拉）。
+     * 用户在设置页切了语言，**这一页还在导航栈里不一定会重建**，所以这里本来订阅它、
+     * 语言一变就清缓存按新语言重拉。
+     *
+     * **目前这段行为被关掉了**（用户 2026-10-20 要求：切换语言不清理任何缓存），
+     * 订阅那几行留在 [init] 里注释着；这个参数与 [reloadForLanguage] 一起留着，
+     * 放开注释即可恢复，`@Suppress("unused")` 只是告诉编译器"它是有意留着的"。
      */
+    @Suppress("unused")
     private val language: StateFlow<ApiLanguage> = MutableStateFlow(ApiLanguage.DEFAULT),
 ) : ViewModel() {
 
@@ -1076,19 +1080,26 @@ class CategoryViewModel(
                 loadCatalog()
             }
         }
-        viewModelScope.launch {
-            // 第一项是"进这一页时的当前语言"，不算切换；之后每一项都是用户真的改了设置
-            language.drop(1).collect { reloadForLanguage() }
-        }
+        // 2026-10-20 用户要求：**切换接口语言不清理任何缓存**（分类树 / 分类列表 / 评论都保留），
+        // 所以"语言一变就清缓存重拉整页"这段先关掉。以后需要时放开这四行即可
+        // （[language] 与 [reloadForLanguage] 都还在，行尾的 @Suppress 可以一并删掉；
+        //   同时要补回文件顶部被删掉的 `import kotlinx.coroutines.flow.drop`）。
+        // viewModelScope.launch {
+        //     // 第一项是"进这一页时的当前语言"，不算切换；之后每一项都是用户真的改了设置
+        //     language.drop(1).collect { reloadForLanguage() }
+        // }
     }
 
     /**
      * 接口语言变了：按新语言把这一页整体重来一遍。
      *
-     * 只清分类这一块的缓存（分类树 + 所有已加载的列表）：评论缓存由设置页那边一并清
+     * 只清分类这一块的缓存（分类树 + 所有已加载的列表）：评论缓存在设置页那边清
      * （评论不在这一页）。列表用"首屏加载"的形态重拉，失败会落到整块错误态，
      * 用户可以下拉重试。
+     *
+     * **目前没有调用点**：唯一入口是 [init] 里注释掉的那段订阅（见那里的说明）。
      */
+    @Suppress("unused")
     private fun reloadForLanguage() {
         listJob?.cancel()
         cache.clearCatalogAndLists()

@@ -118,6 +118,28 @@ class SettingsRepository(
     )
 
     // ------------------------------------------------------------------
+    // 重试次数解析
+    // ------------------------------------------------------------------
+
+    /**
+     * 接口请求失败后的自动重试次数（**所有接口共用**，设置页「高级 → 请求重试次数」）。
+     *
+     * 可重试的异常类型由 `ApiClient` / `isRetryableApiError()` 决定，与这个次数无关：
+     * 次数只管"重发几次"，不管"什么错误值得重发"。
+     */
+    suspend fun resolveJmRequestRetry(): Int =
+        jmInt(SettingKeys.Jm.RETRY_REQUEST, SettingDefaults.Jm.RETRY).first()
+
+    /**
+     * 图片加载 / 下载失败后的自动重试次数（设置页「高级 → 图片加载/下载失败重试次数」）。
+     *
+     * 只对**网络超时**重试（判定在 `FileDownloader`，不在这一层）；
+     * 这是"重试次数"，引擎侧的总尝试次数 = 它 + 1。
+     */
+    suspend fun resolveJmImageRetry(): Int =
+        jmInt(SettingKeys.Jm.RETRY_IMAGE, SettingDefaults.Jm.RETRY_IMAGE).first()
+
+    // ------------------------------------------------------------------
     // 旧「全局作用域」的一次性迁移
     // ------------------------------------------------------------------
 
@@ -159,6 +181,41 @@ class SettingsRepository(
         }
     }
 
+    // ------------------------------------------------------------------
+    // 旧「按接口分开的重试次数」的一次性迁移
+    // ------------------------------------------------------------------
+
+    @Volatile
+    private var legacyRetryMigrated = false
+
+    /**
+     * 把合并前那四个「按接口分开的重试次数」搬进 [SettingKeys.Jm.RETRY_REQUEST]。
+     *
+     * 规则（与 [migrateLegacyGlobalScope] 同一套取舍）：
+     * - 只在**新 key 还没有值**时写入，所以用户在合并之后再改过的值不会被旧值盖掉；
+     * - 旧值按 [LEGACY_RETRY_KEYS] 的固定顺序（漫画详情 → 搜索 → 章节图片 → 获取分类）
+     *   取**第一个存在的**：合并后只剩一个数，无法同时满足四个，
+     *   按这个顺序取最保守（用户最可能调过的是详情那一项）；
+     * - 旧 key **无条件删掉**（它们已经没有生产写入点，只剩迁移这一个读口）；
+     * - 同一进程只跑一次（[legacyRetryMigrated]），「恢复默认」清空后不会复活。
+     */
+    suspend fun migrateLegacyRetryKeys() {
+        if (legacyRetryMigrated) return
+        legacyRetryMigrated = true
+
+        appStore.edit { prefs ->
+            val newKey = intPreferencesKey(SettingKeys.Jm.RETRY_REQUEST)
+            var legacyValue: Int? = null
+            for (legacy in LEGACY_RETRY_KEYS) {
+                val key = intPreferencesKey(legacy)
+                if (legacyValue == null) legacyValue = prefs[key]
+                prefs.remove(key)
+            }
+            val value = legacyValue
+            if (newKey !in prefs && value != null) prefs[newKey] = value
+        }
+    }
+
     companion object {
         // 旧全局作用域里需要搬走的 key。两个作用域本来就用同一批名字，所以旧 key 直接用
         // 字符常量写在这里（它们已经没有对应的生产代码入口了）。
@@ -168,6 +225,19 @@ class SettingsRepository(
         private const val LEGACY_PROXY_HOST = "proxy_host"
         private const val LEGACY_PROXY_PORT = "proxy_port"
         private const val LEGACY_PROXY_USERNAME = "proxy_username"
+
+        /**
+         * 合并前的四个"按接口分开"的重试 key，**顺序即优先级**（第一个存在的值胜出）。
+         *
+         * 2026-10-20 合并成 [SettingKeys.Jm.RETRY_REQUEST] 之后，这些 key 不再有生产写入点，
+         * 只留给 [migrateLegacyRetryKeys] 搬一次。
+         */
+        private val LEGACY_RETRY_KEYS = listOf(
+            "retry_album",
+            "retry_search",
+            "retry_chapter",
+            "retry_category",
+        )
 
         /**
          * 搬运一个整数项：**旧值存在、且漫画作用域还没有同名值**时才写。

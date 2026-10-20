@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.core.download
 
 import com.google.common.truth.Truth.assertThat
 import com.haruhi.jmcomic.core.network.NetworkError
+import com.haruhi.jmcomic.core.network.isTimeoutRetryable
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -17,6 +18,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -197,14 +200,55 @@ class FileDownloaderTest {
         assertThat(server.requestCount).isEqualTo(1)
     }
 
+    /**
+     * 图片**只对网络超时重试**（用户 2026-10-20 要求）：5xx 直接判失败，不重发。
+     *
+     * 次数本身由设置页「高级 → 图片加载/下载失败重试次数」控制（引擎侧换算成
+     * `maxAttempts`，setUp 里固定 2）；这里验证的是"哪些错误值得重发"。
+     */
     @Test
-    fun `server error is retried and url is re-resolved each attempt`() = runTest {
+    fun `server error is not retried because only timeouts are retryable`() = runTest {
         val target = File(dirs.library, "video.mp4")
         server.enqueue(MockResponse.Builder().code(503).build())
         server.enqueue(bodyResponse(200, payload))
+
+        val outcome = downloader.download({ server.url("/video.mp4").toString() }, target)
+
+        assertThat(outcome).isInstanceOf(DownloadOutcome.Failed::class.java)
+        assertThat((outcome as DownloadOutcome.Failed).error)
+            .isInstanceOf(NetworkError.HttpStatus::class.java)
+        // 5xx 不重试：只允许一次请求（备用响应还在队列里，没人取）
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(target.exists()).isFalse()
+    }
+
+    /**
+     * 网络超时会按配置的次数重试，并且**每次尝试都重新解析直链**
+     * （`urlProvider` 每轮都调一次——JM 图片线路会轮换）。
+     *
+     * 用拦截器在第一次尝试时抛 `SocketTimeoutException` 来模拟超时：
+     * 比让服务器真的挂住快，也不会把测试拖到读超时。
+     */
+    @Test
+    fun `timeout is retried and url is re-resolved each attempt`() = runTest {
+        val attempts = AtomicInteger()
+        val flaky = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                if (attempts.incrementAndGet() == 1) throw SocketTimeoutException("read timed out")
+                chain.proceed(chain.request())
+            }
+            .build()
+        val engine = FileDownloader(
+            client = flaky,
+            dirs = dirs,
+            maxAttempts = 2,
+            retryDelayMs = 10L,
+        )
+        server.enqueue(bodyResponse(200, payload))
+        val target = File(dirs.library, "video.mp4")
         var resolveCount = 0
 
-        val outcome = downloader.download(
+        val outcome = engine.download(
             urlProvider = {
                 resolveCount++
                 server.url("/video.mp4").toString()
@@ -214,8 +258,21 @@ class FileDownloaderTest {
 
         assertThat(outcome).isInstanceOf(DownloadOutcome.Downloaded::class.java)
         assertThat(target.readBytes()).isEqualTo(payload)
-        // 每次尝试都重新解析直链（JM 图片线路会轮换）
+        assertThat(attempts.get()).isEqualTo(2)
         assertThat(resolveCount).isEqualTo(2)
+    }
+
+    /** 重试判定表：图片下载**只有超时**值得重发。 */
+    @Test
+    fun `only timeouts are retryable for image downloads`() {
+        assertThat(NetworkError.Timeout("u", SocketTimeoutException()).isTimeoutRetryable()).isTrue()
+        assertThat(NetworkError.HttpStatus("u", 503).isTimeoutRetryable()).isFalse()
+        assertThat(NetworkError.HttpStatus("u", 429).isTimeoutRetryable()).isFalse()
+        assertThat(
+            NetworkError.Unreachable("u", UnknownHostException("host")).isTimeoutRetryable(),
+        ).isFalse()
+        assertThat(NetworkError.Malformed("u", "bad json", retryable = true).isTimeoutRetryable()).isFalse()
+        assertThat(NetworkError.Cancelled().isTimeoutRetryable()).isFalse()
     }
 
     @Test

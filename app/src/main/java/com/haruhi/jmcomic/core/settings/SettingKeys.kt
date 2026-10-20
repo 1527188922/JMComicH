@@ -84,23 +84,22 @@ internal object SettingKeys {
         const val PROXY_PORT = "proxy_port"
         const val PROXY_USERNAME = "proxy_username"
 
-        /** 各接口重试次数（0 = 不自动重试） */
-        const val RETRY_ALBUM = "retry_album"
-        const val RETRY_SEARCH = "retry_search"
-
         /**
-         * 「章节图片」的重试次数：`/chapter`（图片清单）与取解扰块的 `/chapter_view_template`
-         * **共用**这一项（后者是打开章节的前置调用，两者同属"章节数据"）。
-         */
-        const val RETRY_CHAPTER = "retry_chapter"
-
-        /**
-         * 「获取分类」的重试次数（`/categories` + `/categories/filter`）。
+         * 所有接口请求「失败后自动重试」的次数（0 = 不自动重试）。
          *
-         * 2026-10-20 按用户要求单独开一项：分类树与分类列表都是"打开分类页就要打"的请求，
-         * 线路抖动时多试一次比让用户看到整块错误态更划算。默认与其他接口一致（1 次）。
+         * 2026-10-20 按用户要求合并：以前按接口分四项（`retry_album` / `retry_search` /
+         * `retry_chapter` / `retry_category`），现在**凡是接口请求都用这一项**。
+         * 老版本那四个 key 只剩一次性迁移读口（见 `SettingsRepository.migrateLegacyRetryKeys`）。
          */
-        const val RETRY_CATEGORY = "retry_category"
+        const val RETRY_REQUEST = "retry_request"
+
+        /**
+         * 图片加载 / 下载「失败后自动重试」的次数（0 = 不自动重试）。
+         *
+         * 只管**章节图片**：阅读器按需取图与下载任务共用同一个下载引擎（`FileDownloader`），
+         * 所以两项一起生效。**只有网络超时才会重试**——连不上 / 5xx / 内容异常一律不重试。
+         */
+        const val RETRY_IMAGE = "retry_image"
 
         /**
          * 接口语言：`"CN"` 简中 / `"TW"` 繁中（官方 App 的 `localStorage.lang`）。

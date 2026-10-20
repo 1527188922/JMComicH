@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.core.download
 
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.OperationCancelledException
+import com.haruhi.jmcomic.core.network.isTimeoutRetryable
 import com.haruhi.jmcomic.core.settings.DownloadNetwork
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import kotlinx.coroutines.CancellationException
@@ -73,15 +74,32 @@ sealed interface DownloadOutcome {
  * 6. 每次重试前重新解析直链是**调用方**的职责（JM 图片线路会轮换），
  *    引擎只接受一个 `urlProvider`，重试时重新调用它拿新地址。
  *
+ * **重试**：次数来自设置页「高级 → 图片加载/下载失败重试次数」（每次下载现读，见
+ * [attemptsProvider]），并且**只对网络超时重试**（[isTimeoutRetryable]）：
+ * 连不上 / 5xx / 内容异常直接判失败，不再重发（用户 2026-10-20 要求）。
+ *
  * **不在这里做**：网络策略判断（交给 [DownloadGate]）、并发调度（交给调用方或
  * [ParallelImageDownloader]）、进度持久化（交给任务仓库）。
  */
 class FileDownloader(
     private val client: OkHttpClient,
     private val dirs: LibraryDirs,
+    /**
+     * **总尝试次数**（含第一次）。默认 3 = 第一次 + 失败后再试 2 次。
+     *
+     * 生产环境用 [attemptsProvider] 从设置里现读；这个值是给不接设置的地方
+     * （单测、或将来其它用途）用的默认值。
+     */
     private val maxAttempts: Int = 3,
     private val retryDelayMs: Long = 1_000L,
     private val bufferSize: Int = DEFAULT_BUFFER_SIZE,
+    /**
+     * 每次下载时**现读**的总尝试次数（含第一次）；null = 用构造时的 [maxAttempts]。
+     *
+     * 设置页那一项是「失败后再试几次」（0 = 不重试），由调用方换算成 `重试次数 + 1`。
+     * 做成 suspend 闭包是因为它读的是 DataStore，不该阻塞线程。
+     */
+    private val attemptsProvider: (suspend () -> Int)? = null,
 ) {
 
     /** 下载速度采样窗口（毫秒）。 */
@@ -126,6 +144,10 @@ class FileDownloader(
         etag: String? = null,
         beforePublish: ((File) -> Unit)? = null,
     ): DownloadOutcome {
+        // 先算总尝试次数再抢锁：设置里的值是"失败后再试几次"，引擎要的是"总尝试次数"
+        // （至少 1 次）。读设置是 suspend 的，放在锁外面不占别人的等待时间。
+        val attemptLimit = attemptsProvider?.invoke()?.coerceAtLeast(1) ?: maxAttempts
+
         // 同一个目标串行化（见 targetLocks 的说明）。等锁期间别人可能已经下好了，
         // 所以拿到锁之后要重新判断一次"是不是已经完成"。
         val lock = targetLocks.computeIfAbsent(target.absolutePath) { Mutex() }
@@ -141,6 +163,7 @@ class FileDownloader(
                 skipIfComplete = skipIfComplete,
                 etag = etag,
                 beforePublish = beforePublish,
+                maxAttempts = attemptLimit,
             )
         }
     }
@@ -153,6 +176,7 @@ class FileDownloader(
         skipIfComplete: Boolean,
         etag: String?,
         beforePublish: ((File) -> Unit)?,
+        maxAttempts: Int,
     ): DownloadOutcome {
         val partFile = File(target.parentFile, target.name + PART_SUFFIX)
         target.parentFile?.mkdirs()
@@ -222,7 +246,9 @@ class FileDownloader(
                 val error = NetworkError.from(target.name, e)
                 lastError = error
                 Timber.tag("dl").w(e, "下载失败（第 %d/%d 次）：%s", attempt, maxAttempts, target.name)
-                if (attempt >= maxAttempts || !error.isRetryable()) break
+                // **只有网络超时才重试**（用户 2026-10-20 要求）。次数来自设置页
+                // 「高级 → 图片加载/下载失败重试次数」；连不上 / 5xx / 内容异常直接判失败。
+                if (attempt >= maxAttempts || !error.isTimeoutRetryable()) break
                 kotlinx.coroutines.delay(retryDelayMs * attempt)
             }
         }
@@ -451,17 +477,6 @@ class FileDownloader(
         private fun safeUrl(url: String): String =
             url.substringBefore('?').substringBefore('#')
     }
-}
-
-/** 可重试的错误类型：超时、连不上、5xx。4xx 与内容异常不重试（对齐参考实现「只重试超时」的保守做法）。 */
-fun NetworkError.isRetryable(): Boolean = when (this) {
-    is NetworkError.Timeout -> true
-    is NetworkError.Unreachable -> true
-    is NetworkError.Tls -> false
-    is NetworkError.Malformed -> false
-    is NetworkError.Cancelled -> false
-    is NetworkError.Business -> false
-    is NetworkError.HttpStatus -> code >= 500 || code == 429
 }
 
 /**

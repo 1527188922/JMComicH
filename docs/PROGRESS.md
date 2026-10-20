@@ -789,7 +789,7 @@ app/src/main/java/com/haruhi/jmcomic/
 | 旧模板接口 | `/chapter_view_template` **不带** `lang`（旧版官方 URL 里就没有），保持原样 |
 | 设置页 | 新增「语言」分组 → 「接口语言」（简体中文 / 繁体中文），选中即写偏好并提示；界面文案本身仍只有简体一套 |
 | 语言的读取 | `AppContainer.apiLanguage` 是偏好的热流（`stateIn`），`ApiClient` / `ApiLineProbe` 取它的 `.value`——不每次请求读存储，切完立刻生效 |
-| 切完重拉 | 分类页 `CategoryViewModel` 订阅那条热流：语言一变就清分类树 + 列表并按新语言重拉（展示方式与选中项保留）；设置页另外清评论缓存（`CommentCache`）。不清的话还留在导航栈里的分类页会继续显示上一门语言的分类名（官方也是 `CLEAR_MAIN_LIST`） |
+| 切完重拉（**目前关着**） | 原本：分类页 `CategoryViewModel` 订阅那条热流，语言一变就清分类树 + 列表并按新语言重拉（展示方式与选中项保留），设置页另外清评论缓存（`CommentCache`）。**用户随后要求"切换语言不清理任何缓存"，所以两处入口都注释掉了**（见 `docs/PROGRESS.md` 下方「后续调整」）：现在切完只影响新请求，已拉过的分类 / 评论保留旧文案，重启应用后内存缓存清空才全量更新 |
 
 ### 3. 代码落点
 
@@ -797,15 +797,67 @@ app/src/main/java/com/haruhi/jmcomic/
 `core/settings/SettingKeys.kt`、`core/settings/SettingsRepository.kt`、
 `feature/api/ApiClient.kt`、`feature/api/ApiLineProbe.kt`、`core/di/AppContainer.kt`（`apiLanguage` 热流）、
 `feature/data/Categories.kt`（`CategoryCache.clearCatalogAndLists`）、
-`feature/ui/ViewModels.kt`（`CategoryViewModel` 订阅语言变化重拉）、
+`feature/ui/ViewModels.kt`（`CategoryViewModel` 的 `language` 参数与 `reloadForLanguage()`，目前无调用点）、
 `feature/ui/SettingsScreen.kt`（`language` 状态 + `setApiLanguage` + `LanguageSection`）、
-`feature/ui/ModeRoot.kt`（接线 + 清缓存回调）、`docs/official-api-2.1.11.md`（新增 §2.6）。
+`feature/ui/ModeRoot.kt`（`apiLanguage` 接线；清缓存回调已注释）、`docs/official-api-2.1.11.md`（新增 §2.6）。
 
 ### 4. 验证
 
 `:app:compileDebugKotlin` ✅、`:app:compileDebugUnitTestKotlin` ✅（本次按用户要求**只保证编译**，
 没有跑测试用例）。自测要点：设置页切到繁中 → 重新进分类页，分类名应是 `漢化` / `單本`
 （简中是 `汉化` / `单本`）；切回简中同理。
+
+### 5. 后续调整（2026-10-20，用户要求）：切语言**不清理任何缓存**
+
+> 用户原话要点：切换语言后不需要清理缓存里的分类和评论（目前不需要清理任何），
+> 但**代码入口注释掉**即可，后续有需求方便放开注释。
+
+所以"清缓存 + 重拉"仍然是写好的，只是两处入口被注释了：
+
+| 位置 | 现在的状态 | 恢复方法 |
+|---|---|---|
+| `ModeRoot.kt`（`SettingsViewModel` 工厂） | `onApiLanguageChanged = { 清分类树/列表 + 清评论 }` 整段注释，走 `SettingsViewModel` 的默认空实现 | 放开那 4 行注释即可（`SettingsViewModel` 里的调用点不用改） |
+| `ViewModels.kt`（`CategoryViewModel.init`） | "订阅语言热流 → `reloadForLanguage()`"那段 `launch` 注释；`language` 参数与 `reloadForLanguage()` 保留并标了 `@Suppress("unused")` | 放开那段注释，同时补回顶部 `import kotlinx.coroutines.flow.drop`（注释里也写了这一句） |
+
+行为影响：切完语言**只影响之后发出的请求**；已经拉过的分类树 / 列表 / 评论保留切换前的文案，
+退出应用（进程结束，内存缓存清空）后再进来才是新语言。设置页「接口语言」的说明文案也已按此改写。
+
+## 改造：重试次数合并 + 图片重试独立（2026-10-20）
+
+用户要求（原话要点）：
+1. 「高级」里的四个请求重试次数（漫画详情 / 搜索 / 章节图片 / 获取分类）**合成一个**
+   「请求重试次数」，凡是接口请求都用它；**可重试的异常类型保持原逻辑不动**；
+2. **新增**一个「图片加载/下载失败重试次数」，且**仅网络超时类异常**才重试。
+
+### 1. 做了什么
+
+| 项 | 做法 |
+|---|---|
+| 设置项 | `SettingKeys.Jm.RETRY_REQUEST`（`retry_request`）+ `RETRY_IMAGE`（`retry_image`）；原来的四个 key 删掉 |
+| 旧值迁移 | `SettingsRepository.migrateLegacyRetryKeys()`：新 key 没值时，按「详情 → 搜索 → 章节图片 → 获取分类」取**第一个存在的**旧值写进去；旧 key 无条件删除。进程启动时与全局作用域迁移一起跑，「恢复默认」后不会复活 |
+| 接口侧 | `ApiClient` 的 `RetrySettings(album/search/chapter/category)` 整个删掉，改成一个 `retryProvider: () -> Int`；8 处调用点统一用 `retryProvider()`。**可重试异常不变**：仍由 `isRetryableApiError()` 判定（超时 + 空体/非 JSON 信封） |
+| 图片侧 | `FileDownloader` 新增 `attemptsProvider`（suspend 现读），把设置里的「重试次数」换算成引擎的「总尝试次数」（`+1`）；默认值 `SettingDefaults.Jm.RETRY_IMAGE = 2`，正好等于合并前引擎的 `maxAttempts = 3`，升级观感不变 |
+| 图片重试判定 | 新 `Throwable.isTimeoutRetryable()`（`core/network/NetworkError.kt`）：**只有网络超时**；原来的 `NetworkError.isRetryable()`（超时 + 连不上 + 5xx/429）删掉。`FileDownloader` 只接网关超时重试，连不上 / 5xx / 内容异常直接判失败 |
+| 生效时机 | 两个都**即时生效**：`AppContainer.jmApi` 每次取用现读接口重试次数；`FileDownloader` 每次下载现读图片重试次数（不用重启） |
+| 设置页 | 「高级」只剩两个滑杆：`请求重试次数`（提示"所有接口共用"）与 `图片加载/下载失败重试次数`（提示"阅读取图与下载共用、只重试网络超时"）；`RetryField` 枚举删除 |
+
+### 2. 代码落点
+
+`core/settings/SettingKeys.kt`、`SettingDefaults.kt`（`RETRY` / 新增 `RETRY_IMAGE`、`SettingLimits.JM_RETRY` 文案）、
+`core/settings/SettingsRepository.kt`（`resolveJmRequestRetry` / `resolveJmImageRetry` / `migrateLegacyRetryKeys`）、
+`feature/api/ApiClient.kt`、`core/network/NetworkError.kt`（`isTimeoutRetryable`）、
+`core/download/FileDownloader.kt`（`attemptsProvider` + 超时判定）、`core/di/AppContainer.kt`、
+`feature/ui/SettingsScreen.kt`（两个 setter + 两个滑杆）、`feature/ui/ModeRoot.kt`。
+
+单测同步：`FileDownloaderTest` 里"503 会重试"的用例改成"503 不重试"，并新增
+"超时会重试且每次重新解析直链"（用拦截器抛 `SocketTimeoutException`，不真等超时）
+与"重试判定表"两个用例。
+
+### 3. 验证
+
+`:app:compileDebugKotlin` ✅、`:app:compileDebugUnitTestKotlin` ✅（本次按用户要求**只保证编译**，
+没有跑测试用例）。自测要点：飞行模式打开本子详情 → 失败；随后改「请求重试次数」，
+再点重试观察请求次数；图片那一项在弱网 / 代理拖慢读超时时最直观。
 
 ## 阶段状态
 
