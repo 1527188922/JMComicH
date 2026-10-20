@@ -531,6 +531,8 @@ fun ModeRoot(
                         // 下载
                         onSetDownloadThreads = vm::setDownloadThreads,
                         onSetDownloadNetwork = vm::setDownloadNetwork,
+                        // 语言：接口返回的中文用简中还是繁中（默认简中）
+                        onSetApiLanguage = vm::setApiLanguage,
                         // 导出默认密码（原文写进加密凭据存储，页面上默认用圆点遮住）
                         onSaveZipPassword = vm::saveZipPassword,
                         onSavePdfPassword = vm::savePdfPassword,
@@ -871,11 +873,13 @@ class ViewModelFactory(
                 entry = searchEntry,
             ) as T
 
-        // 分类页：分类树与列表的缓存在容器上（跨页面存活），ViewModel 只是读写者
+        // 分类页：分类树与列表的缓存在容器上（跨页面存活），ViewModel 只是读写者；
+        // 接口语言的热流也传进去，语言一变这一页就按新语言重拉（分类名是服务端按 lang 给的）
         modelClass.isAssignableFrom(CategoryViewModel::class.java) ->
             CategoryViewModel(
                 repo = container.jmRepository,
                 cache = container.jmCategoryCache,
+                language = container.apiLanguage,
             ) as T
 
         modelClass.isAssignableFrom(FavoritesViewModel::class.java) ->
@@ -893,6 +897,13 @@ class ViewModelFactory(
                 container.secrets,
                 container.apiLineProbe,
                 container.imageLineProbe,
+                // 切完接口语言要清掉带语言的内存缓存（评论；分类树 / 列表由分类页自己
+                // 订阅语言热流重拉，这里再清一次是兜底"分类页的 ViewModel 已经不在"的情况），
+                // 否则用户切回分类页 / 详情页看到的还是上一门语言的中文
+                onApiLanguageChanged = {
+                    container.jmCategoryCache.clearCatalogAndLists()
+                    container.jmCommentCache.clearAll()
+                },
             ) as T
 
         modelClass.isAssignableFrom(ReaderViewModel::class.java) ->

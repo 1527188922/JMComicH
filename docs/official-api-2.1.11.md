@@ -232,6 +232,46 @@ for (const content of possibleKeys) {
 - 非 200/401/400 会**自动重试最多 3 次**（GET/POST 各自独立计数，全局变量，不按接口区分）
 - POST 一律 `multipart/form-data`（`FormData`），数组/嵌套对象走 `fetchPostJson`（`application/json`）
 
+### 2.6 语言（`lang`）：简中 / 繁中怎么切
+
+官方 App 的开关在 **我的 → 設定 → 切換語言**
+（`MemberModal.tsx`：`setting.switch_language`，两个选项
+`setting.traditional_chinese` / `setting.simplified_chinese`），点「確認」后走
+`SettingList.tsx` 的 `switchLanguage()`：
+
+| 动作 | 代码 | 作用 |
+|---|---|---|
+| 换界面文案 | `i18n.changeLanguage("zh-TW" / "zh-CN")` | 只影响 App 自身界面（`assets/locales` 两套） |
+| 记偏好 | `localStorage.setItem("langCode", "0"/"1")`、`setItem("lang", "TW"/"CN")` | ★ 接口用的就是 `lang`（`"0"`=繁中、`"1"`=简中） |
+| 通知服务端 | `dispatch(FETCH_SETTINGS_THUNK(langCode))` → `POST /setting`（`language=0/1`） | 声明过的"另一种切换方式"，切换语言时**确实会打** |
+| 清列表 | `dispatch(CLEAR_MAIN_LIST("mainList"))` | 让首页/列表按新语言重拉 |
+| 重拉封面广告 | `FETCH_COVER_ADS_THUNK({ lang, ipcountry: lang, v })` | 广告文案也跟着语言走 |
+
+让**接口响应里的中文**变简体的只有一件事：`HttpUtil.fetchGet` 给每个 GET 请求自动补
+`lang`（`localStorage.getItem("lang") || "TW"`），响应就是服务端按这个值渲染的。
+`fetchPost`（multipart）**不补** `lang`；广告类接口还会另带 `ipcountry`（同一门语言的取值）。
+
+本工程用到的接口里，受 `lang` 影响的内容：
+
+| 接口 | 受影响的中文 | 依据 |
+|---|---|---|
+| `/categories` | 主分类名、二级分类名（繁中 `漢化` / 简中 `汉化`）、`blocks[].title` | ✅ 实测（`lang=TW` 就是官方那套繁体文案） |
+| `/categories/filter` | 列表项的 `category.title`、`category_sub.title`、`tags` | 响应里的中文都来自服务端 |
+| `/search` | `description`、`category.title`、`tags` | 同上 |
+| `/album` | `tags`、`works`、`actors`、`description` | 同上 |
+| `/forum` | `addtime` 的格式（带 `lang` 是 `2026-10-16 12:34`，不带时实测是英文 `Oct 11, 2026`）、`expinfo.level_name` | ✅ 实测（§6.3 与 §6.6 的差异） |
+| `/setting`（测速探针也打它） | `app_shunts[].title` 等展示文案 | 推断（未逐字对比两门语言） |
+
+> 少带 `lang` 时服务端会怎么处理**没有实测过**（官方 `fetchGet` 从不省略它），
+> 所以复刻时一律显式带上最稳。
+>
+> **本工程的落地（2026-10-20）**：设置页「语言 → 接口语言」默认 **简体中文**；
+> `ApiClient` 在拼 URL 时给所有 GET 请求统一补 `lang`（调用方自己传了就不动）。
+> 切完语言后，分类页订阅的「当前语言」热流会让它清掉分类树 / 列表并按新语言重拉
+> （官方也是 `CLEAR_MAIN_LIST`），设置页另外清评论缓存——否则已经打开过的页面
+> 还会显示上一门语言的分类名 / 等级名。
+> `/chapter_view_template`（旧机制的 HTML 模板）**不带** `lang`，与旧版官方 URL 一致。
+
 ---
 
 ## 3. 开屏「选线路」详解
@@ -762,7 +802,7 @@ related_list, liked, is_favorite, is_aids, price, purchased
 | key | 路径 | 方法 | 参数 | 说明 | 实测 |
 |---|---|---|---|---|---|
 | `API_APP_SETTING` | `/setting` | GET | `app_img_shunt`,`lang`,`t` | 全局设置：`img_host`、版本、`ipcountry`、`ad_cache_version`、`app_shunts`… **选线路后第一个请求** | ✅ |
-| `API_APP_SETTING` | `/setting` | POST | `language`,`t` | 同上（另一种语言切换方式，2.1.11 未调用） | — |
+| `API_APP_SETTING` | `/setting` | POST | `language`,`t` | 同上；**切换语言时会打**（`SettingList.switchLanguage` → `FETCH_SETTINGS_THUNK`，详见 §2.6） | — |
 | `token`（非路径） | — | — | — | `apiPaths.token = "185Hcomic3PAPP7R"`，仅用于签名 | ✅ |
 
 ### 7.2 首页

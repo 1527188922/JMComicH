@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -98,6 +99,23 @@ class SettingsRepository(
                 ).first(),
             ),
         )
+
+    // ------------------------------------------------------------------
+    // 接口语言解析
+    // ------------------------------------------------------------------
+
+    /**
+     * 当前接口语言（请求里的 `lang`）。
+     *
+     * 官方 App 把它存在 `localStorage.lang`，`fetchGet` 会给每个 GET 请求自动补上；
+     * 本工程对应设置页「语言 → 接口语言」，默认简中。
+     * 读取容错见 [ApiLanguage.fromCode]：空值 / 认不出的值都回落到默认。
+     *
+     * 与网络配置分开：它不影响连接怎么建（超时 / 代理 / 下载网络），只影响接口返回的文案。
+     */
+    suspend fun resolveJmApiLanguage(): ApiLanguage = ApiLanguage.fromCode(
+        jmString(SettingKeys.Jm.API_LANGUAGE, ApiLanguage.DEFAULT.code).first(),
+    )
 
     // ------------------------------------------------------------------
     // 旧「全局作用域」的一次性迁移

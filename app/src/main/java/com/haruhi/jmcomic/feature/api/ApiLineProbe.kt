@@ -3,6 +3,7 @@ package com.haruhi.jmcomic.feature.api
 import com.haruhi.jmcomic.core.network.NetworkClientFactory
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.core.network.toUserMessage
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import com.haruhi.jmcomic.core.protocol.Crypto
 import com.haruhi.jmcomic.core.protocol.Defaults
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +63,7 @@ fun speedLevelOf(latencyMs: Long): LineSpeedLevel = when {
  * 接口线路测速。
  *
  * 打法与官方 App 的「我的 → 测速」一致：对每条线路发一次真实请求
- * `GET https://{host}/setting?app_img_shunt=1&lang=TW`（带 `Token` / `Tokenparam` 签名），
+ * `GET https://{host}/setting?app_img_shunt=1&lang={当前语言}`（带 `Token` / `Tokenparam` 签名），
  * 量**首字节耗时**。这个接口**不需要登录**（签名只依赖时间戳），所以用户没登录也能测。
  *
  * 几个刻意的取舍：
@@ -75,6 +76,13 @@ fun speedLevelOf(latencyMs: Long): LineSpeedLevel = when {
 class ApiLineProbe(
     private val clientProvider: () -> OkHttpClient,
     private val timeoutSeconds: Int = DEFAULT_TIMEOUT_SECONDS,
+    /**
+     * 探针请求里的 `lang`（设置页「语言 → 接口语言」，默认简中）。
+     *
+     * 官方测速打的就是带 `lang` 的 `/setting`（`speedTestUtil.ts` 用
+     * `localStorage.getItem("lang")`），这里照样跟当前语言走，抓包对比时与 App 一致。
+     */
+    private val languageProvider: () -> ApiLanguage = { ApiLanguage.DEFAULT },
 ) {
 
     /**
@@ -84,7 +92,7 @@ class ApiLineProbe(
     suspend fun probe(host: String): LineProbeResult = withContext(Dispatchers.IO) {
         val ts = System.currentTimeMillis() / 1000
         val headers = Crypto.headerParams(ts)
-        val url = "https://$host/setting?app_img_shunt=1&lang=TW&t=$ts"
+        val url = "https://$host/setting?app_img_shunt=1&lang=${languageProvider().code}&t=$ts"
         val request = Request.Builder()
             .url(url)
             .header("token", headers.token)

@@ -760,6 +760,53 @@ app/src/main/java/com/haruhi/jmcomic/
 所以新包没装上；抽屉白底/直角、总数、列表/卡片切换这些**还没在真机上用眼睛确认过**，
 按上面的清单第 3、6、7 条补看一眼即可。
 
+## 功能：接口语言（简中 / 繁中）切换（2026-10-20）
+
+用户要求（原话要点）：官方 App 支持简中 / 繁中切换，切到简中后**一些接口响应的中文**
+会变成简中；查一下本工程用到的接口在官方 App 里是怎么控制语言的，本工程也要支持，
+**新增一个配置项、默认简中**。
+
+### 1. 官方 App 是怎么控制的（`.work/src` 里核过源码）
+
+开关在 **我的 → 設定 → 切換語言**（`MemberModal.tsx` 的 `setting.switch_language`），
+确认后走 `SettingList.switchLanguage()`：换 i18n 文案、写
+`localStorage.langCode`（`"0"` 繁 / `"1"` 简）与 `localStorage.lang`（`"TW"` / `"CN"`）、
+`POST /setting`（`language=0/1`）、清列表、按新语言重拉封面广告。
+
+真正影响**接口响应中文**的只有一处：`HttpUtil.fetchGet` 给每个 GET 请求自动补
+`lang = localStorage.lang || "TW"`（POST 不补）。逐接口的影响面与实测依据见
+`docs/official-api-2.1.11.md` §2.6（新增章节）。
+
+### 2. 本工程做了什么
+
+| 项 | 做法 |
+|---|---|
+| 协议枚举 | `core/protocol/ApiScheme.kt` 新增 `ApiLanguage`（`CN` / `TW`，默认 `CN`）；存储值就是协议里的 `"CN"` / `"TW"`，认不出的值一律回落默认 |
+| 设置项 | `SettingKeys.Jm.API_LANGUAGE`（`api_language`），默认简中；`SettingsRepository.resolveJmApiLanguage()` 现读 |
+| 请求侧 | `ApiClient` 新增 `languageProvider`，在 `getDecrypted` 拼 URL 前统一补 `lang`（调用方自己传了就不动），**所有 GET 接口**都带上——`/search`、`/album`、`/categories`、`/categories/filter`、`/forum`、`/comic_read`、`/chapter` |
+| 改掉写死的 `TW` | 删掉 `Defaults.CATEGORY_LANG`；`/categories` 与 `/categories/filter` 不再各自拼 `lang` |
+| 测速探针 | `ApiLineProbe` 的 `/setting` 探针同样带当前语言（官方测速也带 `localStorage.lang`） |
+| 旧模板接口 | `/chapter_view_template` **不带** `lang`（旧版官方 URL 里就没有），保持原样 |
+| 设置页 | 新增「语言」分组 → 「接口语言」（简体中文 / 繁体中文），选中即写偏好并提示；界面文案本身仍只有简体一套 |
+| 语言的读取 | `AppContainer.apiLanguage` 是偏好的热流（`stateIn`），`ApiClient` / `ApiLineProbe` 取它的 `.value`——不每次请求读存储，切完立刻生效 |
+| 切完重拉 | 分类页 `CategoryViewModel` 订阅那条热流：语言一变就清分类树 + 列表并按新语言重拉（展示方式与选中项保留）；设置页另外清评论缓存（`CommentCache`）。不清的话还留在导航栈里的分类页会继续显示上一门语言的分类名（官方也是 `CLEAR_MAIN_LIST`） |
+
+### 3. 代码落点
+
+`core/protocol/ApiScheme.kt`（`ApiLanguage`）、`core/protocol/Defaults.kt`（删 `CATEGORY_LANG`）、
+`core/settings/SettingKeys.kt`、`core/settings/SettingsRepository.kt`、
+`feature/api/ApiClient.kt`、`feature/api/ApiLineProbe.kt`、`core/di/AppContainer.kt`（`apiLanguage` 热流）、
+`feature/data/Categories.kt`（`CategoryCache.clearCatalogAndLists`）、
+`feature/ui/ViewModels.kt`（`CategoryViewModel` 订阅语言变化重拉）、
+`feature/ui/SettingsScreen.kt`（`language` 状态 + `setApiLanguage` + `LanguageSection`）、
+`feature/ui/ModeRoot.kt`（接线 + 清缓存回调）、`docs/official-api-2.1.11.md`（新增 §2.6）。
+
+### 4. 验证
+
+`:app:compileDebugKotlin` ✅、`:app:compileDebugUnitTestKotlin` ✅（本次按用户要求**只保证编译**，
+没有跑测试用例）。自测要点：设置页切到繁中 → 重新进分类页，分类名应是 `漢化` / `單本`
+（简中是 `汉化` / `单本`）；切回简中同理。
+
 ## 阶段状态
 
 | 阶段 | 状态 | 说明 |

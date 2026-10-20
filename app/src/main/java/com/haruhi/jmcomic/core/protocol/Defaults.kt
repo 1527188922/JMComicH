@@ -5,6 +5,10 @@ package com.haruhi.jmcomic.core.protocol
  *
  * 移植自参考实现 `JmcomicService`（常量在 84～99 行，URL 规则在 1478～1483 行）。
  * 这些值全部可以在 JM 模式设置里被用户覆盖（接口线路/图片线路）。
+ *
+ * **例外：接口语言（`lang`）不在这里**——它是用户可选的设置项（默认简中），
+ * 见 [ApiLanguage] 与设置页「语言 → 接口语言」；官方 `fetchGet` 会给每个 GET 请求
+ * 自动补 `lang`，本工程同理在 `ApiClient.getDecrypted` 里统一补。
  */
 object Defaults {
 
@@ -36,15 +40,6 @@ object Defaults {
      * 将来任一边变了都只该改自己那一行。
      */
     const val CATEGORY_PAGE_SIZE = 80
-
-    /**
-     * 分类接口的语言参数。
-     *
-     * 官方 App 的 `fetchGet` 会自动追加 `lang`（默认 `TW`，见文档 §2.4），
-     * 本工程的 `/search` 没带它也一直正常；但分类的**展示名**（`同人` / `漢化` /
-     * `最新A漫`）就是接口直接给的，带上 `TW` 才能拿到官方那套繁体文案。
-     */
-    const val CATEGORY_LANG = "TW"
 
     /** 在线搜索历史条数上限，参考实现 `jm.search.history.limit`。 */
     const val SEARCH_HISTORY_LIMIT = 20

@@ -5,6 +5,7 @@ import com.haruhi.jmcomic.BuildConfig
 import com.haruhi.jmcomic.core.database.JmComicDatabase
 import com.haruhi.jmcomic.core.network.NetworkClientFactory
 import com.haruhi.jmcomic.core.network.NetworkMonitor
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.LineCatalog
 import com.haruhi.jmcomic.core.settings.SecretStore
@@ -15,7 +16,11 @@ import com.haruhi.jmcomic.core.storage.LibraryDirs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -81,6 +86,27 @@ class AppContainer(private val appContext: Context) {
     }
 
     val secrets: SecretStore by lazy { SecretStore(appContext) }
+
+    /**
+     * 当前接口语言（请求里的 `lang`）的**热流**。
+     *
+     * 直接由偏好存储派生：设置页写一次，这里就自动更新——
+     * - 接口请求（[jmApi]）与线路测速（[apiLineProbe]）随时取 `.value`，不用每次读存储；
+     * - 分类页订阅它，语言一变就按新语言重拉分类树与列表
+     *   （还留在导航栈里的分类页不会自己重建，不清就会继续显示上一门语言的分类名）。
+     *
+     * 初始值用同步读到的真实值（不是写死的默认值）：这样 `drop(1)` 的订阅方
+     * 收到的第一项一定是"当前语言"，不会把启动时的初始值误判成一次切换。
+     */
+    val apiLanguage: StateFlow<ApiLanguage> by lazy {
+        settings.jmString(SettingKeys.Jm.API_LANGUAGE, ApiLanguage.DEFAULT.code)
+            .map { ApiLanguage.fromCode(it) }
+            .stateIn(
+                scope = appScope,
+                started = SharingStarted.Eagerly,
+                initialValue = runBlocking { settings.resolveJmApiLanguage() },
+            )
+    }
 
     // ---------------- 下载 ----------------
 
@@ -215,6 +241,8 @@ class AppContainer(private val appContext: Context) {
                 )
             },
             apiDomainProvider = { runBlocking { jmApiDomain() } },
+            // 接口语言（`lang`）：取容器的热流，切完语言新请求立刻生效
+            languageProvider = { apiLanguage.value },
         )
 
     private suspend fun jmRetry(key: String): Int = settings
@@ -238,9 +266,14 @@ class AppContainer(private val appContext: Context) {
      * 客户端取 [httpClient] 的派生：代理 / UA / 拦截器与其它请求一致，只有超时是测速
      * 自己的固定值（见 `ApiLineProbe.DEFAULT_TIMEOUT_SECONDS`）。**每次取用重新派生**，
      * 所以改完超时 / 代理后重启应用即生效，和接口请求的生效时机一致。
+     *
+     * 探针里的 `lang` 跟当前接口语言走（官方测速也是带 `localStorage.lang` 打的）。
      */
     val apiLineProbe: com.haruhi.jmcomic.feature.api.ApiLineProbe
-        get() = com.haruhi.jmcomic.feature.api.ApiLineProbe(clientProvider = { httpClient })
+        get() = com.haruhi.jmcomic.feature.api.ApiLineProbe(
+            clientProvider = { httpClient },
+            languageProvider = { apiLanguage.value },
+        )
 
     /**
      * 图片线路测速（设置页「线路 → 图片线路 → 全部测速」用）。

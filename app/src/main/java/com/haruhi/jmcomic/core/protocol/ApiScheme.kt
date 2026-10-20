@@ -38,6 +38,48 @@ enum class SignatureScheme {
 }
 
 /**
+ * 接口语言，对应请求里的 `lang` 参数（官方 App 的 `localStorage.lang`）。
+ *
+ * 官方 App 的 `HttpUtil.fetchGet` 会给**每一个 GET 请求**自动补一个 `lang`：
+ *
+ * ```ts
+ * if (!searchParams.has("lang")) {
+ *     searchParams.set("lang", localStorage.getItem("lang") || "TW");
+ * }
+ * ```
+ *
+ * 取值只有两个（`Settings → 語言` 切的就是它）：`"TW"` 繁中、`"CN"` 简中；
+ * 服务端据此返回**中文文案的中文形态**，例如 `/categories` 的分类名
+ * （繁中 `漢化` / 简中 `汉化`）、`/album` 的标签与简介、`/search` 的简介。
+ * 少带 `lang` 时服务端会怎么处理**没有实测过**（官方 `fetchGet` 从不省略它），
+ * 所以本工程也一律显式带上（见 `docs/official-api-2.1.11.md` §2.6）。
+ *
+ * 与 [SignatureScheme] / [ChapterSource] 不同，这一项**是用户可选设置**
+ * （设置页「语言 → 接口语言」），默认简中。
+ */
+enum class ApiLanguage(val code: String, val label: String) {
+    /** 简中：`lang=CN`（官方 `localStorage.langCode = "1"`）。 */
+    CN("CN", "简体中文"),
+
+    /** 繁中：`lang=TW`（官方 `localStorage.langCode = "0"`）。 */
+    TW("TW", "繁体中文"),
+    ;
+
+    companion object {
+        /** 默认简中（用户 2026-10-20 要求）。 */
+        val DEFAULT = CN
+
+        /**
+         * 存储值 → 枚举。存的是 [code]（`"CN"` / `"TW"`）而不是序号：
+         * 这样将来枚举调整顺序、或用户从旧版本升上来，读到什么就是什么，
+         * 认不出来的一律回落到 [DEFAULT]（绝不因为脏数据变成"什么都对不上"）。
+         */
+        fun fromCode(code: String?): ApiLanguage =
+            entries.firstOrNull { it.code.equals(code?.trim(), ignoreCase = true) } ?: DEFAULT
+    }
+}
+
+/**
  * 章节图片清单（+ `scramble_id`）用哪一套接口。
  *
  * - [LEGACY_CHAPTER]：`/chapter` 取清单，另外再打一次 `/chapter_view_template` 取 `scramble_id`；

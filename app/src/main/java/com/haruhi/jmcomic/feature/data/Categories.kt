@@ -343,6 +343,18 @@ class CategoryCache {
         lists.clear()
     }
 
+    /**
+     * 只清"跟接口语言有关"的那两部分：分类树与已加载的列表。
+     *
+     * 用于**切换接口语言**：分类名、标签都是服务端按 `lang` 渲染的，切完就过期了，
+     * 必须重拉；而 [viewMode]（列表 / 卡片）与 [selection]（slug）跟语言无关，
+     * 没必要跟着重置——用户切个语言回来发现展示方式被重置了才是真的怪。
+     */
+    fun clearCatalogAndLists() {
+        catalog = null
+        lists.clear()
+    }
+
     companion object {
         /** 最多缓存多少份"分类 + 排序"的列表。 */
         const val MAX_LISTS = 24

@@ -7,6 +7,7 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.database.entity.SearchHistoryEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.core.network.toUserMessage
@@ -45,6 +46,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -1048,6 +1050,14 @@ data class CategoryUiState(
 class CategoryViewModel(
     private val repo: Repository,
     private val cache: CategoryCache,
+    /**
+     * 当前接口语言（`AppContainer.apiLanguage` 的热流）。
+     *
+     * 分类树与分类列表里的中文（分类名、标签）都是服务端按请求时的 `lang` 渲染的：
+     * 用户在设置页切了语言，**这一页还在导航栈里不一定会重建**，所以这里订阅它，
+     * 语言一变就清缓存按新语言重拉（官方 App 切换语言时也是清列表重拉）。
+     */
+    private val language: StateFlow<ApiLanguage> = MutableStateFlow(ApiLanguage.DEFAULT),
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(restoredState())
@@ -1066,6 +1076,34 @@ class CategoryViewModel(
                 loadCatalog()
             }
         }
+        viewModelScope.launch {
+            // 第一项是"进这一页时的当前语言"，不算切换；之后每一项都是用户真的改了设置
+            language.drop(1).collect { reloadForLanguage() }
+        }
+    }
+
+    /**
+     * 接口语言变了：按新语言把这一页整体重来一遍。
+     *
+     * 只清分类这一块的缓存（分类树 + 所有已加载的列表）：评论缓存由设置页那边一并清
+     * （评论不在这一页）。列表用"首屏加载"的形态重拉，失败会落到整块错误态，
+     * 用户可以下拉重试。
+     */
+    private fun reloadForLanguage() {
+        listJob?.cancel()
+        cache.clearCatalogAndLists()
+        val previous = _state.value
+        _state.value = CategoryUiState(
+            catalog = null,
+            // slug 与语言无关，选中项照旧保留（loadCatalog 会再按新分类树修正一次）
+            mainSlug = previous.mainSlug,
+            subSlug = previous.subSlug,
+            sort = previous.sort,
+            catalogLoading = true,
+            // 列表 / 卡片的选择也保留：切个语言不该把展示方式重置掉
+            viewMode = previous.viewMode,
+        )
+        viewModelScope.launch { loadCatalog() }
     }
 
     /** 从缓存恢复"上次离开时"的样子（分类树 / 选中项 / 已加载的列表）。 */

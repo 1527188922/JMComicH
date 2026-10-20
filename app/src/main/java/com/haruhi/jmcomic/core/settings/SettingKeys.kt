@@ -101,6 +101,15 @@ internal object SettingKeys {
          * 线路抖动时多试一次比让用户看到整块错误态更划算。默认与其他接口一致（1 次）。
          */
         const val RETRY_CATEGORY = "retry_category"
+
+        /**
+         * 接口语言：`"CN"` 简中 / `"TW"` 繁中（官方 App 的 `localStorage.lang`）。
+         *
+         * 存的是协议里的**取值**而不是枚举序号（见 `core/protocol/ApiScheme.kt` 的
+         * `ApiLanguage.fromCode`）：脏数据 / 认不出的值一律回落到默认的简中。
+         * 空值（没设置过、或刚「恢复默认」）= 简中。
+         */
+        const val API_LANGUAGE = "api_language"
     }
 
     // ---------------- 敏感凭据（单独的安全存储，键名同样不外露） ----------------

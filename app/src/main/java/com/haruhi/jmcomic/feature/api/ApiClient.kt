@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.api
 
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.core.protocol.ChapterSource
 import com.haruhi.jmcomic.core.protocol.Crypto
@@ -36,7 +37,10 @@ import java.net.URLEncoder
  *   否则响应无法用同一个 key 解密（参考实现 `executeGet` 的注释明确写了这一点）；
  * - 只有**可重试的异常**才重试（网络超时，或响应空体 / 非 JSON 信封这类**内容异常**），
  *   次数来自 `jm.request.{album,search,chapter}` 与单独一项「获取分类」；
- * - 响应 JSON 的 `data` 字段是密文，用 `ts` 派生 AES-256 密钥解密。
+ * - 响应 JSON 的 `data` 字段是密文，用 `ts` 派生 AES-256 密钥解密；
+ * - **每个 GET 请求都带 `lang`**（设置页「语言 → 接口语言」，默认简中）：官方
+ *   `fetchGet` 就是这么做的，`/categories` 的分类名、`/album` 的标签与简介、
+ *   `/search` 的简介等中文文案都跟着它变（见 [ApiLanguage]）。
  *
  * `ts` 的作用域刻意放在**每次请求**（而不是每次尝试）里：
  * 这样重试复用的是同一个 `ts`，满足上面第 1 条契约。
@@ -60,6 +64,16 @@ class ApiClient(
      * 默认 [ChapterSource.DEFAULT]（`/comic_read`，一次拿两样）。
      */
     private val chapterSourceProvider: () -> ChapterSource = { ChapterSource.DEFAULT },
+    /**
+     * 接口语言（请求里的 `lang`），默认 [ApiLanguage.DEFAULT]（简中）。
+     *
+     * 对应官方 App 的 `localStorage.lang`：`HttpUtil.fetchGet` 会给**每个 GET 请求**
+     * 自动补 `lang`（见文档 §2.4 / §2.6），所以这里也统一在 [getDecrypted] 里补一次，
+     * 各接口调用点不再自己拼这个参数。
+     *
+     * 与"每次取用"的其它 provider 一致：改设置后新请求立刻生效，不用重建客户端。
+     */
+    private val languageProvider: () -> ApiLanguage = { ApiLanguage.DEFAULT },
 ) {
 
     /** 各接口的重试次数（0 = 不自动重试）。对应 `jm.request.*.retry`。 */
@@ -115,11 +129,15 @@ class ApiClient(
      * 其余每个主分类带 2～6 个二级分类。真实响应里 `id` / `total_albums` 有数字与字符串
      * 混排，所以 [CategoriesRespDto] 干脆不声明它们（见该类的注释）。
      *
+     * 分类的**展示名**（`同人` / `漢化` / `最新A漫`）就是接口直接给的，会跟着
+     * `lang` 变（简中 `汉化` / 繁中 `漢化`）；`lang` 由 [getDecrypted] 统一补，
+     * 取值来自设置页「语言 → 接口语言」。
+     *
      * 重试次数用「获取分类」那一项（设置页「高级」里单独一项，默认 1 次）。
      */
     suspend fun categories(): CategoriesRespDto = getDecrypted(
         path = "/categories",
-        params = listOf("lang" to Defaults.CATEGORY_LANG),
+        params = emptyList(),
         retry = retryProvider().category,
         decode = { json -> ApiJson.decodeFromString(CategoriesRespDto.serializer(), json) },
     )
@@ -132,7 +150,7 @@ class ApiClient(
      * | `page` | **从 1 开始**，每页固定 80 条 |
      * | `c` | `slug` 或 `slug + "_" + 二级slug`；「最新A漫」传空串 → **不传** |
      * | `o` | 排序码（[CategorySort]）；「最新」是空串 → **不传** |
-     * | `lang` | 固定 [Defaults.CATEGORY_LANG] |
+     * | `lang` | 由 [getDecrypted] 自动补（设置页「语言 → 接口语言」） |
      *
      * 空值参数按官方 `fetchGet` 的规则**直接丢掉**（文档 §2.4）：
      * 传 `o=` / `c=` 空串与不传在服务端语义相同，但少一个参数少一次歧义。
@@ -147,7 +165,6 @@ class ApiClient(
             add("page" to (if (page < 1) 1 else page).toString())
             if (sort.code.isNotBlank()) add("o" to sort.code)
             if (category.isNotBlank()) add("c" to category)
-            add("lang" to Defaults.CATEGORY_LANG)
         },
         retry = retryProvider().category,
         decode = { json -> ApiJson.decodeFromString(CategoryFilterRespDto.serializer(), json) },
@@ -247,6 +264,9 @@ class ApiClient(
      * **重试**：与「章节图片」（`/chapter`）共用一个配置项（`jm.request.chapter.retry`）——
      * 它同样是"打开章节就要打"的前置调用，可重试的异常（超时 / 空体 / 响应不含标记）与
      * 章节接口一致。
+     *
+     * **不带 `lang`**：它不是 `fetchGet` 的 JSON 接口，而是旧版阅读页的 HTML 模板地址，
+     * 官方那一版的 URL 里就没有语言参数（文档 §7.5 也只给 `id`），这里保持原样。
      */
     private suspend fun requestScrambleIdFromTemplate(chapterId: Long): Long {
         val ts = nowSeconds()
@@ -309,6 +329,10 @@ class ApiClient(
      *
      * `ts` 在**进入重试之前**确定一次，重试闭包复用它 —— 这是能解密的前提。
      *
+     * `lang` 也在这里统一补（[withLanguage]）：官方 App 的 `fetchGet` 会给每个 GET
+     * 请求自动追加语言参数（文档 §2.4 / §2.6），所以本工程的所有接口都带它，
+     * 各接口方法只写自己真正的业务参数。
+     *
      * 「发请求 + 解析 JSON 信封」都在重试动作里：线路抖动时接口可能返回**空体**或
      * **非 JSON**（HTML 错误页），重发一次有机会拿到正确响应（见 [parseEnvelope]）。
      * 解密与字段解析留在循环外——那两类失败重试拿不到不同结果。
@@ -323,7 +347,7 @@ class ApiClient(
         // 签名方案与解密方案必须同步取一次：两者都由 ts 派生，取两次可能拿到不同方案
         val scheme = signatureSchemeProvider()
         val headers = Crypto.headerParams(ts, scheme)
-        val url = buildUrl("https://$apiDomain$path", params)
+        val url = buildUrl("https://$apiDomain$path", withLanguage(params))
 
         val encrypted = withTimeoutRetry(
             maxRetry = retry,
@@ -347,6 +371,20 @@ class ApiClient(
             throw NetworkError.Malformed(url, "响应字段与预期不符：${e.message}")
         }
     }
+
+    /**
+     * 给请求参数补上 `lang`（设置页「语言 → 接口语言」）。
+     *
+     * 逐字对齐官方 `HttpUtil.fetchGet` 的两条规则：
+     * 1. 调用方**自己传了** `lang` 就不动它（"若没有才补"）；
+     * 2. 补的值是当前语言（官方是 `localStorage.lang`，本工程是设置项，默认简中）。
+     *
+     * `lang` 排在参数表**最后**，也与官方一致（`searchParams.set` 追加在末尾）。
+     * 服务端对参数顺序不敏感，这里只是让抓包对比官方请求时少一处差异。
+     */
+    private fun withLanguage(params: List<Pair<String, String>>): List<Pair<String, String>> =
+        if (params.any { it.first == "lang" }) params
+        else params + ("lang" to languageProvider().code)
 
     /**
      * 响应体 → JSON 信封的 `data` 字段。

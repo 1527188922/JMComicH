@@ -72,6 +72,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.haruhi.jmcomic.core.protocol.ApiLanguage
 import com.haruhi.jmcomic.core.protocol.ApiLine
 import com.haruhi.jmcomic.core.protocol.ImageLine
 import com.haruhi.jmcomic.core.protocol.LineCatalog
@@ -121,7 +122,7 @@ data class ProxyDraft(
  * 应用设置页（「更多」→「应用设置」）的状态快照。
  *
  * 只放**本轮范围**内的项（计划 §9.3 里"有 UI 就生效"的那批）：
- * 阅读与显示、下载、导出、网络与线路、高级。
+ * 阅读与显示、下载、语言、导出、网络与线路、高级。
  * 书库布局 / 并行下载 / 搜索历史 / 文件夹名长度 / 存储与缓存这几组
  * 要么还没接线、要么没有实现，按计划 §9.5「未实现的功能不展示空页面或占位开关」不做。
  *
@@ -144,6 +145,16 @@ data class SettingsUiState(
     // 下载
     /** 同时下载图片数（**没有"自动"档**）；默认 4 就是滑杆的初始位置。 */
     val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS,
+
+    // 语言
+    /**
+     * 接口语言（请求里的 `lang`）：默认简中。
+     *
+     * 切的是**接口返回的中文文案**（分类名、标签、简介等），不是应用界面语言
+     * ——本工程的界面文案全部写在代码里、只有简体一套。
+     * 对应官方 App 的「設定 → 語言」（`localStorage.lang`）。
+     */
+    val apiLanguage: ApiLanguage = ApiLanguage.DEFAULT,
 
     // 导出默认密码：原文存进加密凭据存储，页面上默认以圆点显示，点"显示"才看得到
     val zipPassword: String = "",
@@ -241,6 +252,21 @@ class SettingsViewModel(
     private val lineProbe: ApiLineProbe,
     /** 图片线路测速（「线路 → 图片线路」面板里的「全部测速」）。 */
     private val imageLineProbe: ImageLineProbe,
+    /**
+     * 切完接口语言之后的收尾：把**带语言的内存缓存**清掉。
+     *
+     * 分类树 / 分类列表（`CategoryCache`）与评论（`CommentCache`）里的中文都是按请求时的
+     * `lang` 拿回来的——分类名（`汉化` / `漢化`）、评论等级名、`addtime` 格式都跟着语言变；
+     * 不清的话用户切完语言再进这些页面看到的还是上一门语言。
+     * 官方 App 切换语言时同样会清列表重拉（`SettingList.switchLanguage` 里的
+     * `CLEAR_MAIN_LIST`）。
+     *
+     * 分类页自己还订阅了 `AppContainer.apiLanguage`（语言一变就重拉整页），
+     * 所以这里主要管两件事：评论缓存，以及"分类页的 ViewModel 已经不在"时的那份分类缓存。
+     *
+     * 用回调而不是直接注入两个缓存：缓存归容器管，设置页只负责"通知它该清了"。
+     */
+    private val onApiLanguageChanged: () -> Unit = {},
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -310,6 +336,7 @@ class SettingsViewModel(
         val pdfPassword = secrets.get(SettingKeys.SECRET_JM_PDF_PASSWORD).orEmpty()
         val apiDomains = settings.jmString(SettingKeys.Jm.API_DOMAINS).first()
         val imageDomains = settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS).first()
+        val apiLanguage = settings.resolveJmApiLanguage()
 
         // 有效值要放在 _state.update 之前算好：update 的 lambda 不是挂起函数，
         // 里面不能直接 await DataStore / Keystore 读取。
@@ -321,6 +348,7 @@ class SettingsViewModel(
                 readingDirection = direction,
                 keepScreenOn = keepScreenOn,
                 downloadThreads = threads,
+                apiLanguage = apiLanguage,
                 zipPassword = zipPassword,
                 pdfPassword = pdfPassword,
                 timeoutSeconds = timeout,
@@ -394,6 +422,30 @@ class SettingsViewModel(
         viewModelScope.launch {
             settings.putJmInt(SettingKeys.Jm.DOWNLOAD_NETWORK, policy.ordinal)
             refreshResolved()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 语言
+    // ------------------------------------------------------------------
+
+    /**
+     * 切换接口语言（`lang`）：**即时生效**，下一次请求就带新语言。
+     *
+     * 生效链路：写存储 → 下一次 `AppContainer.jmApi` 取用时 `languageProvider` 现读 →
+     * `ApiClient` 给请求补上新的 `lang`。这里额外清一次带语言的内存缓存
+     * （见 [onApiLanguageChanged]），否则已经拉过的分类树 / 评论还是上一门语言，
+     * 用户会以为没切成功。
+     *
+     * 同一门语言重复点直接忽略（不写存储、不清缓存）。
+     */
+    fun setApiLanguage(language: ApiLanguage) {
+        if (_state.value.apiLanguage == language) return
+        _state.update { it.copy(apiLanguage = language) }
+        viewModelScope.launch {
+            settings.putJmString(SettingKeys.Jm.API_LANGUAGE, language.code)
+            onApiLanguageChanged()
+            notify("接口语言已切换为${language.label}")
         }
     }
 
@@ -627,6 +679,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             settings.resetJm()
             reload()
+            // 语言偏好也被清掉了（回到默认简中）：带语言的内存缓存同样要失效，
+            // 否则从繁中重置回简中后，已经拉过的分类 / 评论还是繁中。
+            onApiLanguageChanged()
             // 线路偏好被清掉后 reload 会回落到清单里的默认线路（工程当前在用的那两条），
             // 所以「恢复默认」之后线路就是默认线路，不需要额外写一次。
             notify("已恢复默认设置")
@@ -656,6 +711,8 @@ fun SettingsScreen(
     onSetDownloadThreads: (Int) -> Unit,
     /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
     onSetDownloadNetwork: (Int) -> Unit,
+    /** 切换接口语言（`lang`）：选中即生效，下一次请求就带新语言。 */
+    onSetApiLanguage: (ApiLanguage) -> Unit,
     // 导出
     onSaveZipPassword: (String) -> Unit,
     onSavePdfPassword: (String) -> Unit,
@@ -728,6 +785,10 @@ fun SettingsScreen(
                     onSetDownloadThreads = onSetDownloadThreads,
                     onSetDownloadNetwork = onSetDownloadNetwork,
                 )
+                LanguageSection(
+                    state = state,
+                    onSetApiLanguage = onSetApiLanguage,
+                )
                 ExportSection(
                     state = state,
                     onSaveZipPassword = onSaveZipPassword,
@@ -758,7 +819,7 @@ fun SettingsScreen(
     if (confirmReset) {
         ConfirmDialog(
             title = "恢复默认设置？",
-            text = "只重置偏好（阅读方式、下载、导出、网络与线路、高级，还有阅读器里的背景与亮度）。" +
+            text = "只重置偏好（阅读方式、下载、语言、导出、网络与线路、高级，还有阅读器里的背景与亮度）。" +
                 "不会删除书库记录、已下载的文件，也不会清空已保存的密码。",
             confirmText = "恢复默认",
             confirmButtonColors = ButtonDefaults.textButtonColors(
@@ -843,6 +904,33 @@ private fun DownloadSection(
             options = DownloadNetwork.entries.map { it.label },
             selectedIndex = DownloadNetwork.entries.indexOf(state.resolved?.downloadNetwork ?: DownloadNetwork.ANY),
             onSelect = onSetDownloadNetwork,
+        )
+    }
+}
+
+/**
+ * 「语言」分组：接口返回的中文文案用简中还是繁中。
+ *
+ * 对应官方 App 的「設定 → 語言」：它换的不是应用界面语言（本工程界面文案只有简体一套），
+ * 而是请求里的 `lang` —— `/categories` 的分类名、`/album` 的标签与简介、
+ * `/search` 的简介等中文文案都是服务端按它给的（文档 §2.6）。
+ *
+ * 单独一个分组、不塞进「高级」：它不是调参项，是用户在常规设置里就会找的一项。
+ */
+@Composable
+private fun LanguageSection(
+    state: SettingsUiState,
+    onSetApiLanguage: (ApiLanguage) -> Unit,
+) {
+    SettingsSection("语言") {
+        ChoiceRow(
+            title = "接口语言",
+            hint = "接口返回的中文用简中还是繁中（分类名、标签、简介等）",
+            help = "对应官方 App 的设置 → 语言。只影响接口返回的内容文案，应用界面本身只有简体一种。" +
+                "切换后下一次请求就用新语言；已经加载过的分类与评论会被清掉重新拉取。",
+            options = ApiLanguage.entries.map { it.label },
+            selectedIndex = ApiLanguage.entries.indexOf(state.apiLanguage),
+            onSelect = { onSetApiLanguage(ApiLanguage.entries[it]) },
         )
     }
 }
