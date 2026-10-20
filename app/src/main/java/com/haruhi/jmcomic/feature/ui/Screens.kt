@@ -2127,6 +2127,27 @@ fun OnResumeEffect(key: Any? = Unit, block: () -> Unit) {
     }
 }
 
+/**
+ * [OnResumeEffect] 的对称项：页面**不再是当前页**时执行一次。
+ *
+ * 切底栏 tab、进详情页/阅读器、App 退到后台都会触发（都是 `RESUMED → STARTED`）。
+ * 用 `ON_PAUSE` 而不是 `ON_STOP`：切页时旧页面还在演退场动画、组合还没被销毁，
+ * 这正是"把不该留着的东西收起来"的时机——分类页的抽屉就靠它自己缩回去；
+ * 等 `ON_STOP` 时组合可能已经被销毁，协程一并取消，收起动作就做不完整了。
+ */
+@Composable
+fun OnPauseEffect(key: Any? = Unit, block: () -> Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentBlock by rememberUpdatedState(block)
+    DisposableEffect(lifecycleOwner, key) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) currentBlock()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+}
+
 /** 时间戳 → 用户能看懂的短格式。 */
 fun formatTime(epochMillis: Long): String =
     TIME_FORMAT.format(Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()))

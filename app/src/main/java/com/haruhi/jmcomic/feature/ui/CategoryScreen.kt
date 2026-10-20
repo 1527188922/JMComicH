@@ -126,6 +126,15 @@ fun CategoryScreen(
     val scope = rememberCoroutineScope()
     var sortExpanded by remember { mutableStateOf(false) }
 
+    // 抽屉不跟着页面走：切到别的页面（底栏切 tab / 进详情页 / App 退到后台）时要自己收起来（用户要求）。
+    // 不这么做会有两个后果：切走时抽屉跟着旧页面一起滑出去；而 `rememberDrawerState` 内部是
+    // `rememberSaveable`，会把"展开"存进这个 tab 的存档里，下次切回分类页抽屉又自己弹开。
+    // 用 `snapTo` 而不是 `close()`：切页动画一开始就把状态落定，收起动作不依赖动画跑完
+    // （旧页面的组合在退场动画结束时就销毁，这里的协程也会被取消）。
+    OnPauseEffect {
+        if (drawerState.isOpen) scope.launch { drawerState.snapTo(DrawerValue.Closed) }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
