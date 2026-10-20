@@ -422,9 +422,10 @@ private fun CategoryAlbumGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
         state = gridState,
-        contentPadding = PaddingValues(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        // 与书库 / 最近浏览 / 搜索结果页共用同一组间距（用户要求卡片之间更紧、卡片更大）
+        contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+        horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+        verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
         modifier = Modifier.fillMaxSize(),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {

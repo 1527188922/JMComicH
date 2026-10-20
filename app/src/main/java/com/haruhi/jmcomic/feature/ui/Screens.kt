@@ -101,6 +101,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -269,9 +270,9 @@ fun LibraryScreen(
                 else -> LazyVerticalGrid(
                     columns = GridCells.Fixed(columns),
                     state = rememberLazyGridState(),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+                    horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                    verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.albums, key = { it.album.id }) { card ->
@@ -761,9 +762,9 @@ fun RecentScreen(
                 )
                 else -> LazyVerticalGrid(
                     columns = GridCells.Fixed(columns),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+                    horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                    verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.albums, key = { it.album.id }) { card ->
@@ -1594,9 +1595,9 @@ private fun SearchResultGrid(
     LazyVerticalGrid(
         columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
         state = gridState,
-        contentPadding = PaddingValues(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+        horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+        verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
         modifier = Modifier.fillMaxSize(),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -1970,6 +1971,22 @@ internal const val ONLINE_GRID_COLUMNS = 3
 
 /** 卡片封面的宽高比（≈5:7，书库 / 分类页 / 搜索结果页一致）。 */
 internal const val ONLINE_COVER_ASPECT_RATIO = 0.72f
+
+/**
+ * 卡片网格的**卡片之间的间距**（横向与纵向同一值）。
+ *
+ * 2026-10-20 用户要求"卡片之间的间距再小一点，这样卡片面积能大一点"：
+ * 从原来的 10～12dp 收到 6dp。**所有卡片网格共用这一个值**
+ * （书库 / 最近浏览 / 分类页 / 搜索结果页），以后要再调只改这里，
+ * 不会出现某一页还是老间距的割裂感。
+ */
+internal val GRID_CARD_SPACING: Dp = 6.dp
+
+/**
+ * 卡片网格的**外边距**（`contentPadding`）：左右上下都收窄，
+ * 省下来的宽度直接让给卡片（与 [GRID_CARD_SPACING] 一起调）。
+ */
+internal val GRID_CONTENT_PADDING: Dp = 8.dp
 
 /**
  * 「共 N 条 …」+ 右端的**展示方式切换按钮**（两种展示共用这一行）。
