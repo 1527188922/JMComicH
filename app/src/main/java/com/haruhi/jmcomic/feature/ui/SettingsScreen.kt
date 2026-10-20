@@ -1740,24 +1740,49 @@ private fun SliderRow(
             )
         }
         hint?.let { HintText(hint = it, needsRestart = needsRestart) }
-        Slider(
+        DotSlider(
             value = draft,
             onValueChange = { draft = it },
             valueRange = range,
             steps = steps,
             onValueChangeFinished = { onCommit(draft) },
-            thumb = { SliderDotThumb() },
-            track = { sliderState ->
-                SliderDefaults.Track(
-                    sliderState = sliderState,
-                    // 末端收成直角（8dp 那种圆角是朝滑块「鼓」出来的，方向相反），
-                    // 并让轨道一直伸到滑块边缘；露在外面的那截由滑块外围的背景色圆遮成凹弧。
-                    trackInsideCornerSize = 0.dp,
-                    thumbTrackGapSize = 0.dp,
-                )
-            },
         )
     }
+}
+
+/**
+ * 空心圆点滑杆：与 [SliderRow] 共用同一套滑块与轨道样式。
+ *
+ * 阅读器里的亮度滑杆直接复用它，两处观感完全一致，不会各改各的而跑偏。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun DotSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier,
+    steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
+) {
+    Slider(
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = valueRange,
+        steps = steps,
+        onValueChangeFinished = onValueChangeFinished,
+        modifier = modifier,
+        thumb = { SliderDotThumb() },
+        track = { sliderState ->
+            SliderDefaults.Track(
+                sliderState = sliderState,
+                // 末端收成直角（8dp 那种圆角是朝滑块「鼓」出来的，方向相反），
+                // 并让轨道一直伸到滑块边缘；露在外面的那截由滑块外围的背景色圆遮成凹弧。
+                trackInsideCornerSize = 0.dp,
+                thumbTrackGapSize = 0.dp,
+            )
+        },
+    )
 }
 
 /**
@@ -1767,7 +1792,7 @@ private fun SliderRow(
  * 但触控区域是 Slider 自己管的，不受这里尺寸影响，所以 18～24dp 都安全。
  */
 @Composable
-private fun SliderDotThumb() {
+internal fun SliderDotThumb() {
     val primary = MaterialTheme.colorScheme.primary
     val surface = MaterialTheme.colorScheme.surface
     Box(

@@ -732,6 +732,7 @@ fun ModeRoot(
                         onRetryPage = vm::retryPage,
                         onRequestPage = vm::requestPage,
                         onDownloadChapter = vm::downloadCurrentChapter,
+                        onRetryLoad = vm::retryLoad,
                         onToggleCollected = vm::toggleCollected,
                         onSetReadingMode = vm::setReadingMode,
                         onSetDirection = vm::setReadingDirection,

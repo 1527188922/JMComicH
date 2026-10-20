@@ -41,7 +41,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -104,6 +103,8 @@ fun ReaderScreen(
     onRequestPage: (Int) -> Unit,
     onRetryPage: (Int) -> Unit,
     onDownloadChapter: () -> Unit,
+    /** 图片清单都没拿到时，重新加载当前话。 */
+    onRetryLoad: () -> Unit,
     onToggleCollected: () -> Unit,
     onSetReadingMode: (ReadingMode) -> Unit,
     onSetDirection: (ReadingDirection) -> Unit,
@@ -134,7 +135,7 @@ fun ReaderScreen(
                     state = state,
                     contentColor = contentColor,
                     onBack = onBack,
-                    onDownloadChapter = onDownloadChapter,
+                    onRetry = onRetryLoad,
                 )
 
                 state.preferences.mode == ReadingMode.HORIZONTAL -> HorizontalReader(
@@ -620,8 +621,11 @@ private fun ReaderBottomBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            TextButton(onClick = onPreviousChapter, enabled = state.hasPreviousChapter) {
-                Text("上一话", color = contentColor)
+            // 没有上一话/下一话时直接不渲染按钮（用户要求：隐藏而不是灰掉）
+            if (state.hasPreviousChapter) {
+                TextButton(onClick = onPreviousChapter) {
+                    Text("上一话", color = contentColor)
+                }
             }
             TextButton(onClick = onDownloadChapter) {
                 Text("下载本话", color = contentColor)
@@ -642,8 +646,10 @@ private fun ReaderBottomBar(
                     color = contentColor,
                 )
             }
-            TextButton(onClick = onNextChapter, enabled = state.hasNextChapter) {
-                Text("下一话", color = contentColor)
+            if (state.hasNextChapter) {
+                TextButton(onClick = onNextChapter) {
+                    Text("下一话", color = contentColor)
+                }
             }
         }
     }
@@ -654,7 +660,7 @@ private fun ReaderEmptyState(
     state: ReaderUiState,
     contentColor: androidx.compose.ui.graphics.Color,
     onBack: () -> Unit,
-    onDownloadChapter: () -> Unit,
+    onRetry: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -671,9 +677,7 @@ private fun ReaderEmptyState(
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(onClick = onBack) { Text("返回", color = contentColor) }
-            if (state.currentChapter != null) {
-                TextButton(onClick = onDownloadChapter) { Text("下载这一话", color = contentColor) }
-            }
+            TextButton(onClick = onRetry) { Text("重试", color = contentColor) }
         }
     }
 }
@@ -732,6 +736,7 @@ private fun ChapterPickerContent(
  * 计划 §9 第 8 条要求的四项（亮度、背景、阅读方向、屏幕常亮）都在这里，
  * 且**写入 JM 作用域的同一份偏好**，与 JM 设置页共享。
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun ReaderSettingsContent(
     preferences: ReaderPreferences,
@@ -769,7 +774,8 @@ private fun ReaderSettingsContent(
         }
         if (!preferences.brightnessFollowSystem) {
             Text("亮度", style = MaterialTheme.typography.bodyMedium)
-            Slider(
+            // 与应用设置页共用同一套空心圆点滑块 + 轨道样式（DotSlider，见 SettingsScreen.kt）
+            DotSlider(
                 value = preferences.brightnessValue,
                 onValueChange = onSetBrightness,
                 valueRange = 0.05f..1f,

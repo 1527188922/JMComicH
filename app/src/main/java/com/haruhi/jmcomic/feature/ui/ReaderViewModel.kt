@@ -236,7 +236,7 @@ class ReaderViewModel(
                             chapterIndex = index,
                             pages = emptyList(),
                             loading = false,
-                            error = "这一话的图片清单还没拿到，请检查网络后重试",
+                            error = "获取图片清单失败，请检查网络或线路后重试",
                         )
                     }
                     return@launch
@@ -386,6 +386,22 @@ class ReaderViewModel(
     fun openChapterAt(index: Int) {
         _state.update { it.copy(showChapterPicker = false) }
         openChapter(index, restorePosition = false)
+    }
+
+    /**
+     * 重新加载（空状态里的「重试」按钮）。
+     *
+     * 章节已知就重开当前话（「获取图片清单失败」的那次联网补齐会在这里重发）；
+     * 连章节都还没拿到（本子数据缺失）才退回整段 [load]。
+     */
+    fun retryLoad() {
+        loadJob?.cancel()
+        val index = _state.value.chapterIndex
+        if (index in _state.value.chapters.indices) {
+            openChapter(index, restorePosition = false)
+        } else {
+            viewModelScope.launch { load() }
+        }
     }
 
     fun previousChapter() {
