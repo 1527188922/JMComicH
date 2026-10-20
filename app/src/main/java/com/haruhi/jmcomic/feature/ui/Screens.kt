@@ -42,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.List as CategoryListIcon
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
@@ -112,6 +113,9 @@ import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.feature.data.OnlineSearchItem
 import com.haruhi.jmcomic.feature.data.OnlineSearchResult
+import com.haruhi.jmcomic.feature.data.OnlineViewMode
+import com.haruhi.jmcomic.feature.data.updateLabel
+import com.haruhi.jmcomic.ui.theme.GridViewIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -1260,8 +1264,12 @@ private fun SearchSortChips(selected: SearchSort, onSelect: (SearchSort) -> Unit
  * - **本页自带搜索输入框**（用户要求）：已经是结果页了，改完关键字点搜索是**原地重搜**，
  *   不再往栈上再压一层结果页；
  * - 支持下拉释放刷新，已经在请求中时不会重复发（见 `OnlineSearchViewModel.refresh`）；
- * - 每张卡右下角一颗动作按钮：未入库是「加入书库」，已入库是「✓ 已入库」，
+ * - **列表 / 卡片两种展示，默认卡片**（用户 2026-10-20 要求，与分类页同一套）：
+ *   切换按钮在「共 N 条」那一行的右端；列表里展示更新时间（没有就用上架日期），
+ *   卡片只有封面 + 名称 + 更新时间；
+ * - 列表模式下每张卡右下角一颗动作按钮：未入库是「加入书库」，已入库是「✓ 已入库」，
  *   点「已入库」等于**移出书库**，先弹一次确认框（用户本轮要求）。
+ *   **卡片模式不放入库按钮**（"区域优先"少露信息）：要入库切列表或进详情页。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1274,6 +1282,8 @@ fun SearchResultsScreen(
     onSortChange: (SearchSort) -> Unit,
     onLoadMore: () -> Unit,
     onRevealMore: () -> Unit,
+    /** 切换「卡片 / 列表」展示方式（用户 2026-10-20 要求，默认卡片）。 */
+    onToggleViewMode: () -> Unit,
     onOpenAlbum: (Long) -> Unit,
     onAddToLibrary: (OnlineSearchItem) -> Unit,
     onRemoveFromLibrary: (OnlineSearchItem) -> Unit,
@@ -1367,9 +1377,10 @@ fun SearchResultsScreen(
                         result.items.isEmpty() -> ScrollableFullScreenBox {
                             EmptyBox(title = "没有搜到结果", hint = "换个关键字试试")
                         }
-                        else -> SearchResultList(
+                        else -> SearchResultBody(
                             state = state,
                             result = result,
+                            onToggleViewMode = onToggleViewMode,
                             onLoadMore = onLoadMore,
                             onRevealMore = onRevealMore,
                             onOpenAlbum = onOpenAlbum,
@@ -1438,11 +1449,17 @@ internal fun ScrollableFullScreenBox(content: @Composable () -> Unit) {
     }
 }
 
-/** 结果列表本体（抽出来只为让 [SearchResultsScreen] 的分支读起来短一点）。 */
+/**
+ * 结果列表本体：按展示方式分派到**列表**或**卡片**（用户 2026-10-20 要求可切换、默认卡片）。
+ *
+ * 两种模式共用：标题行（[OnlineCountBar]）、已展示条数的切分、页脚（[SearchResultFooter]）。
+ * 卡片模式只画"名称 + 更新时间"（与分类页一致），入库 / 移出这些动作只在列表模式里给。
+ */
 @Composable
-private fun SearchResultList(
+private fun SearchResultBody(
     state: OnlineSearchUiState,
     result: OnlineSearchResult,
+    onToggleViewMode: () -> Unit,
     onLoadMore: () -> Unit,
     onRevealMore: () -> Unit,
     onOpenAlbum: (Long) -> Unit,
@@ -1450,7 +1467,6 @@ private fun SearchResultList(
     /** 点某一行「已入库」：把这一本交给上层弹"移出书库"确认框（本层不自己弹）。 */
     onRequestRemove: (OnlineSearchItem) -> Unit,
 ) {
-    val listState = rememberLazyListState()
     // key 必须带上 `result.items` 本身：加入书库后 item 的 `existsLocal` 会变，
     // 而"已显示条数"和"总条数"都不变——只按这两个 key 缓存的话，
     // 拿到的永远是加库之前那一份列表，表现为"点了加入书库，按钮不变，
@@ -1459,25 +1475,70 @@ private fun SearchResultList(
         result.items.take(state.visibleCount)
     }
 
-    // 用户要求第 5 点：**最后一条进入可视范围就继续追加**，
-    // 而不是等用户滑到底再点按钮。这样列表是"连续滚不完"的观感，
-    // 同时首屏只渲染 10 条、不会一次性发起几十个封面请求。
-    //
-    // 两个坑，都已踩过：
-    // 1. 不要用 `derivedStateOf { listState.layoutInfo... }`：读 layoutInfo 拿到的
-    //    是**过期快照**，只有别的重组顺带读到它时才重算，表现为"必须先滑回顶部
-    //    再滑到底才加载"；
-    // 2. `LaunchedEffect` 的 key **不能包含当前批次条数**：每次追加都会取消并
-    //    重启这个 effect，正在进行的滚动检测被打断，于是永远停在某一批。
-    //    所以 key 只放"列表身份"，判定条件通过 rememberUpdatedState 读实时值，
-    //    判定本身用 [OnlineSearchUiState.shouldRevealMore]（有单测）。
-    val currentState by rememberUpdatedState(state)
-    LaunchedEffect(result.query, result.page, result.fromHistory) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-            .distinctUntilChanged()
-            .collect { lastVisibleIndex ->
-                if (currentState.shouldRevealMore(lastVisibleIndex)) onRevealMore()
-            }
+    when (state.viewMode) {
+        OnlineViewMode.LIST -> SearchResultList(
+            state = state,
+            result = result,
+            visibleItems = visibleItems,
+            onToggleViewMode = onToggleViewMode,
+            onLoadMore = onLoadMore,
+            onRevealMore = onRevealMore,
+            onOpenAlbum = onOpenAlbum,
+            onAddToLibrary = onAddToLibrary,
+            onRequestRemove = onRequestRemove,
+        )
+
+        OnlineViewMode.CARD -> SearchResultGrid(
+            state = state,
+            result = result,
+            visibleItems = visibleItems,
+            onToggleViewMode = onToggleViewMode,
+            onLoadMore = onLoadMore,
+            onRevealMore = onRevealMore,
+            onOpenAlbum = onOpenAlbum,
+        )
+    }
+}
+
+/** 结果页顶部那行文案：「共 N 条 · 第 x/y 页 [· 已显示 a/b]」。 */
+private fun searchCountText(
+    state: OnlineSearchUiState,
+    result: OnlineSearchResult,
+    visibleCount: Int,
+): String = buildString {
+    if (result.fromHistory) {
+        append("搜索历史快照 · 共 ${result.total} 条")
+    } else {
+        append("共 ${result.total} 条 · 第 ${result.page}/${result.totalPages} 页")
+    }
+    // 让用户知道下面还有多少没展开
+    if (state.remainingCount > 0) {
+        append(" · 已显示 $visibleCount/${result.items.size}")
+    }
+}
+
+/**
+ * 列表模式：一行一本（封面 + 标题 + JM 号 + 更新时间 + 作者 + 入库动作）。
+ *
+ * 用户 2026-10-20 要求：列表里**要展示更新时间**（没有更新时间就展示上架日期，
+ * 见 `updateLabel`）——与分类页的列表完全一致。
+ */
+@Composable
+private fun SearchResultList(
+    state: OnlineSearchUiState,
+    result: OnlineSearchResult,
+    visibleItems: List<OnlineSearchItem>,
+    onToggleViewMode: () -> Unit,
+    onLoadMore: () -> Unit,
+    onRevealMore: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+    onAddToLibrary: (OnlineSearchItem) -> Unit,
+    onRequestRemove: (OnlineSearchItem) -> Unit,
+) {
+    val listState = rememberLazyListState()
+
+    RevealMoreOnScroll(state = state, result = result, onRevealMore = onRevealMore) {
+        listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
     }
 
     LazyColumn(
@@ -1487,20 +1548,10 @@ private fun SearchResultList(
         modifier = Modifier.fillMaxSize(),
     ) {
         item {
-            Text(
-                text = buildString {
-                    if (result.fromHistory) {
-                        append("搜索历史快照 · 共 ${result.total} 条")
-                    } else {
-                        append("共 ${result.total} 条 · 第 ${result.page}/${result.totalPages} 页")
-                    }
-                    // 让用户知道下面还有多少没展开
-                    if (state.remainingCount > 0) {
-                        append(" · 已显示 ${visibleItems.size}/${result.items.size}")
-                    }
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            OnlineCountBar(
+                text = searchCountText(state, result, visibleItems.size),
+                viewMode = state.viewMode,
+                onToggleViewMode = onToggleViewMode,
             )
         }
         items(visibleItems, key = { it.id }) { item ->
@@ -1510,51 +1561,137 @@ private fun SearchResultList(
                 adding = item.id in state.addingIds,
                 // 移出书库正在删本地文件（见 VM 的 removeFromLibrary）
                 removing = item.id in state.removingIds,
+                // 用户要求：列表里展示更新时间（没有更新时间就用上架日期）
+                updateLabel = item.updateLabel(),
                 onOpen = { onOpenAlbum(item.id) },
                 onAddToLibrary = { onAddToLibrary(item) },
                 onRequestRemove = { onRequestRemove(item) },
             )
         }
-        when {
-            state.loadingMore -> item {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-
-            // 本页还有没展示完的：继续下滑会自动追加
-            state.remainingCount > 0 -> item {
-                Text(
-                    text = "继续下滑显示更多（还有 ${state.remainingCount} 条）",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                )
-            }
-
-            // 本页全部展示完，才出现"加载下一页"（用户要求第 5 点）
-            !result.fromHistory && result.page < result.totalPages -> item {
-                TextButton(
-                    onClick = onLoadMore,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("加载下一页（第 ${result.page + 1} 页）") }
-            }
-
-            else -> item {
-                Text(
-                    text = if (result.fromHistory) {
-                        "历史快照已全部显示"
-                    } else {
-                        "已显示全部结果"
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                )
-            }
+        item {
+            SearchResultFooter(state = state, result = result, onLoadMore = onLoadMore)
         }
+    }
+}
+
+/** 卡片模式：**每行三个**，每张卡只有封面 + 名称 + 更新时间（与分类页同一张卡）。 */
+@Composable
+private fun SearchResultGrid(
+    state: OnlineSearchUiState,
+    result: OnlineSearchResult,
+    visibleItems: List<OnlineSearchItem>,
+    onToggleViewMode: () -> Unit,
+    onLoadMore: () -> Unit,
+    onRevealMore: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    val gridState = rememberLazyGridState()
+
+    RevealMoreOnScroll(state = state, result = result, onRevealMore = onRevealMore) {
+        gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+    }
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
+        state = gridState,
+        contentPadding = PaddingValues(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            OnlineCountBar(
+                text = searchCountText(state, result, visibleItems.size),
+                viewMode = state.viewMode,
+                onToggleViewMode = onToggleViewMode,
+            )
+        }
+        items(visibleItems, key = { it.id }) { item ->
+            // 卡片只展示名称 + 更新时间（用户要求）；入库 / 移出切到列表模式或详情页再做
+            OnlineGridCard(item = item, onOpen = { onOpenAlbum(item.id) })
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SearchResultFooter(state = state, result = result, onLoadMore = onLoadMore)
+        }
+    }
+}
+
+/**
+ * 结果页页脚：加载中 / 继续下滑 / 加载下一页 / 已经到底。
+ *
+ * 列表与卡片两种展示共用（卡片模式下它跨满一行）。
+ */
+@Composable
+private fun SearchResultFooter(
+    state: OnlineSearchUiState,
+    result: OnlineSearchResult,
+    onLoadMore: () -> Unit,
+) {
+    when {
+        state.loadingMore -> LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+
+        // 本页还有没展示完的：继续下滑会自动追加
+        state.remainingCount > 0 -> Text(
+            text = "继续下滑显示更多（还有 ${state.remainingCount} 条）",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+        )
+
+        // 本页全部展示完，才出现"加载下一页"（用户要求第 5 点）
+        !result.fromHistory && result.page < result.totalPages -> TextButton(
+            onClick = onLoadMore,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("加载下一页（第 ${result.page + 1} 页）") }
+
+        else -> Text(
+            text = if (result.fromHistory) {
+                "历史快照已全部显示"
+            } else {
+                "已显示全部结果"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+        )
+    }
+}
+
+/**
+ * 「最后一条进入可视范围就继续追加」（用户要求第 5 点），列表 / 卡片两种模式共用。
+ *
+ * 这样列表是"连续滚不完"的观感，同时首屏只渲染 10 条、不会一次性发起几十个封面请求。
+ *
+ * 两个坑，都已踩过：
+ * 1. 不要用 `derivedStateOf { listState.layoutInfo... }`：读 layoutInfo 拿到的
+ *    是**过期快照**，只有别的重组顺带读到它时才重算，表现为"必须先滑回顶部
+ *    再滑到底才加载"；
+ * 2. `LaunchedEffect` 的 key **不能包含当前批次条数**：每次追加都会取消并
+ *    重启这个 effect，正在进行的滚动检测被打断，于是永远停在某一批。
+ *    所以 key 只放"列表身份"，判定条件通过 rememberUpdatedState 读实时值，
+ *    判定本身用 [OnlineSearchUiState.shouldRevealMore]（有单测）。
+ *
+ * @param lastVisibleIndex 读 `layoutInfo` 里最后一个可见项的 index（列表与网格各读各的），
+ *        还没布局时返回 -1。
+ */
+@Composable
+private fun RevealMoreOnScroll(
+    state: OnlineSearchUiState,
+    result: OnlineSearchResult,
+    onRevealMore: () -> Unit,
+    lastVisibleIndex: () -> Int,
+) {
+    val currentState by rememberUpdatedState(state)
+    LaunchedEffect(result.query, result.page, result.fromHistory) {
+        snapshotFlow(lastVisibleIndex)
+            .distinctUntilChanged()
+            .collect { index ->
+                if (currentState.shouldRevealMore(index)) onRevealMore()
+            }
     }
 }
 
@@ -1678,8 +1815,9 @@ internal fun OnlineResultRow(
     /**
      * 更新时间文案（`2026-10-19`），为 null 时不展示。
      *
-     * 分类页传它（用户要求"展示信息还需要展示更新时间，没有就展示添加时间"）；
-     * 搜索结果页不传，那一行保持原样。
+     * 分类页与搜索结果页**都传**它（用户要求"展示更新时间，没有就展示添加时间"）：
+     * 值的来源是 `OnlineSearchItem.updateLabel()`——优先 `update_at`，
+     * 没有才回落到上架日期 `adddate`。
      */
     updateLabel: String? = null,
     /**
@@ -1818,6 +1956,118 @@ internal fun OnlineResultRow(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// ======================================================================
+// 在线列表的公共件（分类页与搜索结果页共用）
+// ======================================================================
+
+/** 卡片模式的列数：分类页与搜索结果页都是**每行三个**（与书库网格同一套观感）。 */
+internal const val ONLINE_GRID_COLUMNS = 3
+
+/** 卡片封面的宽高比（≈5:7，书库 / 分类页 / 搜索结果页一致）。 */
+internal const val ONLINE_COVER_ASPECT_RATIO = 0.72f
+
+/**
+ * 「共 N 条 …」+ 右端的**展示方式切换按钮**（两种展示共用这一行）。
+ *
+ * 分类页与搜索结果页共用它（用户 2026-10-20 要求搜索结果也能切卡片 / 列表）：
+ * 列表模式下它是 `LazyColumn` 的第一项，卡片模式下是跨满整行的 `item(span = full)`。
+ *
+ * 图标画的是**点下去会切到**的那个模式：列表时显示网格（切卡片）、卡片时显示列表
+ * （切列表）——与大多数文件管理器一致。
+ */
+@Composable
+internal fun OnlineCountBar(
+    text: String,
+    viewMode: OnlineViewMode,
+    onToggleViewMode: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(
+            onClick = onToggleViewMode,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = when (viewMode) {
+                    OnlineViewMode.LIST -> GridViewIcon
+                    // `List` 在 core 图标里是"横向三条"，与 grid 图标成对；
+                    // 这里用别名导入（`CategoryListIcon`），避免和 Kotlin 的 `List` 撞名
+                    OnlineViewMode.CARD -> Icons.AutoMirrored.Filled.CategoryListIcon
+                },
+                contentDescription = when (viewMode) {
+                    OnlineViewMode.LIST -> "切换为卡片"
+                    OnlineViewMode.CARD -> "切换为列表"
+                },
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 卡片模式的一张卡：封面 + 两行标题 + 更新时间。
+ *
+ * **"展示区域优先"的取舍**（用户 2026-10-20 要求）：卡片里只放**名称与更新时间**，
+ * 作者、JM 号、入库按钮一概不放——想看详细信息切列表模式，或点进详情页。
+ * 分类页与搜索结果页用的是同一张卡，两处观感完全一致。
+ *
+ * 时间文案走 [updateLabel]：优先 `update_at`，没有才回落到上架日期 `adddate`。
+ */
+@Composable
+internal fun OnlineGridCard(
+    item: OnlineSearchItem,
+    onOpen: () -> Unit,
+) {
+    Card(
+        onClick = onOpen,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(ONLINE_COVER_ASPECT_RATIO)
+                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            // 封面统一走 Cover（CONVENTIONS 第 1 条）：应用级加载器 + covers 磁盘缓存
+            Cover(
+                albumId = item.id,
+                contentDescription = item.name,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Column(modifier = Modifier.padding(8.dp)) {
+            Text(
+                text = item.name.orEmpty().ifBlank { "JM${item.id}" },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            item.updateLabel()?.let { label ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "更新 $label",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
         }
     }

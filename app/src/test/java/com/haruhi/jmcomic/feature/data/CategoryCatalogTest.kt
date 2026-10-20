@@ -162,9 +162,9 @@ class CategoryCatalogTest {
     @Test
     fun `view mode defaults to card and toggles between both`() {
         // 用户 2026-10-20 要求：分类页默认卡片展示
-        assertThat(CategoryViewMode.DEFAULT).isEqualTo(CategoryViewMode.CARD)
-        assertThat(CategoryViewMode.LIST.toggled()).isEqualTo(CategoryViewMode.CARD)
-        assertThat(CategoryViewMode.CARD.toggled()).isEqualTo(CategoryViewMode.LIST)
+        assertThat(OnlineViewMode.DEFAULT).isEqualTo(OnlineViewMode.CARD)
+        assertThat(OnlineViewMode.LIST.toggled()).isEqualTo(OnlineViewMode.CARD)
+        assertThat(OnlineViewMode.CARD.toggled()).isEqualTo(OnlineViewMode.LIST)
     }
 
     // ------------------------------------------------------------------
@@ -412,14 +412,14 @@ class CategoryCatalogTest {
         val selection = CategorySelection("doujin", "", CategorySort.LIKE)
         cache.saveCatalog(buildCategoryCatalog(listOf(group("同人", "doujin"))))
         cache.saveSelection(selection)
-        cache.saveViewMode(CategoryViewMode.CARD)
+        cache.saveViewMode(OnlineViewMode.CARD)
         cache.putSnapshot(selection, snapshot(page = 1))
 
         cache.clear()
 
         assertThat(cache.catalog).isNull()
         assertThat(cache.selection).isEqualTo(CategorySelection.DEFAULT)
-        assertThat(cache.viewMode).isEqualTo(CategoryViewMode.DEFAULT)
+        assertThat(cache.viewMode).isEqualTo(OnlineViewMode.DEFAULT)
         assertThat(cache.snapshot(selection)).isNull()
     }
 
@@ -427,10 +427,10 @@ class CategoryCatalogTest {
     fun `cache remembers the chosen view mode`() {
         val cache = CategoryCache()
         // 默认卡片（用户 2026-10-20 要求）
-        assertThat(cache.viewMode).isEqualTo(CategoryViewMode.CARD)
+        assertThat(cache.viewMode).isEqualTo(OnlineViewMode.CARD)
 
-        cache.saveViewMode(CategoryViewMode.LIST)
+        cache.saveViewMode(OnlineViewMode.LIST)
 
-        assertThat(cache.viewMode).isEqualTo(CategoryViewMode.LIST)
+        assertThat(cache.viewMode).isEqualTo(OnlineViewMode.LIST)
     }
 }

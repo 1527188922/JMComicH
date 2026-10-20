@@ -248,25 +248,26 @@ data class CategoryListSnapshot(
 )
 
 /**
- * 分类页的展示方式（用户要求：列表 / 卡片，卡片每行三个）。
+ * 在线列表的展示方式：**一行一本**（列表）或 **三列封面网格**（卡片）。
  *
- * **默认卡片**（用户 2026-10-20 要求）：分类页第一次打开就是三列封面网格，
- * 想看一行一本的详情信息再点右上角那颗按钮切到列表。
+ * **分类页与搜索结果页共用**（用户 2026-10-20 要求搜索结果也要能切），
+ * 两页都**默认卡片**，切换按钮都放在「共 N 条」那一行的右端。
  *
- * 放在数据层是因为它要跟着 [CategoryCache] 跨页面存活；界面只用它的两个取值。
+ * 放在数据层是因为分类页的这个选择要跟着 [CategoryCache] 跨页面存活；
+ * 搜索结果页不用缓存，直接放在它自己的 `OnlineSearchUiState` 里。
  */
-enum class CategoryViewMode {
-    /** 一行一本：封面 + 标题 + JM 号 + 作者 + 更新时间。 */
+enum class OnlineViewMode {
+    /** 一行一本：封面 + 标题 + JM 号 + 更新时间 + 作者。 */
     LIST,
 
-    /** 三列网格：封面 + 标题 + 更新时间。 */
+    /** 三列网格：封面 + 标题 + 更新时间（"区域优先"少露信息，与分类页一致）。 */
     CARD,
     ;
 
-    fun toggled(): CategoryViewMode = if (this == LIST) CARD else LIST
+    fun toggled(): OnlineViewMode = if (this == LIST) CARD else LIST
 
     companion object {
-        /** 首次进入分类页时用卡片模式（用户要求）。 */
+        /** 首次进入用卡片模式（用户要求）。 */
         val DEFAULT = CARD
     }
 }
@@ -300,7 +301,7 @@ class CategoryCache {
         private set
 
     /** 上次用的展示方式（列表 / 卡片）：切页面回来不用再切一遍。 */
-    var viewMode: CategoryViewMode = CategoryViewMode.DEFAULT
+    var viewMode: OnlineViewMode = OnlineViewMode.DEFAULT
         private set
 
     private val lists = LinkedHashMap<String, CategoryListSnapshot>()
@@ -313,7 +314,7 @@ class CategoryCache {
         this.selection = selection
     }
 
-    fun saveViewMode(mode: CategoryViewMode) {
+    fun saveViewMode(mode: OnlineViewMode) {
         this.viewMode = mode
     }
 
@@ -339,7 +340,7 @@ class CategoryCache {
     fun clear() {
         catalog = null
         selection = CategorySelection.DEFAULT
-        viewMode = CategoryViewMode.DEFAULT
+        viewMode = OnlineViewMode.DEFAULT
         lists.clear()
     }
 

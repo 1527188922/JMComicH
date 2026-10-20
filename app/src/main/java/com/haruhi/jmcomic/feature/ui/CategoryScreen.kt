@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,13 +27,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List as CategoryListIcon
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
@@ -73,10 +69,8 @@ import androidx.compose.ui.unit.dp
 import com.haruhi.jmcomic.core.protocol.CategorySort
 import com.haruhi.jmcomic.feature.data.CategoryGroup
 import com.haruhi.jmcomic.feature.data.CategorySub
-import com.haruhi.jmcomic.feature.data.CategoryViewMode
-import com.haruhi.jmcomic.feature.data.OnlineSearchItem
+import com.haruhi.jmcomic.feature.data.OnlineViewMode
 import com.haruhi.jmcomic.feature.data.updateLabel
-import com.haruhi.jmcomic.ui.theme.GridViewIcon
 import kotlinx.coroutines.launch
 
 /**
@@ -308,14 +302,14 @@ private fun CategoryBody(
             state.loading || (state.catalogLoading && state.albums.isEmpty()) -> LoadingBox()
 
             state.albums.isNotEmpty() -> when (state.viewMode) {
-                CategoryViewMode.LIST -> CategoryAlbumList(
+                OnlineViewMode.LIST -> CategoryAlbumList(
                     state = state,
                     onLoadMore = onLoadMore,
                     onToggleViewMode = onToggleViewMode,
                     onOpenAlbum = onOpenAlbum,
                 )
 
-                CategoryViewMode.CARD -> CategoryAlbumGrid(
+                OnlineViewMode.CARD -> CategoryAlbumGrid(
                     state = state,
                     onLoadMore = onLoadMore,
                     onToggleViewMode = onToggleViewMode,
@@ -345,49 +339,25 @@ private fun CategoryBody(
 }
 
 /**
- * 「共 N 条 · 第 x/y 页」+ 右端的**展示方式切换按钮**（用户要求：同一行）。
+ * 「共 N 条 · 第 x/y 页」+ 右端的**展示方式切换按钮**。
  *
- * 两种模式共用这一行，所以抽出来；列表模式下它是 `LazyColumn` 的第一项，
- * 卡片模式下是跨满三列的 `item(span = full)`。
+ * 这一行本身（`OnlineCountBar`）与下面的卡片（`OnlineGridCard`）都在 `Screens.kt` 里：
+ * 搜索结果的列表 / 卡片页要用同一套（用户 2026-10-20 要求），两页共用一个实现，
+ * 观感与切换行为才不会各改各的跑偏。
  */
 @Composable
 private fun CategoryCountBar(
     state: CategoryUiState,
     onToggleViewMode: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = buildString {
-                append("共 ${state.total} 条")
-                if (state.page > 0) append(" · 第 ${state.page}/${state.totalPages} 页")
-            },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(
-            onClick = onToggleViewMode,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                // 图标画的是**点下去会切到**的那个模式：列表时显示网格（切卡片），
-                // 卡片时显示列表（切列表）——和大多数文件管理器一致
-                imageVector = when (state.viewMode) {
-                    CategoryViewMode.LIST -> GridViewIcon
-                    CategoryViewMode.CARD -> Icons.AutoMirrored.Filled.CategoryListIcon
-                },
-                contentDescription = when (state.viewMode) {
-                    CategoryViewMode.LIST -> "切换为卡片"
-                    CategoryViewMode.CARD -> "切换为列表"
-                },
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-    }
+    OnlineCountBar(
+        text = buildString {
+            append("共 ${state.total} 条")
+            if (state.page > 0) append(" · 第 ${state.page}/${state.totalPages} 页")
+        },
+        viewMode = state.viewMode,
+        onToggleViewMode = onToggleViewMode,
+    )
 }
 
 /**
@@ -436,8 +406,8 @@ private fun CategoryAlbumList(
 /**
  * 卡片模式：**每行三个**（用户要求）。
  *
- * 卡片结构与书库的 `AlbumGridCard` 一致（白卡 + 封面 + 两行标题），
- * 只在标题下面多一行更新时间。
+ * 卡片由 `Screens.kt` 的 `OnlineGridCard` 画（封面 + 两行标题 + 更新时间），
+ * 与搜索结果页的卡片是**同一个实现**，两处观感一致。
  */
 @Composable
 private fun CategoryAlbumGrid(
@@ -450,7 +420,7 @@ private fun CategoryAlbumGrid(
     SelectionChangeEffect(state.selection.cacheKey) { gridState.scrollToItem(0) }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(GRID_COLUMNS),
+        columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
         state = gridState,
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -462,58 +432,11 @@ private fun CategoryAlbumGrid(
         }
 
         items(state.albums, key = { it.id }) { item ->
-            CategoryGridCard(item = item, onOpen = { onOpenAlbum(item.id) })
+            OnlineGridCard(item = item, onOpen = { onOpenAlbum(item.id) })
         }
 
         item(span = { GridItemSpan(maxLineSpan) }) {
             CategoryFooter(state = state, onLoadMore = onLoadMore)
-        }
-    }
-}
-
-/** 卡片模式下的一张卡：封面 + 两行标题 + 更新时间。 */
-@Composable
-private fun CategoryGridCard(
-    item: OnlineSearchItem,
-    onOpen: () -> Unit,
-) {
-    Card(
-        onClick = onOpen,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(COVER_ASPECT_RATIO)
-                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
-                .background(MaterialTheme.colorScheme.surface),
-        ) {
-            // 封面统一走 Cover（CONVENTIONS 第 1 条）：应用级加载器 + covers 磁盘缓存
-            Cover(
-                albumId = item.id,
-                contentDescription = item.name,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                text = item.name.orEmpty().ifBlank { "JM${item.id}" },
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            item.updateLabel()?.let { label ->
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "更新 $label",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
         }
     }
 }
@@ -603,12 +526,6 @@ private fun CategoryMessageState(
         }
     }
 }
-
-/** 卡片每行几个（用户要求三个）。 */
-private const val GRID_COLUMNS = 3
-
-/** 卡片封面的宽高比：与书库网格一致（0.72 ≈ 3:4.2）。 */
-private const val COVER_ASPECT_RATIO = 0.72f
 
 /** 抽屉第一层（主分类）的宽度：放得下「English Manga」两行 + 右侧总数。 */
 private val MAIN_PANE_WIDTH: Dp = 140.dp

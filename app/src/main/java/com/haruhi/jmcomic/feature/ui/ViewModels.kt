@@ -19,7 +19,7 @@ import com.haruhi.jmcomic.feature.data.CategoryGroup
 import com.haruhi.jmcomic.feature.data.CategoryListSnapshot
 import com.haruhi.jmcomic.feature.data.CategorySelection
 import com.haruhi.jmcomic.feature.data.CategorySub
-import com.haruhi.jmcomic.feature.data.CategoryViewMode
+import com.haruhi.jmcomic.feature.data.OnlineViewMode
 import com.haruhi.jmcomic.feature.data.categorySelectorLabel
 import com.haruhi.jmcomic.feature.data.fixCategorySelection
 import com.haruhi.jmcomic.feature.data.mergeCategoryItems
@@ -648,6 +648,13 @@ data class OnlineSearchUiState(
      * 本页 80 条全部展示完之后，才显示"加载下一页"按钮。
      */
     val visibleCount: Int = INITIAL_VISIBLE_COUNT,
+    /**
+     * 搜索结果的展示方式：**默认卡片**（用户 2026-10-20 要求，与分类页同一套切换）。
+     *
+     * 只活在这一页的 ViewModel 里（不写存储）：同一次搜索里切到详情页再回来还是原来的模式；
+     * 重新搜索会开一个新的结果页，又回到默认的卡片。
+     */
+    val viewMode: OnlineViewMode = OnlineViewMode.DEFAULT,
 ) {
     /** 本次结果里还剩多少条没展示。 */
     val remainingCount: Int
@@ -814,6 +821,15 @@ class OnlineSearchViewModel(
                 it.copy(visibleCount = it.visibleCount + OnlineSearchUiState.INITIAL_VISIBLE_COUNT)
             }
         }
+    }
+
+    /**
+     * 切换"卡片 / 列表"（用户 2026-10-20 要求：搜索结果与分类页一样支持两种展示，默认卡片）。
+     *
+     * 纯界面状态：**不重新搜索、不改变已展示条数**，只是换个渲染方式。
+     */
+    fun toggleViewMode() {
+        _state.update { it.copy(viewMode = it.viewMode.toggled()) }
     }
 
     /**
@@ -1013,8 +1029,8 @@ data class CategoryUiState(
     val error: String? = null,
     /** 一次性提示（下拉刷新失败、加载更多失败），由根部 Snackbar 弹。 */
     val message: String? = null,
-    /** 展示方式：一行一本 / 三列卡片（用户要求，可切换）。 */
-    val viewMode: CategoryViewMode = CategoryViewMode.DEFAULT,
+    /** 展示方式：一行一本 / 三列卡片（用户要求，可切换；**默认卡片**）。 */
+    val viewMode: OnlineViewMode = OnlineViewMode.DEFAULT,
 ) {
     val groups: List<CategoryGroup> get() = catalog.orEmpty()
 

@@ -457,6 +457,8 @@ fun ModeRoot(
                         onSortChange = vm::changeSort,
                         onLoadMore = vm::loadMore,
                         onRevealMore = vm::showMoreItems,
+                        // 卡片 / 列表切换（默认卡片，与分类页同一套；纯界面状态，不重搜）
+                        onToggleViewMode = vm::toggleViewMode,
                         onOpenAlbum = { navController.navigate(Routes.detail(it)) },
                         onAddToLibrary = vm::addToLibrary,
                         // 点卡片上的「已入库」= 移出书库（页面内已二次确认）

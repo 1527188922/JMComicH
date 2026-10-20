@@ -859,6 +859,40 @@ app/src/main/java/com/haruhi/jmcomic/
 没有跑测试用例）。自测要点：飞行模式打开本子详情 → 失败；随后改「请求重试次数」，
 再点重试观察请求次数；图片那一项在弱网 / 代理拖慢读超时时最直观。
 
+## 功能：搜索结果支持卡片 / 列表切换（2026-10-20）
+
+用户要求（原话要点）：搜索结果的展示方式要跟分类页一样支持**卡片 / 列表切换**，
+**默认卡片**；列表里**展示更新时间**（没有更新时间就展示创建时间）；
+卡片时"区域优先"、少露字段——跟分类页的卡片一样，只展示**名称和更新时间**。
+
+### 1. 做了什么
+
+| 项 | 做法 |
+|---|---|
+| 枚举改名 | `CategoryViewMode` → **`OnlineViewMode`**（`feature/data/Categories.kt`）：两页共用一个类型，`DEFAULT = CARD`、`toggled()` 不变 |
+| 搜索状态 | `OnlineSearchUiState` 新增 `viewMode`（默认 `CARD`）；`OnlineSearchViewModel.toggleViewMode()` 只切渲染方式，**不重搜、不改已展示条数**。只活在结果页自己的 ViewModel 里（不写存储） |
+| 公共件上收 | 原来分类页私有的「共 N 条 + 切换按钮」和「三列卡片」挪到 `Screens.kt`：`OnlineCountBar(text, viewMode, onToggleViewMode)`、`OnlineGridCard(item, onOpen)`，外加 `ONLINE_GRID_COLUMNS = 3` / `ONLINE_COVER_ASPECT_RATIO = 0.72f`。分类页与搜索结果页用的是**同一个实现**，观感不会各改各的跑偏 |
+| 搜索结果页 | `SearchResultList` 拆成 `SearchResultBody`（按 `viewMode` 分派）+ `SearchResultList` / `SearchResultGrid` + `SearchResultFooter`；「继续下滑追加」的滚动监听抽成 `RevealMoreOnScroll`（列表读 `LazyListState`、卡片读 `LazyGridState`，判定仍是 `shouldRevealMore`，单测不变） |
+| 列表模式 | `OnlineResultRow` 传 `updateLabel = item.updateLabel()`：**更新时间优先，没有就用上架日期**（`adddate`），与分类页列表一致；入库 / 移出按钮照旧 |
+| 卡片模式 | 与分类页同一张卡：封面 + 两行名称 + `更新 YYYY-MM-DD`；**不放入库按钮**（"区域优先"少露信息，要入库切列表或进详情页），页脚、计数、自动追加照常 |
+| 切换按钮 | 沿用分类页那套：放在「共 N 条」行右端，图标画的是"点下去会切到"的模式 |
+
+### 2. 代码落点
+
+`feature/data/Categories.kt`（`OnlineViewMode`）、`feature/ui/ViewModels.kt`
+（`OnlineSearchUiState.viewMode` + `toggleViewMode`）、`feature/ui/Screens.kt`
+（`OnlineCountBar` / `OnlineGridCard` / `SearchResultBody` / `SearchResultGrid` / `SearchResultFooter` / `RevealMoreOnScroll`）、
+`feature/ui/CategoryScreen.kt`（改用公共件，删掉私有的 `CategoryGridCard` 与两个常量）、
+`feature/ui/ModeRoot.kt`（接线 `onToggleViewMode`）、
+单测 `CategoryCatalogTest` 里的枚举名同步。
+
+### 3. 验证
+
+`:app:compileDebugKotlin` ✅、`:app:compileDebugUnitTestKotlin` ✅、`:app:assembleDebug` ✅
+（按用户要求**只保证编译**，没有跑测试用例）。自测要点：搜索后默认是三列卡片、
+只有名称与更新时间；点右上角图标切列表 → 每行出现 `JM号 · 更新 日期` 与作者、入库按钮；
+再切回卡片仍停在卡片模式。
+
 ## 阶段状态
 
 | 阶段 | 状态 | 说明 |
