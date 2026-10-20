@@ -761,6 +761,13 @@ series, series_id, real_link, comment_total, author, tags, works, actors,
 related_list, liked, is_favorite, is_aids, price, purchased
 ```
 
+> **`addtime` 与"更新时间"（2026-10-20 复核）**：`addtime` 是 **10 位秒级时间戳字符串**
+> （实测 `350234` → `"1655254028"`、`114514` → `"1560587558"`），官方前端只把它当封面 URL 的
+> `?v=` 缓存串用，详情页**不展示任何日期**。
+> 响应里**没有** `update_at` / `update_time` 这类"更新时间"字段——列表接口才有 `update_at`
+> + `adddate`。所以本工程详情页把它当**上架时间**展示：`JM350234 · 上架 2022-06-15`
+> （与 JM 号同一行，分隔方式照抄搜索结果列表），见 `albumAddTimeLabel`。
+
 ### 6.5 评论相关的其它接口（本次不需要，仅列出）
 
 | 接口 | 方法 | 入参 | 说明 |

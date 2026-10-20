@@ -43,7 +43,7 @@ data class CategoryGroup(
     val hasRealSubs: Boolean get() = subs.any { it.slug.isNotBlank() }
 
     /** 抽屉里显示在分类名右侧的总数（`1.0k` / `1.0w`）；没有总数时为 null。 */
-    val countLabel: String? get() = if (totalAlbums > 0L) formatCategoryCount(totalAlbums) else null
+    val countLabel: String? get() = if (totalAlbums > 0L) formatCompactCount(totalAlbums) else null
 
     fun subOf(slug: String): CategorySub? = subs.firstOrNull { it.slug == slug }
 }
@@ -120,7 +120,11 @@ fun buildCategoryCatalog(groups: List<CategoryGroupDto>): List<CategoryGroup> {
 }
 
 /**
- * 抽屉右侧的总数文案：**上千用 `k`、上万用 `w`，都保留一位小数**（用户要求）。
+ * **紧凑数字文案**：上千用 `k`、上万用 `w`，都保留一位小数。
+ *
+ * 用户要求（2026-10-19）先用在分类抽屉右侧的总数上，2026-10-20 起
+ * **详情页的点赞数 / 观看数也用同一套**（用户要求"跟分类的数量格式化方式保持一致"）——
+ * 所以名字改成中性的 [formatCompactCount]，两个调用点共用这一个实现。
  *
  * | 输入 | 输出 |
  * |---|---|
@@ -132,7 +136,7 @@ fun buildCategoryCatalog(groups: List<CategoryGroupDto>): List<CategoryGroup> {
  *
  * 四舍五入交给 `String.format`（`Locale.ROOT`，避免某些系统语言把小数点变成逗号）。
  */
-fun formatCategoryCount(total: Long): String = when {
+fun formatCompactCount(total: Long): String = when {
     total < 1_000L -> total.toString()
     total < 10_000L -> String.format(Locale.ROOT, "%.1fk", total / 1_000.0)
     else -> String.format(Locale.ROOT, "%.1fw", total / 10_000.0)
@@ -156,6 +160,26 @@ fun updateLabel(updateAt: Long?, addDate: String?): String? {
     return addDate
         ?.trim()
         ?.takeIf { it.isNotEmpty() && it != "0000-00-00" && !it.equals("null", ignoreCase = true) }
+}
+
+/**
+ * **详情页头部的"上架时间"文案**（与 JM 号同一行显示，用户 2026-10-20 要求）。
+ *
+ * `/album` 只返回 `addtime`（**上架 / 创建时间**，10 位秒级时间戳），响应里没有单独的
+ * "更新时间"字段——所以详情页展示的就是这个上架时间，标签写「上架」而不是「更新」。
+ *
+ * 取值规则复用 [updateLabel]：
+ * - 纯数字（秒级时间戳）→ 本地时区的 `YYYY-MM-DD`；
+ * - 非数字（万一接口某天换成 `2022-06-15` 这种字符串）→ 原样返回；
+ * - 空 / `"0"` / `"null"` → null（这一行不拼这段）；
+ * - 拿不到可识别的日期 → null。
+ */
+fun albumAddTimeLabel(addTime: String?): String? {
+    val raw = addTime?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val seconds = raw.toLongOrNull()
+    // 数字但不是有效时间戳（0 / 负数）：当"没有时间"，不要显示"上架 0"
+    if (seconds != null) return if (seconds > 0L) updateLabel(seconds, null) else null
+    return updateLabel(null, raw)
 }
 
 /**

@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DateRange
 // 别名：直接 import `List` 会把 kotlin.collections.List 这个名字在文件里遮住，
 // 以后在这里写 `List<…>` 会莫名其妙解析到图标属性上。
 import androidx.compose.material.icons.automirrored.filled.List as CategoryListIcon

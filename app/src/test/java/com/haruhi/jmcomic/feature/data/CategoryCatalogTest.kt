@@ -128,16 +128,16 @@ class CategoryCatalogTest {
 
     @Test
     fun `count is abbreviated with k below ten thousand and with w above`() {
-        assertThat(formatCategoryCount(0)).isEqualTo("0")
-        assertThat(formatCategoryCount(999)).isEqualTo("999")
-        assertThat(formatCategoryCount(1_000)).isEqualTo("1.0k")
-        assertThat(formatCategoryCount(1_499)).isEqualTo("1.5k")
-        assertThat(formatCategoryCount(3_547)).isEqualTo("3.5k")
-        assertThat(formatCategoryCount(9_999)).isEqualTo("10.0k")
-        assertThat(formatCategoryCount(10_000)).isEqualTo("1.0w")
-        assertThat(formatCategoryCount(43_357)).isEqualTo("4.3w")
-        assertThat(formatCategoryCount(354_792)).isEqualTo("35.5w")
-        assertThat(formatCategoryCount(397_296)).isEqualTo("39.7w")
+        assertThat(formatCompactCount(0)).isEqualTo("0")
+        assertThat(formatCompactCount(999)).isEqualTo("999")
+        assertThat(formatCompactCount(1_000)).isEqualTo("1.0k")
+        assertThat(formatCompactCount(1_499)).isEqualTo("1.5k")
+        assertThat(formatCompactCount(3_547)).isEqualTo("3.5k")
+        assertThat(formatCompactCount(9_999)).isEqualTo("10.0k")
+        assertThat(formatCompactCount(10_000)).isEqualTo("1.0w")
+        assertThat(formatCompactCount(43_357)).isEqualTo("4.3w")
+        assertThat(formatCompactCount(354_792)).isEqualTo("35.5w")
+        assertThat(formatCompactCount(397_296)).isEqualTo("39.7w")
     }
 
     // ------------------------------------------------------------------

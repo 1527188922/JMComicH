@@ -910,6 +910,47 @@ app/src/main/java/com/haruhi/jmcomic/
 卡片本身（`AlbumGridCard` / `OnlineGridCard`）不动——省下的间距直接变成封面面积。
 以后要再调只改这两个常量，不会再出现某一页还是老间距。
 
+### 5. 追加：详情页点赞 / 观看数改用与分类一致的紧凑格式（2026-10-20）
+
+用户要求：漫画详情页的 **like 数、观看数**也要跟**分类的数量格式化方式**保持一致。
+
+- `feature/data/Categories.kt` 的 `formatCategoryCount` **改名为 `formatCompactCount`**（实现不变：
+  `<1000` 原样、`<10000` 一位小数 + `k`、否则一位小数 + `w`），两个调用点共用同一个实现：
+  分类抽屉的总数（`CategoryGroup.countLabel`）与详情页头部统计。
+- `AlbumDetailScreen.formatStatCount`：空白仍然返回 null（整项不显示），
+  数字先转 `Long` 再走 `formatCompactCount`；**不是数字的脏数据原样展示**，不吞掉。
+  于是 `999` 原样、`1000` → `1.0k`、`12345` → `1.2w`。
+- 单测同步：`DisplayLogicTest` 的详情页统计用例改成新的期望值（并补了 999 / 1000 / 3547 / 354792 与
+  "非数字原样"两条），`CategoryCatalogTest` 里的函数名同步。
+
+### 6. 追加：详情页显示上架时间（2026-10-20）
+
+用户要求（两轮，最终形态）：详情页要显示时间——**标签叫「上架时间」**，
+**位置在 JM 号那一行**（不单独占一行），分隔方式与**搜索结果页列表**一致。
+
+最终显示：`JM350234 · 上架 2022-06-15`
+
+- 先核了接口：`/album` 的 `addtime` 是 **10 位秒级时间戳字符串**，响应里**没有**更新时间字段
+  （实测 `350234 → "1655254028"`、`114514 → "1560587558"`，见 `docs/official-api-2.1.11.md` §6.4），
+  所以这里展示的就是上架 / 创建时间，标签写「上架」而不是「更新」。
+- **顺带修掉一个老 bug**：`AlbumDto.addTime` 原来标的是 `@SerialName("add_time")`，而接口的 key
+  是 `addtime` —— 也就是说这一列之前**从来没被写入过**。改成 `addtime` 后，打开/刷新详情就会落库。
+- 展示逻辑：`feature/data/Categories.kt` 新增 `albumAddTimeLabel(addTime)`，复用 `updateLabel`
+  （数字 → 本地时区 `YYYY-MM-DD`；非数字 → 原样；空 / `"0"` → null，那一段不拼）。
+- UI：`AlbumDetailScreen` 的 `AlbumHeader` 里，JM 号那一行改成 `buildString { "JM{id}" + " · 上架 {日期}" }`
+  ——与 `OnlineResultRow` 的 `JM号 · 更新 日期` 是同一套分隔写法；上架时间取不到时只显示 JM 号。
+- 单测：`DisplayLogicTest` 的 `album add-time label comes from addtime and disappears when missing`
+  （时间戳不写死具体日期，避开时区差异；非数字原样、`"0"` 不显示）。
+
+### 7. 追加：详情页 tag 不再限两行（2026-10-20）
+
+用户要求：详情页 tag 区域原来超过两行就显示省略号，**不要两行限制**，有多少 tag 都展示出来。
+
+- `AlbumDetailScreen.AlbumHeader` 里 tag 那段 `Text` 去掉了 `maxLines = 2` 与
+  `overflow = Ellipsis`：按宽度自然换行，标签数量再多也全部显示。
+- 不用额外做"收起 / 展开"：这块本来就在详情页那个 `LazyColumn` 里，行数变多只会让头部
+  跟着变高，整页照样能滚（不会把下面的简介、按钮顶出屏幕）。
+
 ## 阶段状态
 
 | 阶段 | 状态 | 说明 |

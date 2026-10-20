@@ -48,13 +48,17 @@ fun decodeStringList(json: String): List<String> =
  *
  * 对应参考实现 `Album.java`。注意 `series` 是**章节列表的权威来源**：
  * 详情页优先展示它，避免只从已下载图片反推章节（计划 §D.1）。
+ *
+ * 实测（2026-10-20，`/album?id=350234` 等）：`addtime` 是 **10 位秒级时间戳字符串**，
+ * 且响应里**没有单独的更新时间字段**——列表接口的 `update_at` 不属于它。
  */
 @Serializable
 data class AlbumDto(
     @SerialName("id") val id: Long,
     @SerialName("name") val name: String? = null,
     @SerialName("images") val images: List<String>? = null,
-    @SerialName("add_time") val addTime: String? = null,
+    /** 实测 key 是 `addtime`（不是文档里其它接口那种 `add_time`），见类注释。 */
+    @SerialName("addtime") val addTime: String? = null,
     @SerialName("description") val description: String? = null,
     @SerialName("total_views") val totalViews: String? = null,
     @SerialName("likes") val likes: String? = null,

@@ -30,6 +30,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -94,9 +95,11 @@ import coil3.compose.AsyncImage
 import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.storage.FileNaming
+import com.haruhi.jmcomic.feature.data.albumAddTimeLabel
 import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.ExportFormat
+import com.haruhi.jmcomic.feature.data.formatCompactCount
 import com.haruhi.jmcomic.ui.theme.DownloadIcon
 import com.haruhi.jmcomic.ui.theme.EyeIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
@@ -1470,9 +1473,11 @@ private fun ExportPasswordDialog(
  * 两个字段都来自在线详情接口（`likes` / `total_views`），可能是 null 或空串
  * （还没联网刷新过、或接口没给这一项）。这时**整行不占位**——宁可不显示，
  * 也不要在封面旁边挂一对"♥ 0 👁 0"的假数字。
+ *
+ * 数字格式与分类总数一致（见 [formatStatCount] / [formatCompactCount]）。
  */
 @Composable
-private fun AlbumStatRow(likes: String?, views: String?) {
+private fun AlbumStatRow(likes: String?, views: String?, addTime: String?) {
     val likeText = formatStatCount(likes)
     val viewText = formatStatCount(views)
     if (likeText == null && viewText == null) return
@@ -1482,6 +1487,7 @@ private fun AlbumStatRow(likes: String?, views: String?) {
     ) {
         likeText?.let { StatItem(icon = Icons.Default.Favorite, text = it, description = "点赞数") }
         viewText?.let { StatItem(icon = EyeIcon, text = it, description = "观看数") }
+        addTime?.let { StatItem(icon = Icons.Default.DateRange, text = it, description = "上架日期") }
     }
 }
 
@@ -1507,10 +1513,17 @@ private fun StatItem(icon: ImageVector, text: String, description: String) {
 /**
  * 点赞 / 观看数的展示文案。
  *
- * 空白（null、空串、只有空格）返回 null = 这一项不显示。数字本身原样展示：
- * 接口给的就是 `"12345"` 这样的字符串，自己折算成"1.2 万"反而会跟网页端对不上。
+ * 空白（null、空串、只有空格）返回 null = 这一项不显示。
+ *
+ * 数字走**与分类总数同一套紧凑格式**（[formatCompactCount]，用户 2026-10-20 要求
+ * "跟分类的数量格式化方式保持一致"）：`999` 原样、`1000` → `1.0k`、`12345` → `1.2w`。
+ * 接口给的不是数字（脏数据 / 其它形态）时**原样展示**，宁可显示原串也不显示空白。
  */
-fun formatStatCount(raw: String?): String? = raw?.trim()?.takeIf { it.isNotEmpty() }
+fun formatStatCount(raw: String?): String? {
+    val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val number = value.toLongOrNull() ?: return value
+    return formatCompactCount(number)
+}
 
 @Composable
 private fun AlbumHeader(
@@ -1558,8 +1571,6 @@ private fun AlbumHeader(
                         text = "JM${album.id}",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 val authors = parseStringArray(album.author)
@@ -1593,9 +1604,12 @@ private fun AlbumHeader(
                 }
                 Spacer(Modifier.height(6.dp))
                 // 点赞数 / 观看数
-                AlbumStatRow(likes = album.likes, views = album.totalViews)
-                // 右栏到这里为止：书名(≤3 行 72dp) + 4 + JM 号(16) + 2 + 作者(≤2 行 32)
+                AlbumStatRow(likes = album.likes, views = album.totalViews, addTime = albumAddTimeLabel(album.addTime))
+                // 右栏到这里为止：书名(≤3 行 72dp) + 4 + JM 号/上架时间(16) + 2 + 作者(≤2 行 32)
                 // + 6 + 统计(16) = 148dp，永远矮于 150dp 的封面，底下不会再多出东西。
+                //
+                // 上架时间没有单独占一行（用户 2026-10-20 要求挪到 JM 号那行），
+                // 所以这里的高度与加它之前一样。
                 //
                 // 这里原来还挂着一行「加入书库 / 已在书库 + 未收藏」：那颗 TextButton 触发
                 // 最小可点尺寸后占 48dp，3 行书名时整颗掉到封面底边以下（用户反馈）。
@@ -1676,12 +1690,13 @@ private fun AlbumHeader(
 
         parseStringArray(album.tags).takeIf { it.isNotEmpty() }?.let { tags ->
             Spacer(Modifier.height(8.dp))
+            // **不限行数**（用户 2026-10-20 要求）：有多少 tag 就展示多少。
+            // 以前这里写的是 maxLines = 2 + 省略号，第三个以后的标签直接被截掉、还看不出被截了。
+            // 现在按宽度自然换行，整块跟着上面的 LazyColumn 一起滚，不会把内容顶出屏幕。
             Text(
                 text = tags.filter { it.isNotBlank() }.joinToString(" · ") { "#${it.trim()}" },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
             )
         }
 

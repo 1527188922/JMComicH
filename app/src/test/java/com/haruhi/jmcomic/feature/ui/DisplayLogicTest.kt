@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import com.google.common.truth.Truth.assertThat
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.network.toUserMessage
+import com.haruhi.jmcomic.feature.data.albumAddTimeLabel
 import org.junit.Test
 
 /**
@@ -90,14 +91,36 @@ class DisplayLogicTest {
     // ---------------- 详情页头部统计 / 章节区标题 ----------------
 
     @Test
-    fun `album stats drop blank counts and keep the raw numbers`() {
+    fun `album stats drop blank counts and use the same compact format as categories`() {
         // 还没联网刷新过、或接口没给这一项时整项不显示（不留"♥ 0"这种假数字）
         assertThat(formatStatCount(null)).isNull()
         assertThat(formatStatCount("")).isNull()
         assertThat(formatStatCount("   ")).isNull()
-        // 数字原样展示：不在客户端折算成"万"，免得跟网页端对不上
-        assertThat(formatStatCount(" 12345 ")).isEqualTo("12345")
+        // 用户 2026-10-20 要求：点赞 / 观看数跟分类总数用同一套紧凑格式
         assertThat(formatStatCount("0")).isEqualTo("0")
+        assertThat(formatStatCount("999")).isEqualTo("999")
+        assertThat(formatStatCount("1000")).isEqualTo("1.0k")
+        assertThat(formatStatCount(" 3547 ")).isEqualTo("3.5k")
+        assertThat(formatStatCount("12345")).isEqualTo("1.2w")
+        assertThat(formatStatCount("354792")).isEqualTo("35.5w")
+        // 接口给的不是数字（脏数据 / 其它形态）时原样展示，不吞掉
+        assertThat(formatStatCount("--")).isEqualTo("--")
+    }
+
+    @Test
+    fun `album add-time label comes from addtime and disappears when missing`() {
+        // `/album` 只给 `addtime`（10 位秒级时间戳），没有单独的更新时间字段：
+        // 详情页把它当"上架时间"显示在 JM 号那一行（用户 2026-10-20 要求）。
+        assertThat(albumAddTimeLabel(null)).isNull()
+        assertThat(albumAddTimeLabel("")).isNull()
+        assertThat(albumAddTimeLabel("   ")).isNull()
+        // 0 / 非正数当"没有时间"，不要显示"上架 0"
+        assertThat(albumAddTimeLabel("0")).isNull()
+        // 秒级时间戳 → 本地时区的 YYYY-MM-DD（不写死具体日期，避开时区差异）
+        assertThat(albumAddTimeLabel("1655254028")).matches("\\d{4}-\\d{2}-\\d{2}")
+        assertThat(albumAddTimeLabel(" 1655254028 ")).matches("\\d{4}-\\d{2}-\\d{2}")
+        // 万一接口以后换成日期字符串：原样展示，不吞掉
+        assertThat(albumAddTimeLabel("2022-06-15")).isEqualTo("2022-06-15")
     }
 
     @Test
