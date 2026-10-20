@@ -16,7 +16,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -616,44 +618,85 @@ private fun ReaderBottomBar(
             )
         }
         Spacer(Modifier.height(2.dp))
+        // 四个按钮位**固定各占 1/4**：没有上一话 / 下一话时只隐藏按钮本身，
+        // 槽位照样留着，否则「下载本话 / 阅读方式」会顶过去（用户要求第 1 点）。
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            // 没有上一话/下一话时直接不渲染按钮（用户要求：隐藏而不是灰掉）
-            if (state.hasPreviousChapter) {
-                TextButton(onClick = onPreviousChapter) {
-                    Text("上一话", color = contentColor)
+            ReaderBarSlot {
+                if (state.hasPreviousChapter) {
+                    TextButton(onClick = onPreviousChapter, contentPadding = ReaderBarButtonPadding) {
+                        ReaderBarButtonText("上一话", contentColor)
+                    }
                 }
             }
-            TextButton(onClick = onDownloadChapter) {
-                Text("下载本话", color = contentColor)
+            ReaderBarSlot {
+                TextButton(onClick = onDownloadChapter, contentPadding = ReaderBarButtonPadding) {
+                    ReaderBarButtonText("下载本话", contentColor)
+                }
             }
-            TextButton(
-                onClick = {
-                    onSetReadingMode(
-                        if (state.preferences.mode == ReadingMode.HORIZONTAL) {
-                            ReadingMode.VERTICAL
-                        } else {
-                            ReadingMode.HORIZONTAL
-                        },
-                    )
-                },
-            ) {
-                Text(
-                    text = state.preferences.mode.label,
-                    color = contentColor,
-                )
+            ReaderBarSlot {
+                TextButton(
+                    onClick = {
+                        onSetReadingMode(
+                            if (state.preferences.mode == ReadingMode.HORIZONTAL) {
+                                ReadingMode.VERTICAL
+                            } else {
+                                ReadingMode.HORIZONTAL
+                            },
+                        )
+                    },
+                    contentPadding = ReaderBarButtonPadding,
+                ) {
+                    ReaderBarButtonText(state.preferences.mode.label, contentColor)
+                }
             }
-            if (state.hasNextChapter) {
-                TextButton(onClick = onNextChapter) {
-                    Text("下一话", color = contentColor)
+            ReaderBarSlot {
+                if (state.hasNextChapter) {
+                    TextButton(onClick = onNextChapter, contentPadding = ReaderBarButtonPadding) {
+                        ReaderBarButtonText("下一话", contentColor)
+                    }
                 }
             }
         }
     }
 }
+
+/**
+ * 底栏的一个按钮槽位：宽度固定为 1/4，内容可以缺席（按钮隐藏），但槽位不会塌。
+ *
+ * 这样四个槽位的位置永远不变，上一话 / 下一话隐藏时其余按钮不会顶过去。
+ */
+@Composable
+private fun RowScope.ReaderBarSlot(content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier.weight(1f),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+/**
+ * 底栏按钮文字：单行 + 收紧左右内边距。
+ *
+ * 四等分之后单槽最多约 80dp，默认的 12dp 内边距下「下载本话」「上下翻页」这类
+ * 四字文案在窄屏上会折行把底栏顶高，所以这里把内边距收到 4dp 并限制单行。
+ */
+@Composable
+private fun ReaderBarButtonText(text: String, contentColor: androidx.compose.ui.graphics.Color) {
+    Text(
+        text = text,
+        color = contentColor,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+    )
+}
+
+/** 底栏按钮内边距：四等分槽位里要留够文字宽度（见 [ReaderBarButtonText]）。 */
+private val ReaderBarButtonPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
 
 @Composable
 private fun ReaderEmptyState(

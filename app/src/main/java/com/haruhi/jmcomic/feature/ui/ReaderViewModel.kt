@@ -331,16 +331,43 @@ class ReaderViewModel(
         }
     }
 
-    /** 重试某一页：清掉失败标记后再取一次。 */
+    /**
+     * 重试失败页。
+     *
+     * 图床 / 网络出问题时**几乎不会只挂一张图**，一般是同时发出的那几张一起失败
+     * （这也是用户看到的现象），所以点任意一页的「重试」就把**当前话所有失败的页**
+     * 一起重取，不用一页页点（用户要求第 2 点）。
+     *
+     * 传进来的那一页即使不是失败态（本地文件被删了）也照样重取；
+     * 已经在取（[ReaderPage.PageState.Loading]）的页不动它，免得把进行中的请求清回待取。
+     */
     fun retryPage(pageIndex: Int) {
-        val page = _state.value.pages.getOrNull(pageIndex) ?: return
-        if (page.available) {
-            // 本地文件被删掉了：退回"待取"让它重新联网
-            updatePage(pageIndex) { it.copy(file = null, state = ReaderPage.PageState.Pending, error = null) }
-        } else {
-            updatePage(pageIndex) { it.copy(state = ReaderPage.PageState.Pending, error = null) }
+        val current = _state.value
+        if (current.pages.getOrNull(pageIndex) == null) return
+
+        // 目标 = 所有失败页 + 点的那一页（去重、保持页码顺序）
+        val targets = current.pages.mapIndexedNotNull { index, page ->
+            when {
+                page.state == ReaderPage.PageState.Failed -> index
+                index == pageIndex -> index
+                else -> null
+            }
         }
-        requestPage(pageIndex)
+
+        targets.forEach { index ->
+            // 逐页重读状态：`requestPage` 会把被点的页立刻标成 Loading
+            val page = _state.value.pages.getOrNull(index) ?: return@forEach
+            if (page.state == ReaderPage.PageState.Loading) return@forEach
+            updatePage(index) {
+                if (it.available) {
+                    // 本地文件被删掉了：退回"待取"让它重新联网
+                    it.copy(file = null, state = ReaderPage.PageState.Pending, error = null)
+                } else {
+                    it.copy(state = ReaderPage.PageState.Pending, error = null)
+                }
+            }
+            requestPage(index)
+        }
     }
 
     /** 重新扫一遍本地缓存（下载完成后回到阅读器，已下好的页要立刻显示）。 */
