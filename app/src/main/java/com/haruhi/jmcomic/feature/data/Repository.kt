@@ -1050,6 +1050,17 @@ class Repository(
     suspend fun fetchAlbumFavoriteFlag(aid: Long): Boolean? =
         runCatching { api.album(aid).isFavorite }.getOrNull()
 
+    /**
+     * 把账号收藏状态写回本机快照（`t_jm_album.is_favorite`）。
+     *
+     * 点完收藏/移出/移夹后调用一次，下次进详情页第一帧就能画对按钮，不会"收藏 → 已收藏"闪一下。
+     * 失败不抛（只是快照，不影响业务）。
+     */
+    suspend fun setAlbumFavoriteFlag(aid: Long, favorite: Boolean) {
+        runCatching { albumDao.setFavoriteFlag(aid, favorite) }
+            .onFailure { Timber.tag("jm").w(it, "写回 is_favorite 失败：%d", aid) }
+    }
+
     private fun nowText(): String = TEXT_FORMAT.format(LocalDateTime.now())
 
     private fun encodeStringList(list: List<String>?): String? =

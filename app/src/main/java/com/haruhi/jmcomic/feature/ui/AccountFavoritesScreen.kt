@@ -369,6 +369,8 @@ fun AccountFavoriteSheet(
     signedIn: Boolean,
     inFavorites: Boolean,
     folders: List<AccountFolder>,
+    /** 正在读收藏夹列表（**局部** loading：只转这一段，说明行/新建照常显示）。 */
+    foldersLoading: Boolean,
     busy: Boolean,
     onDismiss: () -> Unit,
     onChoose: (folderId: String?, folderName: String?) -> Unit,
@@ -404,26 +406,55 @@ fun AccountFavoriteSheet(
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
                 }
-                Box(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
-                        item(key = "__all__") {
-                            FolderChoiceRow(
-                                label = "全部收藏",
-                                hint = if (inFavorites) "取消收藏" else "只收藏，不归类",
-                                enabled = !busy,
-                                onClick = { onChoose(null, null) },
-                            )
-                        }
-                        items(folders, key = { it.fid }) { folder ->
-                            FolderChoiceRow(
-                                label = folder.name,
-                                hint = folder.count?.let { "$it 本" },
-                                enabled = !busy,
-                                onClick = { onChoose(folder.fid, folder.name) },
-                            )
-                        }
+                if (foldersLoading && folders.isEmpty()) {
+                    // 收藏夹还没读出来：只在这一段转圈（说明行与「新建」照常可用）
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 16.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "正在读取收藏夹…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    VerticalScrollbar(state = listState, modifier = Modifier.matchParentSize())
+                } else {
+                    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                        LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
+                            item(key = "__all__") {
+                                FolderChoiceRow(
+                                    label = "全部收藏",
+                                    hint = if (inFavorites) "取消收藏" else "只收藏，不归类",
+                                    enabled = !busy,
+                                    onClick = { onChoose(null, null) },
+                                )
+                            }
+                            items(folders, key = { it.fid }) { folder ->
+                                FolderChoiceRow(
+                                    label = folder.name,
+                                    hint = folder.count?.let { "$it 本" },
+                                    enabled = !busy,
+                                    onClick = { onChoose(folder.fid, folder.name) },
+                                )
+                            }
+                            if (folders.isEmpty()) {
+                                item(key = "__empty__") {
+                                    Text(
+                                        text = "还没有收藏夹，可以在下面新建一个。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                    )
+                                }
+                            }
+                        }
+                        VerticalScrollbar(state = listState, modifier = Modifier.matchParentSize())
+                    }
                 }
 
                 Spacer(Modifier.height(4.dp))

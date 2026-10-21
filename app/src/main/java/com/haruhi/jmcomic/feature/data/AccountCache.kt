@@ -59,11 +59,68 @@ class AccountCache {
         profileDirty = true
     }
 
+    // ------------------------------------------------------------------
+    // 收藏夹列表（详情页「收藏」面板用）
+    // ------------------------------------------------------------------
+
+    /**
+     * 收藏夹列表（只有 `{FID, name}`，没有数量/封面）。
+     *
+     * 详情页面板每次打开都重新拉一遍太浪费（用户反馈 2026-10-21）：
+     * **优先用这份缓存**，只有"新建 / 删除收藏夹"才作废（[invalidateFolders]），
+     * 改名直接就地改（[renameFolder]），退出 App 时随进程消失。
+     */
+    @Volatile
+    var folders: List<AccountFolder>? = null
+        private set
+
+    @Volatile
+    var foldersDirty: Boolean = true
+        private set
+
+    fun putFolders(list: List<AccountFolder>) {
+        folders = list
+        foldersDirty = false
+    }
+
+    /** 新建 / 删除收藏夹后调用：下次打开面板时重新拉一次。 */
+    fun invalidateFolders() {
+        foldersDirty = true
+    }
+
+    /** 改名是改了**已有条目**，不用整份作废（否则下次打开面板又要多一次请求）。 */
+    fun renameFolder(folderId: String, newName: String) {
+        folders = folders?.map { if (it.fid == folderId) it.copy(name = newName) else it }
+    }
+
+    // ------------------------------------------------------------------
+    // 每本是否已在账号收藏里
+    // ------------------------------------------------------------------
+
+    /**
+     * `aid -> is_favorite` 的进程内备忘。
+     *
+     * 解决"进入已收藏的漫画详情页，按钮先显示「收藏」再变成「已收藏」"：
+     * 本机数据库里的 `is_favorite` 是上一次 `/album` 的快照（我们点了收藏并不会改它），
+     * 所以进页面时先按本机值画（可能是过期的 false），等 `/album` 回来再翻成 true。
+     * 现在把每次拿到的结论记在这里，同一个进程里再进这本就直接是正确的状态。
+     */
+    private val favoriteFlags = java.util.concurrent.ConcurrentHashMap<Long, Boolean>()
+
+    fun cachedFavoriteFlag(albumId: Long): Boolean? = favoriteFlags[albumId]
+
+    fun rememberFavoriteFlag(albumId: Long, value: Boolean) {
+        favoriteFlags[albumId] = value
+    }
+
     /** 登录成功 / 退出登录：整份缓存作废（避免把上一个账号的数据留在内存里）。 */
     fun clear() {
         favorites = null
         profileDetail = null
+        folders = null
+        favoriteFlags.clear()
         favoritesDirty = true
         profileDirty = true
+        foldersDirty = true
     }
 }

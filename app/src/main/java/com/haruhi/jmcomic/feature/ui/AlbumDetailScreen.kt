@@ -615,6 +615,7 @@ fun AlbumDetailScreen(
             signedIn = state.accountSignedIn,
             inFavorites = state.accountInFavorites,
             folders = state.accountFolders,
+            foldersLoading = state.accountFoldersLoading,
             busy = state.accountFavoriteBusy,
             onDismiss = onDismissAccountFavoriteSheet,
             onChoose = onChooseAccountFavorite,

@@ -1,4 +1,4 @@
-﻿package com.haruhi.jmcomic.feature.data
+package com.haruhi.jmcomic.feature.data
 
 import com.haruhi.jmcomic.core.account.AccountSession
 import com.haruhi.jmcomic.core.account.AccountState
@@ -91,6 +91,31 @@ class AccountRepository(
     }
 
     /**
+     * 收藏夹列表（只有 FID / 名字）。
+     *
+     * 详情页「收藏」面板要用：**优先读缓存**（[AccountCache.folders]），没有才发请求并写回。
+     * 缓存只在"新建 / 删除收藏夹"时作废（见 [createFolder] / [deleteFolder]），改名就地更新。
+     */
+    suspend fun folders(force: Boolean = false): List<AccountFolder> {
+        if (!force) {
+            cache.folders?.takeIf { !cache.foldersDirty }?.let { return it }
+        }
+        val list = favorites(page = 1).folders
+        cache.putFolders(list)
+        return list
+    }
+
+    /** 缓存里的收藏夹；没缓存 / 已作废时返回 null（调用方据此决定要不要转局部 loading）。 */
+    fun cachedFolders(): List<AccountFolder>? = cache.folders?.takeIf { !cache.foldersDirty }
+
+    /** 这一本是否在账号收藏里（本进程里核对过的结论）；没核对过返回 null。 */
+    fun cachedFavoriteFlag(albumId: Long): Boolean? = cache.cachedFavoriteFlag(albumId)
+
+    /** 记下得到的收藏状态（`/album` 的 `is_favorite` 或写操作的结果），供下次进详情页直接用。 */
+    fun rememberFavoriteFlag(albumId: Long, inFavorites: Boolean) =
+        cache.rememberFavoriteFlag(albumId, inFavorites)
+
+    /**
      * 切换收藏状态。
      *
      * 返回 [FavoriteToggleResult]：`added = true` 表示这次是**加入**，false 表示**移除**。
@@ -108,6 +133,7 @@ class AccountRepository(
             // 让 UI 提示刷新，而不是把按钮画成错误的样子。
             else -> throw NetworkError.Business(dto.msg ?: "收藏状态异常，请刷新后重试")
         }
+        cache.rememberFavoriteFlag(aid, added)
         return FavoriteToggleResult(added = added, message = dto.msg)
     }
 
@@ -116,6 +142,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "move", folderId = folderId, folderName = folderName, aid = aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "移动失败，请稍后重试")
         cache.invalidateFavorites()
+        cache.rememberFavoriteFlag(aid, true)
     }
 
     /** 新建收藏夹，返回新夹（从返回后的列表里按名字找）。 */
@@ -123,6 +150,8 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "add", folderName = name) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "新建收藏夹失败")
         cache.invalidateFavorites()
+        // 新建会让面板的收藏夹缓存过期（用户要求：新增/删除才清缓存）
+        cache.invalidateFolders()
         // `/favorite_folder` 不返回新 FID，只能重拉一次列表按名字找（夹名服务端唯一）。
         // 实测服务端偶尔"晚一拍"才把新夹放进 folder_list（多节点），所以重试几次再放弃。
         repeat(FOLDER_LOOKUP_ATTEMPTS) { attempt ->
@@ -137,6 +166,8 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "edit", folderId = folderId, folderName = newName) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "改名失败")
         cache.invalidateFavorites()
+        // 改名只改已有条目，就地更新即可，不必让面板下次再拉一遍
+        cache.renameFolder(folderId, newName)
     }
 
     /**
@@ -149,6 +180,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "del", folderId = folderId) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "删除收藏夹失败")
         cache.invalidateFavorites()
+        cache.invalidateFolders()
     }
 
     // ------------------------------------------------------------------

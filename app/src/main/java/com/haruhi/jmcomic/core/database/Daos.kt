@@ -202,6 +202,16 @@ interface AlbumDao {
     /** 详情页的收藏开关。**只改成员表里的这一个字段**，不动基础数据。 */
     @Query("UPDATE t_jm_library SET collected = :collected WHERE album_id = :id")
     suspend fun setCollected(id: Long, collected: Boolean)
+
+    /**
+     * 把**账号收藏**状态（官方 `/album` 的 `is_favorite`）写回本机快照。
+     *
+     * 为什么需要：以前本机从不更新这个字段，点了收藏之后再进详情页，
+     * 按钮会先按旧快照画成「收藏」、等 `/album` 回来才翻成「已收藏」（用户反馈的闪变）。
+     * 写一次之后，下次进页面第一帧就是对的。
+     */
+    @Query("UPDATE t_jm_album SET is_favorite = :favorite WHERE id = :id")
+    suspend fun setFavoriteFlag(id: Long, favorite: Boolean)
 }
 
 // ======================================================================

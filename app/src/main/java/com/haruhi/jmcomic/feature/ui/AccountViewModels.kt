@@ -304,6 +304,8 @@ class AccountFavoritesViewModel(
         viewModelScope.launch {
             runCatching { account.favorites(page = 1) }
                 .onSuccess { page ->
+                    // 收藏夹名单顺手写进缓存：详情页的「收藏」面板下次打开就不用再请求了
+                    cache.putFolders(page.folders)
                     _state.update {
                         it.copy(
                             loading = false,

@@ -1981,3 +1981,12 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | 6 | 「加载更多」按钮跑到卡片格里 | 网格 footer 用 `item(span = { GridItemSpan(maxLineSpan) })` 占满整行（上一批已改，本次确认在代码里） |
 
 > 说明：本批**未跑**单测 / lint（用户要求只保证编译通过，自行真机验收）。
+### 8. 第三批微调（用户反馈 2026-10-21）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 1 | 每次进详情页点「收藏」，面板都要重新请求收藏夹 | `AccountCache` 新增 `folders` 快照（含 `foldersDirty`）：详情页面板**优先读缓存**，缓存没有才请求；**只有新建 / 删除收藏夹**才作废（`invalidateFolders`），改名为就地更新（`renameFolder`）；退出 App 随进程消失，登录/退出 `clear()`。收藏页拉列表时也会顺手写这份缓存 |
+| 2 | 面板打开时没有 loading | `AlbumDetailUiState.accountFoldersLoading` + 面板里**局部**转圈（"正在读取收藏夹…"）：只影响收藏夹那一段，说明行 / 「新建」照常可用；没有收藏夹时给空态提示 |
+| 3 | 已收藏的漫画进详情页，按钮先「收藏」再变「已收藏」 | ① 点收藏/移出/移夹成功后把结果写回 `t_jm_album.is_favorite`（新增 `AlbumDao.setFavoriteFlag`，见 `Repository.setAlbumFavoriteFlag`）并记进 `AccountCache`；② 进页面时缓存有结论就直接用、不再请求；③ 首屏联网拉详情时直接采用那次 `/album` 的 `is_favorite`（`favoriteFlagSynced` 置位），不再重复请求同一本 |
+
+> 闪变的原因（答用户问）：详情页 init 里只要已登录就调一次 `Repository.fetchAlbumFavoriteFlag(aid)` → 内部是 **`GET /album?id={aid}`**，用它返回的 `is_favorite` 覆盖按钮状态。本机 `is_favorite` 之前从不回写（点收藏只打 `POST /favorite`），所以初值可能是过期的 false。现在写回 + 进程内缓存之后，同一本再次进入不会再翻。

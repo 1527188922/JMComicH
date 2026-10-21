@@ -1795,6 +1795,11 @@ data class AlbumDetailUiState(
     val accountInFavorites: Boolean = false,
     /** 收藏夹列表（打开面板时拉一次）。 */
     val accountFolders: List<AccountFolder> = emptyList(),
+    /**
+     * 正在读收藏夹列表（面板里显示**局部** loading：只有收藏夹那一段转圈，
+     * 说明行 / 「新建」都不受影响）。
+     */
+    val accountFoldersLoading: Boolean = false,
     /** 正在写收藏（按钮/行转圈，防重复提交）。 */
     val accountFavoriteBusy: Boolean = false,
     /** 收藏面板是否展开（放 VM 里，重组/转屏后不会自己关掉）。 */
@@ -1947,7 +1952,13 @@ class AlbumDetailViewModel(
                 loadFromNetwork(initial = true)
             } else {
                 _state.update {
-                    it.copy(album = local.album, inLibrary = local.fromLibrary, loading = false)
+                    it.copy(
+                        album = local.album,
+                        inLibrary = local.fromLibrary,
+                        loading = false,
+                        // 本机快照说"已收藏"就先画成已收藏，等 /album 回来再校正（避免先显示「收藏」）
+                        accountInFavorites = it.accountInFavorites || local.album.isFavorite == true,
+                    )
                 }
                 refreshLocalStats()
             }
@@ -1991,7 +2002,13 @@ class AlbumDetailViewModel(
                 .catch { e -> Timber.tag("jm").w(e, "观察本子失败") }
                 .collect { album ->
                     if (album != null) {
-                        _state.update { it.copy(album = album, inLibrary = true) }
+                        _state.update {
+                            it.copy(
+                                album = album,
+                                inLibrary = true,
+                                accountInFavorites = it.accountInFavorites || album.isFavorite == true,
+                            )
+                        }
                     }
                 }
         }
@@ -2004,11 +2021,11 @@ class AlbumDetailViewModel(
         }
 
         // 4.5) 账号（官方在线收藏）：登录态 + `is_favorite` 只信服务端
-        //      （本机库里的 colleted 是"本机收藏夹"的旧语义，与账号收藏无关）
+        //      （本机库里的 collected 是"本机收藏夹"的旧语义，与账号收藏无关）
         viewModelScope.launch {
             account.state.collect { accountState ->
                 _state.update { it.copy(accountSignedIn = accountState.isSignedIn) }
-                if (accountState.isSignedIn) refreshAccountFavoriteFlag()
+                if (accountState.isSignedIn) syncAccountFavoriteOnce()
             }
         }
 
@@ -2135,7 +2152,28 @@ class AlbumDetailViewModel(
                     repo.localAlbumDetail(albumId)?.album
                 }
                 _state.update {
-                    it.copy(refreshing = false, loading = false, album = album ?: it.album, inLibrary = inLibrary)
+                    val next = album ?: it.album
+                    it.copy(
+                        refreshing = false,
+                        loading = false,
+                        album = next,
+                        inLibrary = inLibrary,
+                        // 这次 /album 已经拿到服务端的 is_favorite：顺手写回快照与缓存，
+                        // 并把"已核对过"置位，避免再为同一本多发一次 /album
+                        accountInFavorites = if (it.accountSignedIn && next != null) {
+                            next.isFavorite == true
+                        } else {
+                            it.accountInFavorites
+                        },
+                    )
+                }
+                if (_state.value.accountSignedIn) {
+                    album?.let { fresh ->
+                        val flag = fresh.isFavorite == true
+                        account.rememberFavoriteFlag(albumId, flag)
+                        repo.setAlbumFavoriteFlag(albumId, flag)
+                        favoriteFlagSynced = true
+                    }
                 }
                 refreshLocalStats()
             }
@@ -2437,23 +2475,85 @@ class AlbumDetailViewModel(
 
     // ---------------- 账号收藏（官方在线收藏） ----------------
 
-    /** 面板打开时向服务端核对一次 `is_favorite`（本机库里的旧值不可信）。 */
+    /** 本次详情页是否已经和服务端核对过收藏状态（只核对一次，避免重复请求）。 */
+    private var favoriteFlagSynced = false
+
+    /** 进页面时同步一次收藏状态：本进程核对过就直接用，没核对过才请求一次 `/album`。 */
+    private fun syncAccountFavoriteOnce() {
+        if (favoriteFlagSynced) return
+        val cached = account.cachedFavoriteFlag(albumId)
+        if (cached != null) {
+            favoriteFlagSynced = true
+            _state.update { it.copy(accountInFavorites = cached) }
+            return
+        }
+        // 首屏正在联网拉详情：那次响应里就有 `is_favorite`（loadFromNetwork 会写回并置位），
+        // 不要为同一本再发一次 `/album`。
+        if (_state.value.album == null && _state.value.loading) return
+        viewModelScope.launch {
+            favoriteFlagSynced = true
+            refreshAccountFavoriteFlag()
+        }
+    }
+
+    /**
+     * 向服务端核对一次 `is_favorite`（本机快照可能过期）。
+     *
+     * 结论会写回两处：`AccountCache`（本进程后续进页面直接用）与 `t_jm_album.is_favorite`
+     * （重启后第一帧也是对的）。
+     */
     private suspend fun refreshAccountFavoriteFlag() {
         val flag = repo.fetchAlbumFavoriteFlag(albumId) ?: return
+        account.rememberFavoriteFlag(albumId, flag)
+        repo.setAlbumFavoriteFlag(albumId, flag)
         _state.update { it.copy(accountInFavorites = flag) }
     }
 
+    /**
+     * 写操作成功后把"已收藏 / 已移出"落到两处快照：
+     * `AccountCache`（本进程内后续进页面直接用）与 `t_jm_album.is_favorite`（重启后也对）。
+     * 这样就不会再出现"先显示收藏、再翻成已收藏"。
+     */
+    private suspend fun persistFavoriteFlag(value: Boolean) {
+        account.rememberFavoriteFlag(albumId, value)
+        repo.setAlbumFavoriteFlag(albumId, value)
+    }
+
+    /**
+     * 打开账号收藏面板。
+     *
+     * 收藏夹**优先用缓存**（`AccountCache.folders`，只有新建/删除夹才作废）；
+     * 没有缓存时才拉一次，并在面板里显示**局部 loading**。
+     */
     fun openAccountFavoriteSheet() {
         _state.update { it.copy(accountSheetOpen = true) }
         if (!account.isSignedIn) return
-        viewModelScope.launch {
-            refreshAccountFavoriteFlag()
-            runCatching { account.favorites(page = 1) }
-                .onSuccess { page -> _state.update { it.copy(accountFolders = page.folders) } }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    Timber.tag("jm").d(e, "拉账号收藏夹失败")
-                }
+
+        val cachedFolders = account.cachedFolders()
+        if (cachedFolders != null) {
+            _state.update { it.copy(accountFolders = cachedFolders, accountFoldersLoading = false) }
+        } else {
+            _state.update { it.copy(accountFoldersLoading = true) }
+            viewModelScope.launch {
+                runCatching { account.folders(force = true) }
+                    .onSuccess { list ->
+                        _state.update { it.copy(accountFolders = list, accountFoldersLoading = false) }
+                    }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        _state.update {
+                            it.copy(accountFoldersLoading = false, message = e.toUserMessage())
+                        }
+                    }
+            }
+        }
+
+        // 收藏状态：本进程核对过就直接用，不再请求
+        val known = account.cachedFavoriteFlag(albumId)
+        if (known != null) {
+            _state.update { it.copy(accountInFavorites = known) }
+        } else {
+            viewModelScope.launch { refreshAccountFavoriteFlag() }
         }
     }
 
@@ -2475,6 +2575,7 @@ class AlbumDetailViewModel(
                 val wasIn = _state.value.accountInFavorites
                 if (wasIn && folderId == null) {
                     account.toggleFavorite(albumId)
+                    persistFavoriteFlag(false)
                     _state.update {
                         it.copy(
                             accountFavoriteBusy = false,
@@ -2491,6 +2592,7 @@ class AlbumDetailViewModel(
                 if (folderId != null) {
                     try {
                         account.moveToFolder(albumId, folderId, folderName)
+                        persistFavoriteFlag(true)
                         _state.update {
                             it.copy(
                                 accountFavoriteBusy = false,
@@ -2506,6 +2608,7 @@ class AlbumDetailViewModel(
                         return@launch
                     } catch (moveError: Throwable) {
                         if (moveError is CancellationException) throw moveError
+                        persistFavoriteFlag(true)
                         _state.update {
                             it.copy(
                                 accountFavoriteBusy = false,
@@ -2516,6 +2619,7 @@ class AlbumDetailViewModel(
                         return@launch
                     }
                 }
+                persistFavoriteFlag(true)
                 _state.update {
                     it.copy(
                         accountFavoriteBusy = false,
@@ -2547,6 +2651,7 @@ class AlbumDetailViewModel(
                 val folder = account.createFolder(trimmed)
                 if (!_state.value.accountInFavorites) account.toggleFavorite(albumId)
                 account.moveToFolder(albumId, folder.fid, folder.name)
+                persistFavoriteFlag(true)
                 _state.update {
                     it.copy(
                         accountFavoriteBusy = false,
