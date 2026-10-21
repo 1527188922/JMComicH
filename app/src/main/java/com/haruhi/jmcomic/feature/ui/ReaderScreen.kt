@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -67,6 +68,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -386,6 +389,11 @@ private fun HorizontalReader(
  * - **本地没有的图会自动联网取回来**（用户要求第 2 点）：进入可视范围时触发
  *   [onRequest]。`LazyColumn` / `HorizontalPager` 只组合可见项，
  *   所以不会一进阅读器就把整话几十张图全拉下来；
+ * - **两种显示来源**（见 `ReaderCacheMode`）：
+ *   [ReaderPage.bitmap]（原图管线，就地解扰出来的位图）用 `Image` 直接画，
+ *   [ReaderPage.displayFile]（解扰后的成品文件）交给 Coil；二者都走同一个占位与失败态；
+ * - `LaunchedEffect` 的 key 里有 [ReaderPage.rawFile]：原图（字节）刚被预取回来时，
+ *   这一页若已经在视野里就立刻解扰，不会干等下一次滚动；
  * - 取的过程中显示进度圈，只有真的失败才显示"取不回来 + 重试"；
  * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
  *   （用户要求：双指放大是整个页面一起放大，不是单张图片单独放大）。
@@ -397,8 +405,9 @@ private fun ReaderPageItem(
     onRetry: () -> Unit,
     fillHeight: Boolean = false,
 ) {
-    // 进入可视范围（被组合）就取图；本地已有或正在取时 requestPage 是空操作
-    LaunchedEffect(page.imageFile, page.state) {
+    // 进入可视范围（被组合）就取图；本地已有、正在取、失败过时 requestPage 是空操作。
+    // rawFile 也在 key 里：预取把字节取回来之后，本页立刻接着解扰。
+    LaunchedEffect(page.imageFile, page.state, page.rawFile) {
         if (!page.available && page.state == ReaderPage.PageState.Pending) onRequest()
     }
 
@@ -409,7 +418,9 @@ private fun ReaderPageItem(
     if (!page.available) {
         Box(
             modifier = modifier
-                .aspectRatio(1f / ReaderPage.DEFAULT_ASPECT)
+                // 占位高度用**这一页已知的真实比例**（预取时就量好了；没量过才是默认 1.4）：
+                // 用固定默认值的话，图一出现高度就变，快翻时看起来就是"图片在闪"。
+                .aspectRatio(1f / page.aspectRatio)
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
             contentAlignment = Alignment.Center,
         ) {
@@ -446,13 +457,26 @@ private fun ReaderPageItem(
         modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
-        AsyncImage(
-            model = page.file,
-            contentDescription = "第 ${page.index + 1} 页",
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f / page.aspectRatio),
-        )
+        val bitmap = page.bitmap
+        if (bitmap != null) {
+            // 原图管线：位图已经解扰好，直接画（不再经过 Coil、不再解码第二次）
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "第 ${page.index + 1} 页",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f / page.aspectRatio),
+            )
+        } else {
+            AsyncImage(
+                model = page.displayFile,
+                contentDescription = "第 ${page.index + 1} 页",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f / page.aspectRatio),
+            )
+        }
     }
 }
 

@@ -69,10 +69,19 @@ class AlbumCleaner(
     private val exports: ExportManager,
     private val tasks: com.haruhi.jmcomic.core.download.DownloadTaskRepository,
     private val coverCache: CoverCache,
+    /**
+     * 目录规划：用来顺手清掉这本的**阅读原图缓存**（`reader-cache/<aid>`）。
+     *
+     * 它是"原图缓存"取图管线的缓存（站点原始字节、未解扰），不是用户资产，
+     * 但"删除本地文件 / 移出书库"在用户看来就是"这本的图别占我空间了"，
+     * 所以一起删；删掉只是下次再联网取一次。
+     */
+    private val dirs: com.haruhi.jmcomic.core.storage.LibraryDirs,
 ) {
 
     /**
-     * 只删本地文件：图片 + 导出成品 + 任务行 + 导出半成品，**保留记录与封面**。
+     * 只删本地文件：图片 + 阅读原图缓存 + 导出成品 + 任务行 + 导出半成品，
+     * **保留记录与封面**。
      *
      * 会先把这本**在跑的任务**停掉（下载落 `PAUSED`、导出停 Job）再删任务行，
      * 否则任务会继续往刚被删掉的目录里写东西；导出**成品**在系统下载目录，这里一并删。
@@ -85,6 +94,7 @@ class AlbumCleaner(
             freed += runCatching { repo.deleteAlbumFiles(album.albumFolderName) }
                 .onFailure { Timber.tag("jm").w(it, "删除本子目录失败：%s", album.albumFolderName) }
                 .getOrDefault(0L)
+            freed += deleteReaderCache(album)
             removedExports += exports.deleteOutputs(album)
         }
         AlbumCleanup(freed, removedExports, removedRecords = false)
@@ -108,6 +118,7 @@ class AlbumCleaner(
             freed += runCatching { repo.deleteAlbumFiles(album.albumFolderName) }
                 .onFailure { Timber.tag("jm").w(it, "删除本子目录失败：%s", album.albumFolderName) }
                 .getOrDefault(0L)
+            freed += deleteReaderCache(album)
         }
 
         // 删书库记录（成员 / 章节清单 / 收藏关联 / 阅读位置）
@@ -145,6 +156,20 @@ class AlbumCleaner(
         val removed = repo.clearRecent()
         evictCoversIfUnused(ids)
         return removed
+    }
+
+    /**
+     * 删掉这本的阅读原图缓存（`reader-cache/<aid>`），返回释放的字节数。
+     *
+     * 只在本子被"删除本地文件 / 移出书库"时调用，不参与"清理缓存"——
+     * 那一层由 `LibraryDirs.clearCache()` 整体清（它只是缓存，删了下次重取）。
+     */
+    private fun deleteReaderCache(album: AlbumEntity): Long {
+        val dir = dirs.readerCacheAlbumDir(album.id)
+        val freed = dirs.sizeOf(dir)
+        runCatching { dir.deleteRecursively() }
+            .onFailure { Timber.tag("jm").w(it, "清理阅读原图缓存失败：%d", album.id) }
+        return freed
     }
 
     /** 删除一条最近浏览记录（同上：书库里没有才清封面）。 */

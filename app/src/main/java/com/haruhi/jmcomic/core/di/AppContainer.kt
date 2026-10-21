@@ -402,13 +402,15 @@ class AppContainer(private val appContext: Context) {
             }
         }
 
-    /** "删除本地文件 / 从书库移除"的统一编排（记录 + 图片 + 成品 + 封面）。 */
+    /** "删除本地文件 / 从书库移除"的统一编排（记录 + 图片 + 成品 + 封面 + 阅读原图缓存）。 */
     val jmAlbumCleaner: com.haruhi.jmcomic.feature.data.AlbumCleaner by lazy {
         com.haruhi.jmcomic.feature.data.AlbumCleaner(
             repo = jmRepository,
             exports = jmExports,
             tasks = downloadTasks,
             coverCache = coverCache,
+            // 原图缓存（reader-cache/<aid>）跟着这本一起删：删本地文件就是"别占我空间了"
+            dirs = libraryDirs,
         )
     }
 

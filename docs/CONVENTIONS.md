@@ -49,8 +49,10 @@ Cover(
 
 ### 明确不算违规的例外
 
-- **阅读器的章节原图**是本地文件（`ImageStore` 负责落盘，`AsyncImage(page.file)` 渲染），
-  不是封面，不适用本规范。
+- **阅读器的章节原图**不是封面，不适用本规范：它有两种来源（见 `ReaderCacheMode`）——
+  旧管线落盘的解扰成品（`ImageStore.file` → `AsyncImage(page.displayFile)`），
+  或新管线就地解扰出的位图（`ImageStore.displayBitmap` → `Image(page.bitmap)`）。
+  **不要**把章节图塞进 `Cover`，也不要另建 ImageLoader。
 - **评论者头像**（详情页「评论」tab）不是封面：地址是 `{img_host}/media/users/{photo}`，
   按**文件名**取图，根本没有本子号可以传给 `Cover`。这种图直接 `AsyncImage` +
   **同一个应用级 ImageLoader**（`currentImageLoader()`，带正确 UA / 代理、缓存同一处），

@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.data
 
+import android.graphics.Bitmap
 import com.haruhi.jmcomic.core.codec.ImageCodec
 import com.haruhi.jmcomic.core.codec.ImageDownloadTransform
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
@@ -18,6 +19,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 章节图片的**本地优先取图器**：阅读器与下载任务共用同一份落盘位置和同一套解扰规则。
+ *
+ * ## 两套取图管线（设置页「阅读与显示 → 图片缓存方式」，见 `ReaderCacheMode`）
+ *
+ * | 管线 | 落盘内容 | 目录 | 入口 |
+ * |---|---|---|---|
+ * | 解扰后落盘（旧，默认之前的行为） | 解扰 + **无损重编码**后的成品 | `library/<本子>/<章节>/` | [file] / [cachedFile] |
+ * | 原图缓存（默认） | **站点原始字节**（未解扰、未重编码） | `reader-cache/<aid>/<cid>/` | [fetchRawFile] / [displayBitmap] |
+ *
+ * 旧管线一行没删：用户随时可以切回去；下载任务（[com.haruhi.jmcomic.feature.data.DownloadManager]）
+ * **永远**走旧管线的成品落盘——下载产物要能直接给 ZIP/PDF 导出用，必须是解扰好的。
  *
  * ## 为什么需要它
  *
@@ -189,4 +200,93 @@ class ImageStore(
     }
 
     private fun isUsable(file: File): Boolean = file.isFile && file.length() > 0
+
+    // ------------------------------------------------------------------
+    // 新管线（设置页「图片缓存方式 = 原图缓存」）：只存原始字节，显示时就地解扰
+    // ------------------------------------------------------------------
+    //
+    // 与上面 [file] 的分工：
+    // - [file] / [cachedFile] 走 `library/<本子>/<章节>/`，里面**永远**是解扰后的成品
+    //   （下载产物、导出源、旧管线的缓存）；
+    // - 这里的 `raw*` 走 `reader-cache/<aid>/<cid>/`，里面**永远**是站点原始字节
+    //   （未解扰、未重编码），纯粹是"少下一遍"的缓存，删掉不影响任何用户资产。
+    //
+    // 分开存放是为了让两套管线互不污染：原图缓存里的加扰字节绝不能被"是否已下载"
+    // 的判断命中（否则下载会跳过、导出会把加扰图打进 zip），切回旧管线时也不会读到加扰图。
+
+    /** 某张图的**原图**缓存位置（不判断是否存在）。 */
+    fun rawTargetFile(albumId: Long, chapterId: Long, imageFile: String): File =
+        File(dirs.readerCacheChapterDir(albumId, chapterId), imageFile)
+
+    /** 磁盘上已有的原图（**不发任何网络请求**）。0 字节残留不算命中。 */
+    fun cachedRawFile(albumId: Long, chapterId: Long, imageFile: String): File? =
+        rawTargetFile(albumId, chapterId, imageFile).takeIf { isUsable(it) }
+
+    /** 某一本的原图缓存目录（删本时整目录清掉）。 */
+    fun rawAlbumDir(albumId: Long): File = dirs.readerCacheAlbumDir(albumId)
+
+    /**
+     * 取一张图的**原始字节**（新管线）：本地有就直接用，没有就联网取回来并落盘缓存。
+     *
+     * 与 [file] 的关键差别：**没有 `beforePublish`**——字节原样落盘，不解码、不解扰、
+     * 不重编码。于是这一趟的本地成本≈0，解扰推迟到真正要显示时（[displayBitmap]）。
+     *
+     * 并发控制不在这一层：调用方（`ReaderViewModel`）用「同时下载图片数」做信号量，
+     * 阅读器与预取共用同一批名额。
+     */
+    suspend fun fetchRawFile(
+        albumId: Long,
+        chapterId: Long,
+        imageFile: String,
+    ): File = withContext(Dispatchers.IO) {
+        cachedRawFile(albumId, chapterId, imageFile)?.let { return@withContext it }
+
+        val target = rawTargetFile(albumId, chapterId, imageFile)
+        val lock = locks.computeIfAbsent(target.absolutePath) { Mutex() }
+        lock.withLock {
+            cachedRawFile(albumId, chapterId, imageFile)?.let { return@withLock it }
+
+            val domain = environment.imageDomain()
+            val outcome = downloader.download(
+                urlProvider = { Defaults.buildImgUrl(chapterId, imageFile, domain) },
+                target = target,
+                skipIfComplete = true,
+                // 原样发布：不解扰、不重编码
+                beforePublish = null,
+            )
+            when (outcome) {
+                is DownloadOutcome.Downloaded, is DownloadOutcome.Skipped -> Unit
+                is DownloadOutcome.Failed -> throw outcome.error
+                DownloadOutcome.Cancelled -> throw IllegalStateException("图片下载已取消：$imageFile")
+            }
+            target
+        }
+    }
+
+    /**
+     * 把一张**原图**在内存里解扰成可直接显示的位图（不写盘、不重编码）。
+     *
+     * 块数用 [ImageDownloadTransform.blockNumOf]（与下载/旧管线同一条算法）：
+     * 章节的 `scramble_id` 按话缓存在 [scrambleIds] 里，同一话只查一次库/接口。
+     *
+     * @param targetWidthPx 显示宽度，用于算降采样倍数（长图别整张解进内存）
+     * @return 可显示的位图；**不需要解扰**时也返回解码结果（调用方统一用 `Image` 渲染）
+     */
+    suspend fun displayBitmap(
+        chapterId: Long,
+        imageFile: String,
+        raw: File,
+        targetWidthPx: Int,
+    ): Bitmap = withContext(Dispatchers.IO) {
+        val blockNum = ImageDownloadTransform.blockNumOf(
+            scrambleId = scrambleIdOf(chapterId),
+            chapterId = chapterId,
+            fileName = imageFile,
+        )
+        ImageCodec.descrambleToBitmap(
+            file = raw,
+            blockNum = blockNum,
+            targetWidthPx = targetWidthPx,
+        )
+    }
 }

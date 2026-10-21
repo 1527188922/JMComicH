@@ -2,6 +2,9 @@ package com.haruhi.jmcomic.core.codec
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import timber.log.Timber
 import java.io.File
 import java.io.FileOutputStream
@@ -129,6 +132,119 @@ object ImageCodec {
     }
 
     /**
+     * 解码原图（可降采样）→ 解扰 → 返回**可直接显示**的位图。
+     *
+     * 这是"原图缓存"取图管线（`ReaderCacheMode.RAW`）的显示端：**不写盘、不重编码**，
+     * 只做一次解码 + 若干次块搬移，所以比旧管线（解码→逐行拷贝→无损 WEBP 重编码→写盘→
+     * Coil 再解码）少掉一大半工作。
+     *
+     * 与 [descramble] 的差别：
+     * - 走 `Canvas.drawBitmap(src, srcRect, dstRect)` 的块搬移，而不是逐行
+     *   `getPixels/setPixels`（后者每行两次 JNI 往返，长图要上千次）；
+     * - 解码时可以**按显示宽度降采样**（[decodeSampleSize]），长图不会整张解进内存；
+     * - 结果直接给 Compose 的 `Image` 用，不再落盘，也不需要第二次解码。
+     *
+     * 块布局仍由 [Descrambler.plan] 给出（与旧管线、导出、下载逐块一致），
+     * 只是坐标落在**解码后**的位图上（等比，共 1px 之内的误差）。
+     *
+     * @param blockNum 0 / 负数表示不需要解扰，直接返回解码结果
+     * @param targetWidthPx 显示宽度（像素）。用于算降采样倍数
+     * @param maxPixels 单张位图的像素上限，超过就继续降采样（防长图 OOM）
+     */
+    fun descrambleToBitmap(
+        file: File,
+        blockNum: Int,
+        targetWidthPx: Int,
+        maxPixels: Int = MAX_DISPLAY_PIXELS,
+    ): Bitmap = try {
+        decodeAndDescramble(file, blockNum, targetWidthPx, maxPixels)
+    } catch (e: OutOfMemoryError) {
+        // 极端长条 + 低内存机：先把预算砍到 1/4 再试一次。
+        // 宁可这一页糊一点，也不要整个阅读器崩掉（导出那边也是同样的取舍）。
+        Timber.tag("jm").w("解扰解码内存不足，降采样重试：%s", file.name)
+        decodeAndDescramble(file, blockNum, targetWidthPx, (maxPixels / 4).coerceAtLeast(1))
+    }
+
+    /** [descrambleToBitmap] 的实现体（拆出来只为了 OOM 时能整体重试一次）。 */
+    private fun decodeAndDescramble(
+        file: File,
+        blockNum: Int,
+        targetWidthPx: Int,
+        maxPixels: Int,
+    ): Bitmap {
+        val meta = readMeta(file)
+        val sample = decodeSampleSize(meta.width, meta.height, targetWidthPx, maxPixels)
+        val source = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
+        ) ?: error("无法解码图片：${file.absolutePath}")
+
+        if (blockNum < 1) return source
+
+        val moves = Descrambler.plan(source.height, blockNum)
+        if (moves.isEmpty()) return source
+
+        val target = Bitmap.createBitmap(
+            source.width,
+            source.height,
+            source.config ?: Bitmap.Config.ARGB_8888,
+        )
+        try {
+            val canvas = Canvas(target)
+            val paint = Paint().apply {
+                // 只有真的降采样过才需要插值；1:1 搬运必须**逐像素**原样拷
+                isFilterBitmap = sample > 1
+                isAntiAlias = false
+            }
+            val src = Rect()
+            val dst = Rect()
+            moves.forEachIndexed { index, move ->
+                src.set(0, move.srcY, source.width, move.srcY + move.height)
+                // 缩放搬运时块与块之间会因取整露出 1px 缝：非最后一块往下多垫 1px 盖住
+                // （官方 `onImageLoaded` 的做法，见文档 §8.3）
+                val pad = if (sample > 1 && index < moves.lastIndex) 1 else 0
+                dst.set(0, move.dstY, source.width, (move.dstY + move.height + pad).coerceAtMost(source.height))
+                canvas.drawBitmap(source, src, dst, paint)
+            }
+        } catch (e: Throwable) {
+            target.recycle()
+            throw e
+        } finally {
+            source.recycle()
+        }
+        return target
+    }
+
+    /**
+     * 解码降采样倍数（2 的幂，与 `BitmapFactory.inSampleSize` 的语义一致）。
+     *
+     * 两条约束：
+     * 1. **不要解得比屏幕还宽**：`width / sample` 保持 ≥ 显示宽度，避免把 3000px 宽的图整张解出来；
+     * 2. **像素总数封顶** [maxPixels]：长条页（800×12000 = 9.6 MP）不会被降得太狠，
+     *    但超过上限（例如 800×20000）就继续折半，防止一张图吃掉几十 MB。
+     *
+     * 纯函数，便于单测（不依赖 android.graphics）。
+     */
+    fun decodeSampleSize(
+        width: Int,
+        height: Int,
+        targetWidthPx: Int,
+        maxPixels: Int = MAX_DISPLAY_PIXELS,
+    ): Int {
+        if (width <= 0 || height <= 0) return 1
+        val target = if (targetWidthPx > 0) targetWidthPx else width
+        var sample = 1
+        while (width / (sample * 2) >= target) sample *= 2
+        while (maxPixels > 0 && (width / sample).toLong() * (height / sample).toLong() > maxPixels) {
+            sample *= 2
+        }
+        return sample
+    }
+
+    /**
      * 转成 JPEG 字节（PDF 内嵌用：**PDF 不支持 WebP**）。
      *
      * 有损转换会掉画质，所以默认质量取 90（计划 §7 的约束）。
@@ -158,6 +274,14 @@ object ImageCodec {
 
     /** 参考实现会重新编码成 webp 且质量未知；这里用无损以对齐"逐像素一致"的验收要求。 */
     private const val QUALITY_LOSSLESS = 100
+
+    /**
+     * 显示端单张位图的像素上限（"原图缓存"管线的降采样依据）。
+     *
+     * 12 MP ≈ 常见长条页（800×12000 = 9.6 MP）的尺寸，超过才继续折半：
+     * 再往上（800×20000）ARGB_8888 就是 64 MB 一张，阅读器不该扛这个。
+     */
+    const val MAX_DISPLAY_PIXELS = 12_000_000
 
     /** 超过这个高度或内存占用就算长图（JM 常见 800×12000 ≈ 36MB）。 */
     private const val TALL_IMAGE_THRESHOLD = 6_000
@@ -221,15 +345,7 @@ class ImageDownloadTransform(
      * @throws Exception 处理失败。**调用方必须放弃发布**，否则最终路径上会出现加扰图。
      */
     fun transform(file: File, fileName: String): Boolean {
-        // 只对 webp 解扰（参考实现 `downloadChapter` 第 948～954 行）
-        val extension = fileName.substringAfterLast('.', "").lowercase()
-        if (extension != "webp") return false
-
-        val blockNum = com.haruhi.jmcomic.core.protocol.Crypto.calculateBlockNum(
-            scrambleId = scrambleId,
-            chapterId = chapterId,
-            filenameWithoutExt = fileName.substringBeforeLast('.'),
-        )
+        val blockNum = blockNumOf(scrambleId, chapterId, fileName)
         if (blockNum <= 0) {
             // 未加扰：**直接保留原文件**，不重新编码（已确认的决策，也是 P3 的验收项）
             return false
@@ -242,6 +358,28 @@ class ImageDownloadTransform(
             // 所以这里必须把异常交给引擎，由引擎放弃发布。
             Timber.tag("jm").w(e, "解扰失败，放弃本次下载：%s", fileName)
             throw e
+        }
+    }
+
+    companion object {
+        /**
+         * 这张图的解扰块数（0 = 不需要解扰）。
+         *
+         * 两条管线的**唯一**块数算法，别再各写一份：
+         * - 旧管线（[ImageDownloadTransform.transform]）用它决定是否重编码；
+         * - 新管线（`ReaderCacheMode.RAW`，显示端）用它决定 [ImageCodec.descrambleToBitmap] 搬几块。
+         *
+         * 只对 `.webp` 解扰（参考实现 `downloadChapter` 第 948～954 行）：
+         * `.gif` 之类的旧漫画图从来没被切过。参数一律只看**逻辑文件名**，
+         * 不能传物理名（`.part` / `.descrambled` 会让块数算错、把图解坏）。
+         */
+        fun blockNumOf(scrambleId: Long, chapterId: Long, fileName: String): Int {
+            if (fileName.substringAfterLast('.', "").lowercase() != "webp") return 0
+            return com.haruhi.jmcomic.core.protocol.Crypto.calculateBlockNum(
+                scrambleId = scrambleId,
+                chapterId = chapterId,
+                filenameWithoutExt = fileName.substringBeforeLast('.'),
+            )
         }
     }
 }

@@ -1780,14 +1780,14 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `core.database.DaoTest` | 14 | 书库分页排序（入库时间倒序）/ 标签 OR / 章节分组 / 收藏唯一索引 |
 | `feature.jm.data.DownloadManagerTest` | 13 | **下载编排**：逐字节一致（块数 0 不重编码）/ 跳过已存在 / 断点只补缺口 / 等待网络 / 取消 / 追加章节 / 重试 |
 | `core.database.DownloadTaskDaoTest` | 13 | 任务去重 / **恢复=暂停** / `pauseActive` 只暂停指定类型且章节回队列 / 章节计数幂等 / 历史裁剪 |
-| `core.download.FileDownloaderTest` | 12 | Range 续传 / 不支持 Range / 断流 / 416 / 原子发布 |
+| `core.download.FileDownloaderTest` | 14 | Range 续传 / 不支持 Range / 断流 / 416 / 原子发布 / **本地种子文件不出网也能发布** / 种子不可用回落网络 |
 | `core.download.DownloadTaskRepositoryTest` | 13 | 杀进程恢复（**下载置暂停、导出被删+中转文件清理**）/ 按磁盘重算进度 / 退出暂停批量语义 / 章节状态不回退 / 取消不复活 |
 | `feature.jm.data.ExportManagerTest` | 15 | **导出编排**：缺图预检 / zip 与 pdf 跑通并交付 / 重复提交复用 / 无图时给出可读失败原因 / **成品是否存在、按名查 Uri、删单个与删两个格式 / `exportsOf` 的大小与生成时间 / `presentFormats` 整页只查一次** |
 | `feature.jm.ui.DisplayLogicTest` | 10 | 书库状态文案 / 章节状态 / 体积格式 / **详情页点赞·观看数字段与章节区标题（含占用体积）** / 空态与错误文案 |
 | `core.codec.PdfPagePlanTest` | 8 | **PDF 切片**：未超限仍是一页 / 超限切片连续无重叠 / 宽度超限等比缩小 / 切片数上限 |
 | `feature.jm.data.AlbumCleanerTest` | 8 | **删除编排**：只删文件保留记录 / 从书库移除清四张表 / **封面按"还在不在书库或最近浏览里"决定**（四种组合）/ 移除前先取消任务 / 只删文件时任务照跑 |
 | `feature.jm.ui.FavoriteSortTest` | 7 | **收藏页排序**：默认夹置顶 / 三种方式都是降序 / 空夹排最后 / 同值按 id 稳定 |
-| `feature.jm.data.ImageStoreTest` | 7 | **本地优先取图**：命中不发请求 / 取回来就缓存 / 删掉后重新取 / 块数 0 原样保留 |
+| `feature.jm.data.ImageStoreTest` | 10 | **本地优先取图**：命中不发请求 / 取回来就缓存 / 删掉后重新取 / 块数 0 原样保留 / **原图缓存逐字节原样落盘且不污染 library** / 两套目录互不影响 / `clearCache` 连原图缓存一起清 |
 | `feature.jm.data.ReadingRepositoryTest` | 6 | 阅读位置读写与钳位 / "继续阅读"取最近一本 / 章节目录名规则 |
 | `feature.jm.ui.SearchRevealStateTest` | 6 | 搜索增量展示的推进与边界 |
 | `feature.jm.ui.LibraryExportFilterTest` | 6 | **「有 ZIP / 有 PDF」筛选**：单条件 / 两条件要同时满足 / 快照未就绪时放行 / 「清除 N 项」只数用户加的条件 |
@@ -1797,11 +1797,13 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `feature.jm.ui.SheetGestureTest` | 4 | **面板把手关闭阈值**：拖过 56dp 关 / 甩过 125dp/s 关 / 又短又慢不关 / 向上拖不关（本轮按要求**未运行**，只保证编译） |
 | `core.download.DownloadGateTest` | 5 | 下载网络策略矩阵（仅 Wi-Fi / 允许移动网络） |
 | `core.codec.DescramblerGoldenTest` | 5 | 解扰块布局 + 与参考实现逐像素一致 |
+| `core.codec.ImageCodecSampleTest` | 5 | **显示端降采样打表**：窄图不缩 / 宽图按屏幕宽度折半 / 长条页按 12 MP 预算折半 / 尺寸未知与预算 0 都不崩 |
 | `core.codec.ArchiveWriterTest` | 5 | zip 结构（不套本子目录）/ 顺序 / 进度 / 不加密码 / 重新生成覆盖 |
 | `core.codec.PdfWriterSpikeTest` | 4 | PDF 页面 / 书签 / `PageMode` / 不加密 |
 | `feature.jm.data.SearchMergeTest` | 4 | **精确匹配合并**：置顶 / 同 aid 不重复 / 总数只在真的新增时 +1 / 搜索零结果也有它 |
 | `core.protocol.CryptoProbeTest` | 2 | 环境回归：JCE 可用性 |
 | `core.codec.PixelProbeTest` | 2 | 环境回归：位图像素读写行为 |
+| `core.settings.ReaderCacheModeTest` | 4 | **取图管线的存储编码**：默认原图缓存 / 编码往返 / 旧值与脏值安全回落 / 两个选项文案 |
 
 ### 设备测试（instrumented）
 
@@ -1816,3 +1818,90 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 > **界面交互测试的前置条件**：Compose 的测试框架会一直等窗口获得焦点，
 > 因此设备必须**亮屏且已解锁**。熄屏状态下 `connectedAndroidTest` /
 > `runDeviceTests` 会永久阻塞（不是失败，是挂住）。
+
+## 阅读器取图管线：原图缓存（2026-10-21）
+
+用户反馈：**同一个网络下，官方 App 在线看很快，本工程慢很多**。上一轮的分析结论（`docs/official-api-2.1.11.md`
+§8 与当时的实测）是：**图片线路不是主因**——一页只有几十 KB（实测 681×946 的 webp = 66 440 B），
+换到"延迟最低"的图片线路也救不回来；真正吃到时间的是本工程把"显示一页"实现成了
+
+```
+下载 → 解码 ARGB_8888 → 逐行搬块 → 无损 WEBP 重编码（体积 ×7.8、耗时 ×4）→ 写盘 → Coil 再解码一次
+```
+
+而官方是"`<img>` 下载（提前 12 页预取）→ 解码一次 → `canvas` 缩放搬块"，**不重编码、不落盘、不二次解码**。
+
+### 做法：新增第二套管线，旧管线原样保留、可随时切回
+
+设置页「阅读与显示 → 图片缓存方式」：
+
+| 选项 | 落盘内容 | 目录 | 显示 |
+|---|---|---|---|
+| **原图缓存**（默认，本次新增） | 站点**原始字节**（未解扰、未重编码） | `files/reader-cache/<aid>/<cid>/` | 就地解码（可降采样）+ `Canvas` 搬块 → `Image(bitmap)` |
+| 解扰后落盘（旧行为，保留） | 解扰 + 无损重编码后的**成品** | `files/library/<本子>/<章节>/` | `AsyncImage(model = File)` |
+
+- 切换**选中即生效**，只影响之后新取的页；已经在屏幕上的页不重建。
+- **下载任务永远走旧管线的成品落盘**，与这个设置无关（导出 ZIP/PDF 必须拿到解扰后的图）。
+- 两套目录刻意分开：`reader-cache` 里是加扰字节，绝不能被"是否已下载"的判断命中，
+  否则下载会跳过、导出会把加扰图打进 zip；切回旧管线也不会读到加扰图。
+
+### 预取与并发
+
+- 新管线在**可见页就绪后**顺手取后面 `PREFETCH_AHEAD = 3` 页的**字节**（只取字节、不解扰：
+  预取阶段解长图会白占几十 MB）。
+- 并发名额**直接取设置里的「同时下载图片数」**（用户 2026-10-21 要求，1～12，默认 4）：
+  用 `Semaphore` 实现，可见页 `acquire()`（一定排得上），预取 `tryAcquire()`（抢不到就跳过，
+  绝不把用户正在看的那页排到后面）。解扰另有 `DECODE_CONCURRENCY = 2` 的名额（瓶颈是位图内存）。
+- 位图**有窗口**：当前页前后各 2 页、且总字节不超过"堆的 1/6（24～96 MB）"，超出的位图从状态里摘掉
+  （**不 `recycle`**：Compose 可能还在引用上一帧），滚回来按磁盘上的原图重解一次（不联网）。
+
+### 改动的文件
+
+| 文件 | 改动 |
+|---|---|
+| `core/settings/ReaderCacheMode.kt` | **新增**：两套管线的枚举、文案、`fromCode`/`toCode`（默认原图缓存） |
+| `core/settings/SettingKeys.kt` / `SettingDefaults.kt` | 新增 `READER_CACHE_MODE`（1 原图 / 0 解扰后落盘） |
+| `core/storage/LibraryDirs.kt` | 新增 `reader-cache/` 与 `readerCacheAlbumDir`/`readerCacheChapterDir`；`clearCache()` 连它一起清 |
+| `core/codec/ImageCodec.kt` | 新增 `descrambleToBitmap`（解码 → `Canvas` 搬块，含 1px 接缝补偿）与纯函数 `decodeSampleSize`；`ImageDownloadTransform.blockNumOf` 收编两套管线的块数算法 |
+| `feature/data/ImageStore.kt` | 新增 `fetchRawFile`（原样落盘、无 `beforePublish`）/ `cachedRawFile` / `displayBitmap`；旧 `file` 一字未改 |
+| `feature/ui/ReaderViewModel.kt` | 模式分派、预取、并发名额、位图窗口回收；`ReaderPage` 增加 `displayFile`/`bitmap`/`rawFile`；换话时取消在飞的取图（文件名每话重名，不取消会串页） |
+| `feature/ui/ReaderScreen.kt` | 一页两种渲染来源（`Image(bitmap)` / `AsyncImage(file)`）；`LaunchedEffect` 的 key 带上 `rawFile`，预取回来后立刻解扰 |
+| `feature/ui/SettingsScreen.kt` | 状态字段 + `setReaderCacheMode` + 「图片缓存方式」单选行 |
+| `feature/data/AlbumCleaner.kt` | 「删除本地文件 / 移出书库」连这本的 `reader-cache/<aid>` 一起清（并计入释放字节） |
+| `core/download/FileDownloader.kt` | 新增 `seedFile`（本地种子）：阅读器已存原图时，下载**不再联网**，直接拿本地字节走"解扰 → 原子发布"；`ParallelImageDownloader.downloadImages` 对应新增 `seedFor` |
+| `feature/data/DownloadManager.kt` | 下载时把 `reader-cache/<aid>/<cid>/<文件名>` 当种子交给引擎（"一边看一边下载"不再重复下载同一张图） |
+| 测试 | 新增 `ImageCodecSampleTest`（5）/ `ReaderCacheModeTest`（4）；`ImageStoreTest` 补 3 个（原图落盘逐字节一致、两套目录互不影响、`clearCache` 清原图缓存） |
+
+### 快翻时图片闪烁的修复（同日，用户反馈）
+
+用户反馈：换上新管线后确实快了，但**翻太快时会看到图片闪一下**。根因是位图回收的中心用错了：
+
+- 旧实现 `trimDisplayBitmaps(刚加载完的页码)` —— 翻得快时先发出的页反而后到，它回来时以**自己**为
+  中心回收，正好把用户此刻正看着的那几页（离它很远）的位图抽掉，于是"图没了 → 又被重解 → 图回来"。
+- 现在的做法分两级，中心一律取 `currentPage`：
+  1. **硬预算**（每帧生效）：位图总字节超过"堆的 1/6"时，从离当前页最远的开始丢，
+     **当前页与它旁边那一页永远不动**（一屏常常同时露出两页）；
+  2. **窗口回收**（滚动停稳 [TRIM_SETTLE_MS] 后再做）：只保留当前页前后 `BITMAP_KEEP_RADIUS = 3` 页。
+     快翻期间一帧一个页码，立刻按窗口回收会让页反复"丢掉 → 重解"，那本身就是闪烁。
+- 另外两处小修，都是同一个观感问题的来源：
+  - **预取拿到字节时就量出真实宽高比**写进状态，占位框一开始就是对的尺寸，图出现时不再"跳一下"；
+  - 阅读器的**占位高度改用这一页已知的 `aspectRatio`**（以前一律按 1.4 占位），
+    被回收过、翻回来重解的页也不会因为高度变化而抖。
+
+### 设备上怎么核对
+
+1. 设置 → 阅读与显示 → 图片缓存方式选「原图缓存」（默认就是），进一本没缓存过的漫画，
+   翻十几页：**每页只闪一下**，不应再有"一页一卡"。
+2. `adb shell ls -l /data/data/<包名>/files/reader-cache/<aid>/<cid>/` → 每张 ≈ 站点原图大小（几十 KB），
+   而 `files/library/<本子>/<章节>/` 里（如果下载过）是解扰后的成品。
+3. 设置里把「同时下载图片数」调成 1（或 12）再翻页：预取明显变严格/变积极——说明并发真的走那一项。
+4. 切回「解扰后落盘」：行为与本次改动之前完全一致（`library` 里继续产出成品），再切回来也正常。
+5. 长条页（800×12000）与普通页来回翻：内存不持续上涨（远处的位图会被摘掉，翻回来重新解、不联网）。
+
+### 这次没做
+
+- **封面 / 头像仍然固定走 `Defaults.IMAGE_DOMAIN`**，不跟随「图片线路」设置（`Defaults.buildCoverUrl` /
+  `buildAvatarUrl` 的调用点分散在 `Repository` / `Screens` / `AlbumDetailScreen`，属于另一条链路，本轮不动）。
+- 没做"下载时也预取原图"：下载永远产出成品，两套缓存互不复用（换来的是语义清晰、不会把加扰图当下载结果）。
+  唯一的例外是**单向复用**：下载时会先看 `reader-cache` 里有没有现成原图（有就不联网、直接解扰发布），
+  反过来阅读器不会去偷 `library` 的半成品。

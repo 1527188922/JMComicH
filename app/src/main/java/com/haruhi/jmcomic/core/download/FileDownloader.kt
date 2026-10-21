@@ -143,6 +143,18 @@ class FileDownloader(
         skipIfComplete: Boolean = true,
         etag: String? = null,
         beforePublish: ((File) -> Unit)? = null,
+        /**
+         * **可选的本地种子文件**：已经下好、内容与目标相同的另一份字节
+         * （阅读器的"原图缓存"就是这种）。
+         *
+         * 给了它并且文件可用时**一个网络请求都不发**：把种子拷成 `.part`，
+         * 走同一条「校验 → `beforePublish` → 原子发布」的路径。
+         *
+         * 为什么需要：新取图管线把站点原图存在 `reader-cache/`，下载任务写的是解扰后的
+         * 成品（`library/`）。两套目录必然是两个文件，但**不该为同一张图联网两次**——
+         * "一边看一边下载"时的重复下载就是靠这个参数消掉的。
+         */
+        seedFile: File? = null,
     ): DownloadOutcome {
         // 先算总尝试次数再抢锁：设置里的值是"失败后再试几次"，引擎要的是"总尝试次数"
         // （至少 1 次）。读设置是 suspend 的，放在锁外面不占别人的等待时间。
@@ -155,6 +167,15 @@ class FileDownloader(
             if (skipIfComplete && target.isFile && target.length() > 0) {
                 return@withLock DownloadOutcome.Skipped(target, target.length())
             }
+            // 本地已经有同样的字节：不联网，直接当"已下载"走发布流程
+            if (seedFile != null && seedFile.isFile && seedFile.length() > 0) {
+                publishSeeded(
+                    seedFile = seedFile,
+                    target = target,
+                    expectedTotal = expectedTotal,
+                    beforePublish = beforePublish,
+                )?.let { return@withLock it }
+            }
             downloadLocked(
                 urlProvider = urlProvider,
                 target = target,
@@ -165,6 +186,44 @@ class FileDownloader(
                 beforePublish = beforePublish,
                 maxAttempts = attemptLimit,
             )
+        }
+    }
+
+    /**
+     * 用本地种子文件代替下载。
+     *
+     * 语义与"下载成功"完全一致（校验 → 后处理 → 原子发布），只是不联网。
+     * 中途出错**不重试、也不回落到网络**：种子拷不动说明本地环境有问题，
+     * 重发一次 HTTP 也解决不了；返回 `null` 表示"种子这条路走不通"，交给调用方走网络。
+     */
+    private fun publishSeeded(
+        seedFile: File,
+        target: File,
+        expectedTotal: Long,
+        beforePublish: ((File) -> Unit)?,
+    ): DownloadOutcome? {
+        val partFile = File(target.parentFile, target.name + PART_SUFFIX)
+        return try {
+            target.parentFile?.mkdirs()
+            seedFile.copyTo(partFile, overwrite = true)
+            val total = if (expectedTotal > 0) expectedTotal else partFile.length()
+            publishAfterValidation(
+                partFile = partFile,
+                target = target,
+                total = partFile.length(),
+                expectedTotal = total,
+                resumedFrom = 0L,
+                beforePublish = beforePublish,
+            )
+        } catch (e: PostProcessFailed) {
+            // 后处理失败照旧：**绝不发布**（发布出去的就是没处理过的半成品）
+            Timber.tag("dl").w(e, "种子文件后处理失败，放弃发布：%s", target.name)
+            partFile.delete()
+            DownloadOutcome.Failed(NetworkError.Malformed(target.name, "图片已下载但无法解扰，请重试"))
+        } catch (e: Throwable) {
+            Timber.tag("dl").w(e, "本地种子文件不可用，改走网络：%s", target.name)
+            partFile.delete()
+            null
         }
     }
 
@@ -517,6 +576,8 @@ class ParallelImageDownloader(
      *        所以：只在真正发生了下载（`Downloaded`）时执行一次，跳过的文件不重复处理
      *        （解扰不可逆，重复执行会毁图）；处理失败会让这张图判为失败，**不会**把
      *        未处理的字节发布到目标路径。
+     * @param seedFor 单张图的**本地种子**（阅读器的原图缓存）：给得出来就省掉这次网络请求，
+     *        仍然照常走 `transform` 与原子发布。见 [FileDownloader.download] 的 `seedFile`。
      * @param onProgress `(已存在+已成功的数量, 总数)`
      * @param onFileDone 单张图完成（用于仓库层持久化章节计数）
      */
@@ -527,6 +588,7 @@ class ParallelImageDownloader(
         transform: ((File, String) -> Boolean)? = null,
         onProgress: ((done: Int, total: Int) -> Unit)? = null,
         onFileDone: (suspend (fileName: String, success: Boolean) -> Unit)? = null,
+        seedFor: ((fileName: String) -> File?)? = null,
     ): ChapterResult = coroutineScope {
         chapterDir.mkdirs()
         val total = images.size
@@ -569,6 +631,8 @@ class ParallelImageDownloader(
                             } else {
                                 { part: File -> transform(part, fileName) }
                             },
+                            // 阅读器已经把这张图的原始字节存下来了？那就别再联网下一遍
+                            seedFile = seedFor?.invoke(fileName),
                         )
                         when (outcome) {
                             is DownloadOutcome.Downloaded -> {

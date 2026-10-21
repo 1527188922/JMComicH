@@ -70,6 +70,14 @@ class ImageStoreTest {
     /** 固定时钟：签名与解密都由 `ts` 派生，测试里必须是同一个值。 */
     private val fixedTs = 1_700_000_000L
 
+    /**
+     * `/comic_read` 返回的 `scramble_id`。
+     *
+     * 默认远大于章节号 → 块数 0 → 旧管线"不重新编码、原样落盘"（其余用例依赖这一点）。
+     * 验证"新管线一行处理都不做"时改成 `1`：让这一话**真的需要解扰**。
+     */
+    private var scrambleId = "999999999"
+
     @Before
     fun setUp() {
         server = MockWebServer()
@@ -79,7 +87,7 @@ class ImageStoreTest {
                 // 默认机制（ChapterSource.COMIC_READ）：`/comic_read` 一次给出 scramble_id
                 if (path.endsWith("/comic_read")) {
                     requests.computeIfAbsent("comic_read") { AtomicInteger() }.incrementAndGet()
-                    // 远大于章节号 -> 块数 0 -> 图片原样落盘（不重新编码）
+                    // 默认远大于章节号 -> 块数 0 -> 图片原样落盘（不重新编码）
                     return comicReadEnvelope()
                 }
                 val name = path.substringAfterLast('/')
@@ -216,6 +224,81 @@ class ImageStoreTest {
         assertThat(File(dirs.library, "测试本子_JM480854")).isEqualTo(dir.parentFile)
     }
 
+    // ------------------------------------------------------------------
+    // 原图缓存（新管线，ReaderCacheMode.RAW）
+    // ------------------------------------------------------------------
+
+    /**
+     * 新管线的核心承诺：**下载只存原始字节**——不解扰、不解码、不重编码。
+     *
+     * 所以这里断言三件事：
+     * 1. 落盘字节与响应逐字节相同（没有经过任何处理）；
+     * 2. 落点在 `reader-cache/`，**不是** `library/`（不污染"是否已下载"与导出源）；
+     * 3. 第二次取不再发请求。
+     */
+    @Test
+    fun `fetchRawFile stores the untouched bytes in the reader cache`() = runBlocking {
+        val file = store.fetchRawFile(album.id, chapterId, imageFile)
+
+        assertThat(file.readBytes()).isEqualTo(payload)
+        assertThat(file.length()).isEqualTo(payload.size.toLong())
+        assertThat(store.cachedRawFile(album.id, chapterId, imageFile)).isEqualTo(file)
+
+        // 落在 reader-cache/<aid>/<cid>/ 下，且不是 library 里的成品
+        assertThat(file.parentFile).isEqualTo(dirs.readerCacheChapterDir(album.id, chapterId))
+        assertThat(file.parentFile!!.parentFile).isEqualTo(dirs.readerCacheAlbumDir(album.id))
+        assertThat(store.cachedFile(album, folder, imageFile)).isNull()
+
+        // 第二次（例如翻回来重新解扰）**一个请求都不发**
+        val again = store.fetchRawFile(album.id, chapterId, imageFile)
+        assertThat(again).isEqualTo(file)
+        assertThat(requests.getValue(imageFile).get()).isEqualTo(1)
+    }
+
+    /**
+     * 新管线连**需要解扰**的章节也不做任何处理：字节原样落盘，解扰推迟到显示时。
+     *
+     * 把 `scramble_id` 设成 1（远小于章节号）→ 这一话每张图都要搬块。旧管线在这个前提下
+     * 会解码 + 无损重编码（测试里的字节根本不是合法 webp，Robolectric 下必然解不出来），
+     * 所以"文件字节仍与响应逐字节一致"就证明新管线没走那条路。
+     */
+    @Test
+    fun `fetchRawFile never descrambles even when the chapter is scrambled`() = runBlocking {
+        scrambleId = "1"
+
+        val file = store.fetchRawFile(album.id, chapterId, imageFile)
+
+        assertThat(file.readBytes()).isEqualTo(payload)
+        assertThat(store.cachedFile(album, folder, imageFile)).isNull()
+        assertThat(requests.getValue(imageFile).get()).isEqualTo(1)
+    }
+
+    /** 原图缓存与"下载成品"是两套目录，互不影响：清掉缓存不会动已下载的图。 */
+    @Test
+    fun `raw cache and downloaded files live in different places`() = runBlocking {        val raw = store.fetchRawFile(album.id, chapterId, imageFile)
+        val downloaded = store.file(album, chapterId, folder, imageFile)
+
+        assertThat(raw.absolutePath).isNotEqualTo(downloaded.absolutePath)
+        assertThat(downloaded.parentFile).isEqualTo(store.chapterDir(album, folder))
+        assertThat(raw.parentFile).isEqualTo(dirs.readerCacheChapterDir(album.id, chapterId))
+        // 成品在 library 里，删本子目录不会碰原图缓存，反之亦然
+        assertThat(dirs.sizeOf(dirs.readerCache)).isGreaterThan(0L)
+    }
+
+    /** `clearCache()` 会把原图缓存一起清掉（它是纯缓存，不是用户资产）。 */
+    @Test
+    fun `clearing the cache frees the raw reader cache too`() = runBlocking {
+        store.fetchRawFile(album.id, chapterId, imageFile)
+        assertThat(dirs.readerCache.exists()).isTrue()
+
+        val freed = dirs.clearCache()
+
+        assertThat(freed).isGreaterThan(0L)
+        assertThat(dirs.readerCache.exists()).isFalse()
+        // 库里（用户资产）不受影响
+        assertThat(dirs.library.exists()).isTrue()
+    }
+
     /**
      * 用户实际问过的场景：**一边下载、一边看漫画**。
      *
@@ -259,7 +342,7 @@ class ImageStoreTest {
      * `scramble_id` 远大于章节号，所以解扰块数为 0、图片原样落盘。
      */
     private fun comicReadEnvelope(): MockResponse {
-        val encrypted = Crypto.encryptDataForTest(fixedTs, """{"scramble_id":"999999999"}""")
+        val encrypted = Crypto.encryptDataForTest(fixedTs, """{"scramble_id":"$scrambleId"}""")
         return MockResponse.Builder()
             .code(200)
             .body(Buffer().writeUtf8("""{"data":"$encrypted"}"""))

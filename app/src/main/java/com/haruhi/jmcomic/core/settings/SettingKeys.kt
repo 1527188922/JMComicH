@@ -38,6 +38,14 @@ internal object SettingKeys {
         const val KEEP_SCREEN_ON = "keep_screen_on"
 
         /**
+         * 阅读器取图管线：0=解扰后落盘（旧） 1=原图缓存（默认）。
+         *
+         * 两套管线都保留，用户可随时切回来（见 [ReaderCacheMode]）。
+         * 只影响**在线看**的取图方式；"下载本话"永远产出解扰后的成品。
+         */
+        const val READER_CACHE_MODE = "reader_cache_mode"
+
+        /**
          * 同时下载图片数（1～12，默认 4；**没有"自动"档**，2026-10-15 取消）。
          *
          * 老版本存过 `0`（当时那一档"自动"）：读取时按 `normalizeDownloadThreads` 折成 4。

@@ -531,6 +531,8 @@ fun ModeRoot(
                         onSetReadingMode = vm::setReadingMode,
                         onSetReadingDirection = vm::setReadingDirection,
                         onSetKeepScreenOn = vm::setKeepScreenOn,
+                        // 取图管线：原图缓存（默认，快）/ 解扰后落盘（旧，可随时切回）
+                        onSetReaderCacheMode = vm::setReaderCacheMode,
                         // 下载
                         onSetDownloadThreads = vm::setDownloadThreads,
                         onSetDownloadNetwork = vm::setDownloadNetwork,

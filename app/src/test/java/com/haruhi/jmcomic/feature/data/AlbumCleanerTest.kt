@@ -102,6 +102,7 @@ class AlbumCleanerTest {
             ),
             tasks = tasks,
             coverCache = covers,
+            dirs = dirs,
         )
     }
 

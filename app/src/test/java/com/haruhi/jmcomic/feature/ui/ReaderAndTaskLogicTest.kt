@@ -325,7 +325,9 @@ class ReaderAndTaskLogicTest {
             ReaderPage(
                 index = index,
                 imageFile = "%05d.webp".format(index + 1),
-                file = if (cached) java.io.File("/tmp/${index + 1}.webp") else null,
+                // 这里用"解扰后落盘"那条管线的成品文件表示"已缓存"；
+                // 新管线（原图缓存）用的是 bitmap，`available` 的判定对两者一致
+                displayFile = if (cached) java.io.File("/tmp/${index + 1}.webp") else null,
                 aspectRatio = ReaderPage.DEFAULT_ASPECT,
                 // 本地没有的页就是"待取"：阅读器会自动联网拿回来（用户要求第 2 点）
                 state = if (cached) ReaderPage.PageState.Ready else ReaderPage.PageState.Pending,

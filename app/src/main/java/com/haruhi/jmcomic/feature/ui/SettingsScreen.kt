@@ -78,6 +78,7 @@ import com.haruhi.jmcomic.core.protocol.ImageLine
 import com.haruhi.jmcomic.core.protocol.LineCatalog
 import com.haruhi.jmcomic.core.settings.DownloadNetwork
 import com.haruhi.jmcomic.core.settings.ProxyType
+import com.haruhi.jmcomic.core.settings.ReaderCacheMode
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingDefaults
@@ -131,6 +132,13 @@ data class SettingsUiState(
     val readingMode: ReadingMode = ReadingMode.VERTICAL,
     val readingDirection: ReadingDirection = ReadingDirection.LTR,
     val keepScreenOn: Boolean = true,
+    /**
+     * 阅读器取图管线（见 [ReaderCacheMode]）：默认「原图缓存」。
+     *
+     * 旧行为「解扰后落盘」完整保留，用户可随时切回来；只影响**在线看**怎么取图，
+     * 「下载本话」永远产出解扰后的成品。
+     */
+    val readerCacheMode: ReaderCacheMode = ReaderCacheMode.DEFAULT,
 
     // 下载
     /** 同时下载图片数（**没有"自动"档**）；默认 4 就是滑杆的初始位置。 */
@@ -299,6 +307,11 @@ class SettingsViewModel(
         val keepScreenOn = settings
             .jmBoolean(SettingKeys.Jm.KEEP_SCREEN_ON, SettingDefaults.Jm.KEEP_SCREEN_ON)
             .first()
+        val readerCacheMode = ReaderCacheMode.fromCode(
+            settings
+                .jmInt(SettingKeys.Jm.READER_CACHE_MODE, SettingDefaults.Jm.READER_CACHE_MODE)
+                .first(),
+        )
         val threads = settings
             .jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS)
             .first()
@@ -338,6 +351,7 @@ class SettingsViewModel(
                 readingMode = mode,
                 readingDirection = direction,
                 keepScreenOn = keepScreenOn,
+                readerCacheMode = readerCacheMode,
                 downloadThreads = threads,
                 apiLanguage = apiLanguage,
                 zipPassword = zipPassword,
@@ -387,6 +401,16 @@ class SettingsViewModel(
     fun setKeepScreenOn(enabled: Boolean) {
         _state.update { it.copy(keepScreenOn = enabled) }
         viewModelScope.launch { settings.putJmBoolean(SettingKeys.Jm.KEEP_SCREEN_ON, enabled) }
+    }
+
+    /**
+     * 阅读器取图管线（「图片缓存方式」）。**选中即生效**：
+     * 阅读器那个 ViewModel 订阅同一个 key，下一张要取的图就走新管线；
+     * 已经在屏幕上的页不重建，切回旧管线也不会把已显示的内容弄乱。
+     */
+    fun setReaderCacheMode(mode: ReaderCacheMode) {
+        _state.update { it.copy(readerCacheMode = mode) }
+        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.READER_CACHE_MODE, mode.toCode()) }
     }
 
     // ------------------------------------------------------------------
@@ -712,6 +736,8 @@ fun SettingsScreen(
     onSetReadingMode: (ReadingMode) -> Unit,
     onSetReadingDirection: (ReadingDirection) -> Unit,
     onSetKeepScreenOn: (Boolean) -> Unit,
+    /** 阅读器取图管线：原图缓存 / 解扰后落盘（旧行为，随时可切回）。 */
+    onSetReaderCacheMode: (ReaderCacheMode) -> Unit,
     // 下载
     onSetDownloadThreads: (Int) -> Unit,
     /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
@@ -787,6 +813,7 @@ fun SettingsScreen(
                     onSetReadingMode = onSetReadingMode,
                     onSetReadingDirection = onSetReadingDirection,
                     onSetKeepScreenOn = onSetKeepScreenOn,
+                    onSetReaderCacheMode = onSetReaderCacheMode,
                 )
                 DownloadSection(
                     state = state,
@@ -856,6 +883,7 @@ private fun ReadingSection(
     onSetReadingMode: (ReadingMode) -> Unit,
     onSetReadingDirection: (ReadingDirection) -> Unit,
     onSetKeepScreenOn: (Boolean) -> Unit,
+    onSetReaderCacheMode: (ReaderCacheMode) -> Unit,
 ) {
     SettingsSection("阅读与显示") {
         ChoiceRow(
@@ -883,6 +911,18 @@ private fun ReadingSection(
             hint = "只在阅读器前台时生效",
             checked = state.keepScreenOn,
             onCheckedChange = onSetKeepScreenOn,
+        )
+        CardDivider()
+        // 两套取图管线都保留，用户可以随时切回旧的那套（见 docs/PROGRESS.md「阅读器取图管线」）
+        ChoiceRow(
+            title = "图片缓存方式",
+            hint = "在线看漫画时怎么把图弄到屏幕上",
+            help = "「原图缓存」只把站点原图存下来（每页几十 KB），显示时就地解扰，更快、占空间更小；" +
+                "「解扰后落盘」是旧做法：下完就地解扰并无损重编码成成品，更占空间、首次加载更慢，" +
+                "但和「下载」共用同一份文件。两者随时可以切回来，只影响在线看，下载永远是解扰后的成品。",
+            options = ReaderCacheMode.entries.map { it.label },
+            selectedIndex = ReaderCacheMode.entries.indexOf(state.readerCacheMode),
+            onSelect = { onSetReaderCacheMode(ReaderCacheMode.entries[it]) },
         )
     }
 }

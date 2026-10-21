@@ -438,6 +438,9 @@ class DownloadManager(
                 chapterDir = chapterDir,
                 concurrency = concurrency,
                 transform = transform::transform,
+                // 阅读器（原图管线）已经把这张图的原始字节存下来了？那就别再联网下一遍：
+                // 直接拿本地字节走"解扰 + 原子发布"，下载出来的仍然是成品
+                seedFor = { name -> readerRawSeed(albumId, chapterId, name) },
                 onFileDone = { _, success ->
                     if (success) {
                         val done = doneCounter.incrementAndGet()
@@ -462,9 +465,19 @@ class DownloadManager(
         )
     }
 
+    /**
+     * 这张图在**阅读器原图缓存**里的副本（有的话）。
+     *
+     * 只服务"一边看一边下载"：阅读器把站点原图存在 `reader-cache/<aid>/<cid>/`，
+     * 下载任务要的是解扰后的成品（`library/`）。没有这个入口的话同一张图会被网络下两遍。
+     * 文件不在 / 长度为 0 就返回 null，下载走正常网络路径。
+     */
+    private fun readerRawSeed(albumId: Long, chapterId: Long, fileName: String): File? =
+        File(dirs.readerCacheChapterDir(albumId, chapterId), fileName)
+            .takeIf { it.isFile && it.length() > 0 }
+
     /** 图片清单：本地有就用本地的，没有就现场拉一次 `/chapter` 并入库。 */
-    private suspend fun ensureImageList(albumId: Long, chapterId: Long): List<String> {
-        val local = repo.imagesOf(albumId, chapterId)
+    private suspend fun ensureImageList(albumId: Long, chapterId: Long): List<String> {        val local = repo.imagesOf(albumId, chapterId)
         if (local.isNotEmpty()) return local.map { it.imageFile }
         runCatching { repo.fetchAndSaveChapter(albumId, chapterId) }
             .onFailure { Timber.tag("dl").w(it, "拉取章节图片清单失败 chapterId=%d", chapterId) }

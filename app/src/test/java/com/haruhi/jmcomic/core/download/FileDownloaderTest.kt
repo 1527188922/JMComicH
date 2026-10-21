@@ -135,6 +135,53 @@ class FileDownloaderTest {
         assertThat(server.requestCount).isEqualTo(0)
     }
 
+    /**
+     * 本地种子：阅读器的原图缓存已经有同一张图时，下载任务**不联网**，
+     * 直接拿本地字节走「后处理 → 原子发布」，产出与网络下载一致的成品。
+     *
+     * 这就是"一边看一边下载"不再重复下载同一张图的机制（见 `ImageStore.fetchRawFile`）。
+     */
+    @Test
+    fun `a local seed file is published without touching the network`() = runTest {
+        val seed = File(dirs.readerCacheChapterDir(1L, 2L), "00001.webp")
+        seed.parentFile!!.mkdirs()
+        seed.writeBytes(payload)
+        val target = File(dirs.chapterDir("测试本子_JM1", "第1话"), "00001.webp")
+
+        val outcome = downloader.download(
+            urlProvider = { server.url("/never-fetched.webp").toString() },
+            target = target,
+            seedFile = seed,
+            // 模拟"解扰"：后处理必须真的作用在发布前的中转文件上
+            beforePublish = { part -> part.writeBytes(part.readBytes().reversedArray()) },
+        )
+
+        assertThat(outcome).isInstanceOf(DownloadOutcome.Downloaded::class.java)
+        assertThat(target.readBytes()).isEqualTo(payload.reversedArray())
+        assertThat(server.requestCount).isEqualTo(0)
+        // 中转文件不留、种子文件不动（阅读器还要继续用那份原图）
+        assertThat(partOf(target).exists()).isFalse()
+        assertThat(seed.readBytes()).isEqualTo(payload)
+    }
+
+    /** 种子文件读不动（这里用 0 字节模拟）时不能"发布一张空图"，要回落到正常网络下载。 */
+    @Test
+    fun `an unusable seed falls back to the network`() = runTest {
+        val seed = File(dirs.readerCache, "empty.webp").apply { parentFile?.mkdirs() }
+        val target = File(dirs.library, "fallback.webp")
+        server.enqueue(bodyResponse(200, payload))
+
+        val outcome = downloader.download(
+            urlProvider = { server.url("/fallback.webp").toString() },
+            target = target,
+            seedFile = seed,
+        )
+
+        assertThat(outcome).isInstanceOf(DownloadOutcome.Downloaded::class.java)
+        assertThat(target.readBytes()).isEqualTo(payload)
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
     @Test
     fun `truncated download is rejected when the caller knows the expected size`() = runTest {
         val target = File(dirs.library, "video.mp4")

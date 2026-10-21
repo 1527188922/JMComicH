@@ -52,6 +52,19 @@ object SettingDefaults {
         /** [计划 §9.3] 横向翻页方向：右到左。 */
         const val READING_DIRECTION_RTL = 1
 
+        /**
+         * 阅读器取图管线（见 `core/settings/ReaderCacheMode.kt`）：
+         * `1` = 原图缓存（默认，只存原始字节、显示时就地解扰），
+         * `0` = 解扰后落盘（旧行为，下完就地解扰 + 无损重编码成成品）。
+         *
+         * 编码值与 `ReaderCacheMode` 一一对应，设置页「阅读与显示 → 图片缓存方式」可随时切回。
+         */
+        const val READER_CACHE_MODE_RAW = 1
+        const val READER_CACHE_MODE_DESCRAMBLED = 0
+
+        /** 取图管线的默认值：原图缓存。 */
+        const val READER_CACHE_MODE = READER_CACHE_MODE_RAW
+
         /** [计划 §9.3] 阅读背景：跟随主题。 */
         const val READING_BACKGROUND_THEME = 0
 
