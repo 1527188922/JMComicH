@@ -1058,6 +1058,10 @@ private fun AlbumGridCard(
  * 走应用级 ImageLoader 的关键原因是网络层：JM 的封面域名对 UA 有校验，
  * 必须复用带正确 UA / 代理的 OkHttp。
  *
+ * 封面域名**跟着设置页「线路 → 图片线路」选中的那条走**（[LocalImageDomain]）：
+ * 切完线路，这里重建请求换成新域名的 URL，不需要重启应用。
+ * 内存缓存 key 仍然只按本子号固定（见下），所以换线路时已解码的同一张封面照常直接复用。
+ *
  * ## 为什么固定解码尺寸 + 固定内存缓存 key（用户反馈第 1 点）
  *
  * 默认情况下 Coil 会**按每个调用点的尺寸各解码一份**：搜索结果是缩略图、
@@ -1078,9 +1082,11 @@ fun Cover(
 ) {
     val imageLoader = currentImageLoader()
     val context = LocalContext.current
-    val model = remember(albumId, context) {
+    // 设置页选中的图片线路：变化时重建请求，封面改用新域名
+    val imageDomain = LocalImageDomain.current
+    val model = remember(albumId, context, imageDomain) {
         ImageRequest.Builder(context)
-            .data(Defaults.buildCoverUrl(albumId))
+            .data(Defaults.buildCoverUrl(albumId, imageDomain))
             .memoryCacheKey(coverMemoryCacheKey(albumId))
             // 尺寸不匹配时（例如详情页比列表大）先把已有的那份顶上，避免闪白
             .placeholderMemoryCacheKey(coverMemoryCacheKey(albumId))

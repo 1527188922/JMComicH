@@ -222,7 +222,12 @@ fun ModeRoot(
 
     // 封面统一走应用级 ImageLoader：正确的 UA/代理 + files/covers 磁盘缓存
     // （用户要求第 8 点：加载过的封面优先读本地）
-    CompositionLocalProvider(LocalImageLoader provides container.imageLoader) {
+    // 图片线路同时下发：封面 URL 跟着设置页选中的那条走，切线路后已显示的封面立即换源。
+    val imageDomain by container.imageDomain.collectAsStateWithLifecycle()
+    CompositionLocalProvider(
+        LocalImageLoader provides container.imageLoader,
+        LocalImageDomain provides imageDomain,
+    ) {
         Scaffold(
             // 「点输入框以外的地方就失焦、收起软键盘」挂在**根节点**上，一处覆盖所有页面
             // （实现与两条踩坑约束见 `FocusOnTap.kt`）。挂根节点而不是喂给每个输入框，

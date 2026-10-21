@@ -385,6 +385,25 @@ class AppContainer(private val appContext: Context) {
     }
 
     /**
+     * 当前图片线路（图片 CDN 域名）的**热流**。
+     *
+     * 设置页「线路 → 图片线路」选中的那条，封面等图片 URL 都按它拼接。
+     * 做成热流是为了让已经在界面上的封面跟着设置立刻换线路（见 `ModeRoot` 的
+     * `LocalImageDomain`），而不是等应用重启。
+     */
+    val imageDomain: StateFlow<String> by lazy {
+        settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS)
+            .map { LineCatalog.imageLineOf(it).host }
+            .stateIn(
+                scope = appScope,
+                started = SharingStarted.Eagerly,
+                initialValue = LineCatalog.imageLineOf(
+                    runBlocking { settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS).first() },
+                ).host,
+            )
+    }
+
+    /**
      * 封面缓存的逐条失效。
      *
      * 封面走 Coil 的磁盘缓存（`files/covers` 里是按 URL 哈希命名的文件），
@@ -394,7 +413,8 @@ class AppContainer(private val appContext: Context) {
     private val coverCache: com.haruhi.jmcomic.feature.data.CoverCache =
         object : com.haruhi.jmcomic.feature.data.CoverCache {
             override fun evict(albumId: Long) {
-                val url = Defaults.buildCoverUrl(albumId)
+                // 与 `Cover` 用同一条图片线路拼 URL，否则磁盘缓存里的那份删不到
+                val url = Defaults.buildCoverUrl(albumId, imageDomain.value)
                 runCatching {
                     imageLoader.diskCache?.remove(url)
                     imageLoader.memoryCache?.remove(coil3.memory.MemoryCache.Key(url))

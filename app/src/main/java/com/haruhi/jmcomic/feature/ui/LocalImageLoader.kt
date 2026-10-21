@@ -1,8 +1,10 @@
 package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import coil3.ImageLoader
+import com.haruhi.jmcomic.core.protocol.Defaults
 
 /**
  * 供 Composable 取到应用级 `ImageLoader`。
@@ -24,3 +26,14 @@ val LocalImageLoader = staticCompositionLocalOf<ImageLoader?> { null }
 /** 取当前生效的应用级 ImageLoader；没安装时返回 null（此时用 Coil 的单例）。 */
 @Composable
 fun currentImageLoader(): ImageLoader? = LocalImageLoader.current
+
+/**
+ * 当前选中的图片线路（图片 CDN 域名）。
+ *
+ * 封面 URL 由 [Defaults.buildCoverUrl] 按它拼接；设置页切线路后这个值跟着变，
+ * 画面上的封面随即改用新线路（见 `ModeRoot`）。
+ *
+ * 默认值取 [Defaults.IMAGE_DOMAIN]，让 Preview / UI 测试不依赖容器也能画出封面。
+ * 用 `compositionLocalOf` 而不是 `staticCompositionLocalOf`：设置变化时要触发重组。
+ */
+val LocalImageDomain = compositionLocalOf { Defaults.IMAGE_DOMAIN }
