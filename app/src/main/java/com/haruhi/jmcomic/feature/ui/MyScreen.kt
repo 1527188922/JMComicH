@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.haruhi.jmcomic.BuildConfig
 import com.haruhi.jmcomic.core.account.AccountState
@@ -129,35 +131,25 @@ fun MyScreen(
                     )
                 }
 
+                // 退出登录放在「应用设置」下面（用户要求 2026-10-21）：
+                // 它是本机相关的收尾动作，跟上面的设备级入口同一组更顺。
+                // 未登录时不占位置。
+                if (state.signedIn || state.account is AccountState.Expired) {
+                    // 与上面「本机」那一组拉开距离（用户要求 2026-10-21）：24dp 而不是默认 8dp
+                    GroupCard(topPadding = 24.dp) {
+                        LogoutRow(
+                            loggingOut = state.loggingOut,
+                            onClick = { showLogoutDialog = true },
+                        )
+                    }
+                }
+
                 Text(
                     text = "版本 ${BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
                 )
-
-                if (state.signedIn || state.account is AccountState.Expired) {
-                    TextButton(
-                        onClick = { showLogoutDialog = true },
-                        enabled = !state.loggingOut,
-                        modifier = Modifier.padding(start = 8.dp, bottom = 24.dp),
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error,
-                        ),
-                    ) {
-                        if (state.loggingOut) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                            Spacer(Modifier.size(8.dp))
-                            Text("正在退出…")
-                        } else {
-                            Text("退出登录")
-                        }
-                    }
-                }
             }
         }
     }
@@ -296,17 +288,59 @@ private fun AccountAvatar(photo: String?, nickname: String?) {
     }
 }
 
-/** 分组白卡（与「更多」页原来那张白卡一致：「灰底白卡」主题）。 */
+/**
+ * 分组白卡（与「更多」页原来那张白卡一致：「灰底白卡」主题）。
+ *
+ * @param topPadding 与上一组之间的间距，默认 8dp；「退出登录」那张卡传更大的值单独拉开。
+ */
 @Composable
-private fun GroupCard(content: @Composable () -> Unit) {
+private fun GroupCard(
+    topPadding: Dp = 8.dp,
+    content: @Composable () -> Unit,
+) {
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, top = 8.dp, end = 12.dp),
+            .padding(start = 12.dp, top = topPadding, end = 12.dp),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) { content() }
+    }
+}
+
+/**
+ * 「退出登录」行。
+ *
+ * 红字、**不带箭头**：它不是"进入下一页"，而是一个就地动作；点一下先弹确认框。
+ * 文字**左右居中**（用户要求 2026-10-21）；退出中在文字右侧转小圈并禁点（防重复提交）。
+ */
+@Composable
+private fun LogoutRow(
+    loggingOut: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !loggingOut, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (loggingOut) "正在退出…" else "退出登录",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.error,
+        )
+        if (loggingOut) {
+            Spacer(Modifier.size(8.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 

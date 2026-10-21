@@ -778,12 +778,4 @@ class AccountProfileViewModel(
             inFlight = false
         }
     }
-
-    /**
-     * 退出登录。
-     *
-     * 走应用级作用域（[AccountRepository.logoutInBackground]）：这个页面点完就弹回去了，
-     * 挂在页面 `viewModelScope` 上的请求会被一起取消。
-     */
-    fun logout() = account.logoutInBackground()
 }

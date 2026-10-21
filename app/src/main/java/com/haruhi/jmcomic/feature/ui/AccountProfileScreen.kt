@@ -53,7 +53,6 @@ import com.haruhi.jmcomic.feature.api.UserEditDto
 fun AccountProfileScreen(
     state: AccountProfileUiState,
     onBack: () -> Unit,
-    onLogout: () -> Unit,
     /** 下拉刷新 / 报错后的「重试」（进页面不再自动联网，见 `AccountProfileViewModel`）。 */
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
@@ -161,13 +160,6 @@ fun AccountProfileScreen(
                         TextButton(onClick = onRefresh) { Text("重试") }
                     }
 
-                    TextButton(
-                        onClick = onLogout,
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                        modifier = Modifier.padding(top = 8.dp),
-                    ) {
-                        Text("退出登录")
-                    }
                     Spacer(Modifier.height(24.dp))
                 }
             }

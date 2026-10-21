@@ -497,11 +497,6 @@ fun ModeRoot(
                     AccountProfileScreen(
                         state = state,
                         onBack = { navController.popBackStack() },
-                        // 退出走应用级作用域：这一页随即被弹掉，页面级协程会被取消
-                        onLogout = {
-                            vm.logout()
-                            navController.popBackStack()
-                        },
                         onRefresh = vm::refresh,
                     )
                 }
