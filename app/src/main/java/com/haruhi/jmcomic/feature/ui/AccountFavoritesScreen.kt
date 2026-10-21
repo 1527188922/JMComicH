@@ -348,8 +348,7 @@ fun AccountAlbumsScreen(
     removing?.let { album ->
         ConfirmDialog(
             title = "从收藏里移出？",
-            text = "「${album.name ?: "JM${album.id}"}」会从账号收藏里彻底移除" +
-                "（官方没有「只移出收藏夹」的接口）。",
+            text = "取消收藏：「${album.name ?: "JM${album.id}"}」",
             confirmText = "移出",
             confirmButtonColors = ButtonDefaults.textButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,

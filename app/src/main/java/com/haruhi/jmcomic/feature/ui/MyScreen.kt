@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ButtonDefaults
@@ -312,8 +313,12 @@ private fun GroupCard(
 /**
  * 「退出登录」行。
  *
- * 红字、**不带箭头**：它不是"进入下一页"，而是一个就地动作；点一下先弹确认框。
- * 文字**左右居中**（用户要求 2026-10-21）；退出中在文字右侧转小圈并禁点（防重复提交）。
+ * 红字 + 右侧出口图标（`ExitToApp`），**不带箭头**：它不是"进入下一页"，而是一个就地动作；
+ * 点一下先弹确认框。文字与图标整体**左右居中**（用户要求 2026-10-21）；
+ * 退出中在最右侧转小圈并禁点（防重复提交）。
+ *
+ * 图标用的是 `Icons.AutoMirrored.Filled.ExitToApp`（就是 `Icons.Default.ExitToApp` 的
+ * 镜像版：视觉一致，但 RTL 语言下会自动翻转——工程里多选条的「移出书库」也是这个）。
  */
 @Composable
 private fun LogoutRow(
@@ -332,6 +337,13 @@ private fun LogoutRow(
             text = if (loggingOut) "正在退出…" else "退出登录",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.size(6.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(18.dp),
         )
         if (loggingOut) {
             Spacer(Modifier.size(8.dp))

@@ -2061,3 +2061,15 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 1. `LogoutRow` 文字**左右居中**：`Row(horizontalArrangement = Arrangement.Center)`，去掉 `weight(1f)`；退出中"正在退出…"与右侧小圈作为一组居中。
 2. 「退出登录」卡与上一组拉开距离：`GroupCard` 新增 `topPadding: Dp = 8.dp` 参数（默认不变，其它组仍是 8dp），
    退出那张传 **24dp**。
+### 15. 第十批微调（用户反馈 2026-10-21）
+
+「退出登录」行文字右侧加**出口图标**：
+
+```
+                退出登录  ⏻
+```
+
+- 用 `Icons.AutoMirrored.Filled.ExitToApp`（就是 `Icons.Default.ExitToApp` 的镜像版：
+  视觉一致、RTL 下自动翻转；工程里多选条「移出书库」用的也是这个）。
+- 图标 18dp、颜色 `colorScheme.error`（与文字同色），文字与图标之间 6dp。
+- 整组（文字 + 图标）保持 `Arrangement.Center` 居中；退出中在**最右侧**再多一个小圈。
