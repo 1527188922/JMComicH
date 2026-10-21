@@ -10,6 +10,7 @@ import com.haruhi.jmcomic.feature.data.AccountAlbum
 import com.haruhi.jmcomic.feature.data.AccountCache
 import com.haruhi.jmcomic.feature.data.AccountFolder
 import com.haruhi.jmcomic.feature.data.AccountRepository
+import com.haruhi.jmcomic.feature.data.AlbumsSnapshot
 import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
 import com.haruhi.jmcomic.feature.data.Repository
 import kotlinx.coroutines.CancellationException
@@ -463,6 +464,8 @@ data class AccountAlbumsUiState(
     val order: String = AccountRepository.ORDER_BY_TIME,
     val loading: Boolean = true,
     val loadingMore: Boolean = false,
+    /** 用户下拉刷新中（顶部下拉圈）。 */
+    val refreshing: Boolean = false,
     val error: String? = null,
     val message: String? = null,
     val removingId: Long? = null,
@@ -471,8 +474,17 @@ data class AccountAlbumsUiState(
     val hasMore: Boolean get() = albums.size < total
 }
 
+/**
+ * 收藏夹内页。
+ *
+ * 缓存策略（用户反馈 2026-10-21）：**收藏夹内容基本不变**，所以进页面先用
+ * [AccountCache] 里的快照铺内容（不转圈、不联网）；只有"收藏关系变了"
+ * （本机加/移收藏、移夹、新建/删除夹）才作废（见 `AccountCache.invalidateAlbums`），
+ * 或者用户**下拉释放**时强制重拉。换排序会按 `folderId#order` 用另一份缓存。
+ */
 class AccountAlbumsViewModel(
     private val account: AccountRepository,
+    private val cache: AccountCache,
     private val folderId: String?,
     title: String,
 ) : ViewModel() {
@@ -485,42 +497,88 @@ class AccountAlbumsViewModel(
     )
     val state: StateFlow<AccountAlbumsUiState> = _state.asStateFlow()
 
+    /** 下次「加载更多」要请求的页码。 */
     private var nextPage = 1
 
+    private var inFlight = false
+
     init {
-        refresh()
+        restoreOrLoad()
     }
 
-    fun refresh() {
+    private fun restoreOrLoad() {
         if (!account.isSignedIn) {
             _state.update { it.copy(loading = false, error = "登录状态已失效，请重新登录") }
             return
         }
-        nextPage = 1
-        _state.update { it.copy(loading = true, error = null) }
+        val cached = cache.cachedAlbums(folderId, _state.value.order)
+        if (cached != null) {
+            nextPage = cached.nextPage
+            _state.update {
+                it.copy(
+                    loading = false,
+                    refreshing = false,
+                    albums = cached.albums,
+                    total = cached.total,
+                    error = null,
+                )
+            }
+            return
+        }
+        refresh()
+    }
+
+    /** 用户下拉刷新 / 报错后的「重试」：强制联网，成功后覆盖缓存。 */
+    fun refresh() {
+        if (inFlight) return
+        if (!account.isSignedIn) {
+            _state.update { it.copy(loading = false, error = "登录状态已失效，请重新登录") }
+            return
+        }
+        inFlight = true
+        val current = _state.value
+        val hasContent = current.albums.isNotEmpty()
+        _state.update {
+            it.copy(
+                // 有内容时只转下拉圈；首屏才转整页 loading
+                loading = !hasContent,
+                refreshing = hasContent,
+                error = null,
+            )
+        }
         viewModelScope.launch {
-            runCatching { account.favorites(page = 1, folderId = _state.value.folderId, order = _state.value.order) }
+            runCatching { account.favorites(page = 1, folderId = current.folderId, order = current.order) }
                 .onSuccess { page ->
                     nextPage = 2
                     _state.update {
                         it.copy(
                             loading = false,
+                            refreshing = false,
                             albums = page.albums,
                             total = page.total,
                             error = null,
                         )
                     }
+                    publishCache()
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(loading = false, error = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            error = if (hasContent) null else e.toUserMessage(),
+                            message = if (hasContent) e.toUserMessage() else it.message,
+                        )
+                    }
                 }
+            inFlight = false
         }
     }
 
     fun loadMore() {
         val current = _state.value
-        if (current.loading || current.loadingMore || !current.hasMore) return
+        if (current.loading || current.loadingMore || current.refreshing || !current.hasMore) return
         _state.update { it.copy(loadingMore = true) }
         val page = nextPage
         viewModelScope.launch {
@@ -531,6 +589,7 @@ class AccountAlbumsViewModel(
                         val merged = (s.albums + result.albums).distinctBy { it.id }
                         s.copy(loadingMore = false, albums = merged, total = result.total)
                     }
+                    publishCache()
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
@@ -541,8 +600,10 @@ class AccountAlbumsViewModel(
 
     fun setOrder(order: String) {
         if (_state.value.order == order) return
-        _state.update { it.copy(order = order) }
-        refresh()
+        // 换排序 = 换一份缓存 key；清掉当前内容，交给 restoreOrLoad 决定用缓存还是重拉
+        _state.update { it.copy(order = order, albums = emptyList(), total = 0, loading = true) }
+        nextPage = 1
+        restoreOrLoad()
     }
 
     /** 从收藏里移出（= 取消收藏；官方不支持"只移出夹"，见 design §4.3 L2）。 */
@@ -560,12 +621,28 @@ class AccountAlbumsViewModel(
                             message = if (result.added) "已重新加入收藏" else "已从收藏移出",
                         )
                     }
+                    // 收藏关系变了，全局夹缓存已被作废；把当前这份（已减掉那本）重新写回去，
+                    // 这样返回列表再进来时不用白等一次网络
+                    publishCache()
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
                     _state.update { it.copy(removingId = null, message = e.toUserMessage()) }
                 }
         }
+    }
+
+    private fun publishCache() {
+        val current = _state.value
+        cache.putAlbums(
+            folderId = current.folderId,
+            order = current.order,
+            snapshot = AlbumsSnapshot(
+                albums = current.albums,
+                total = current.total,
+                nextPage = nextPage,
+            ),
+        )
     }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }

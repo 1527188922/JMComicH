@@ -1096,6 +1096,7 @@ class ViewModelFactory(
         modelClass.isAssignableFrom(AccountAlbumsViewModel::class.java) ->
             AccountAlbumsViewModel(
                 account = container.accountRepository,
+                cache = container.accountCache,
                 folderId = accountFolderId,
                 title = accountFolderName,
             ) as T

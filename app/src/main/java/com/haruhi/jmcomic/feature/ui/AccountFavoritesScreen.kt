@@ -54,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.haruhi.jmcomic.feature.data.AccountAlbum
@@ -221,6 +222,7 @@ fun AccountFavoritesScreen(
 // 夹内：3 列网格
 // ======================================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountAlbumsScreen(
     state: AccountAlbumsUiState,
@@ -280,51 +282,64 @@ fun AccountAlbumsScreen(
                 .weight(1f)
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            when {
-                state.loading -> LoadingBox()
-                state.error != null -> EmptyWithAction(
-                    title = "加载失败",
-                    hint = state.error,
-                    actionText = "重试",
-                    onAction = onRefresh,
-                )
-
-                state.albums.isEmpty() -> EmptyWithAction(
-                    title = "这里还没有漫画",
-                    hint = "在漫画详情页点「收藏」就能加进来",
-                    actionText = null,
-                    onAction = {},
-                )
-
-                else -> Column(modifier = Modifier.fillMaxSize()) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        contentPadding = PaddingValues(GRID_CONTENT_PADDING),
-                        horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-                        verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        items(state.albums, key = { it.id }) { album ->
-                            AccountAlbumCard(
-                                album = album,
-                                onOpen = { onOpenAlbum(album.id) },
-                                onLongPress = { removing = album },
-                            )
-                        }
-                        item(key = "__more__", span = { GridItemSpan(maxLineSpan) }) {
-                            AccountGridFooter(
-                                loadingMore = state.loadingMore,
-                                hasMore = state.hasMore,
-                                onLoadMore = onLoadMore,
-                            )
-                        }
+            // 夹内内容基本不变：进页面先用缓存铺，只有数据被动过或用户下拉时才请求
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = {
+                    if (!state.loading && !state.refreshing && !state.loadingMore) onRefresh()
+                },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when {
+                    state.loading -> LoadingBox()
+                    state.error != null -> ScrollableFullScreenBox {
+                        EmptyWithAction(
+                            title = "加载失败",
+                            hint = state.error,
+                            actionText = "重试",
+                            onAction = onRefresh,
+                        )
                     }
-                    // 一页可能只有几条：列表不满一屏时自动续一页（与书库同一套做法）
-                    LoadMoreOnScroll(
-                        shouldLoadMore = state.hasMore && !state.loading &&
-                            !state.loadingMore && state.albums.size < AUTO_FILL_MIN_ITEMS,
-                        onLoadMore = onLoadMore,
-                    )
+
+                    state.albums.isEmpty() -> ScrollableFullScreenBox {
+                        EmptyWithAction(
+                            title = "这里还没有漫画",
+                            hint = "在漫画详情页点「收藏」就能加进来",
+                            actionText = null,
+                            onAction = {},
+                        )
+                    }
+
+                    else -> Column(modifier = Modifier.fillMaxSize()) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+                            horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                            verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            items(state.albums, key = { it.id }) { album ->
+                                AccountAlbumCard(
+                                    album = album,
+                                    onOpen = { onOpenAlbum(album.id) },
+                                    onLongPress = { removing = album },
+                                )
+                            }
+                            item(key = "__more__", span = { GridItemSpan(maxLineSpan) }) {
+                                AccountGridFooter(
+                                    loadingMore = state.loadingMore,
+                                    hasMore = state.hasMore,
+                                    onLoadMore = onLoadMore,
+                                )
+                            }
+                        }
+                        // 一页可能只有几条：列表不满一屏时自动续一页（与书库同一套做法）
+                        LoadMoreOnScroll(
+                            shouldLoadMore = state.hasMore && !state.loading &&
+                                !state.loadingMore && state.albums.size < AUTO_FILL_MIN_ITEMS,
+                            onLoadMore = onLoadMore,
+                        )
+                    }
                 }
             }
         }
@@ -388,8 +403,8 @@ fun AccountFavoriteSheet(
             Text(
                 text = when {
                     !signedIn -> "登录后可以把漫画收进账号收藏夹。"
-                    inFavorites -> "这本已在收藏里。一本漫画只能放在一个收藏夹里，点一下就搬过去；" +
-                        "点「全部收藏」会取消收藏。"
+                    inFavorites -> "这本已在收藏里。点某个收藏夹就会移动过去（一本只能放一个夹）；" +
+                        "点「移出收藏」会取消收藏。"
                     else -> "点一下就加入并放进该夹；点「全部收藏」只收藏、不归类。"
                 },
                 style = MaterialTheme.typography.labelSmall,
@@ -426,10 +441,22 @@ fun AccountFavoriteSheet(
                 } else {
                     Box(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
                         LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
+                            // 已收藏时这一行是"移出收藏"（危险动作，用主题的 error 色）；
+                            // 未收藏时是"全部收藏"（只加入、不归类）
                             item(key = "__all__") {
                                 FolderChoiceRow(
-                                    label = "全部收藏",
-                                    hint = if (inFavorites) "取消收藏" else "只收藏，不归类",
+                                    label = if (inFavorites) "移出收藏" else "全部收藏",
+                                    trailingText = if (inFavorites) null else "只收藏，不归类",
+                                    labelColor = if (inFavorites) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        Color.Unspecified
+                                    },
+                                    iconTint = if (inFavorites) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
                                     enabled = !busy,
                                     onClick = { onChoose(null, null) },
                                 )
@@ -437,7 +464,12 @@ fun AccountFavoriteSheet(
                             items(folders, key = { it.fid }) { folder ->
                                 FolderChoiceRow(
                                     label = folder.name,
-                                    hint = folder.count?.let { "$it 本" },
+                                    // 已收藏时这些行的语义是"移动至该夹"，右侧直接写出来
+                                    trailingText = if (inFavorites) {
+                                        "移动至"
+                                    } else {
+                                        folder.count?.let { "$it 本" }
+                                    },
                                     enabled = !busy,
                                     onClick = { onChoose(folder.fid, folder.name) },
                                 )
@@ -710,12 +742,22 @@ private fun AccountAlbumCard(
     }
 }
 
+/**
+ * 面板里的一行：左侧名字，右侧一句动作提示（"12 本" / "移动至"）+ 箭头。
+ *
+ * [labelColor] / [iconTint] 用 `MaterialTheme.colorScheme.*` 传进来，
+ * 这样"移出收藏"那行的红色跟着主题走（深色模式下也是主题里那个 error 色），
+ * 不写死 `Color.Red`。
+ */
 @Composable
 private fun FolderChoiceRow(
     label: String,
-    hint: String?,
+    trailingText: String?,
     enabled: Boolean,
     onClick: () -> Unit,
+    labelColor: Color = Color.Unspecified,
+    iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    trailingColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
     Row(
         modifier = Modifier
@@ -727,21 +769,22 @@ private fun FolderChoiceRow(
         Text(
             text = label,
             style = MaterialTheme.typography.bodyLarge,
+            color = labelColor,
             modifier = Modifier.weight(1f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        hint?.let {
+        trailingText?.let {
             Text(
                 text = it,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = trailingColor,
             )
         }
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = iconTint,
         )
     }
 }

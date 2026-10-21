@@ -10,6 +10,17 @@ data class FavoritesSnapshot(
 )
 
 /**
+ * 某个收藏夹里已加载的漫画（[nextPage] = 下次加载更多要请求的页码）。
+ *
+ * 收藏夹内容基本不变，所以整份缓存起来直接复用；用户下拉或数据被动过才重拉。
+ */
+data class AlbumsSnapshot(
+    val albums: List<AccountAlbum>,
+    val total: Int,
+    val nextPage: Int,
+)
+
+/**
  * 账号数据的**进程内缓存**（挂在 `AppContainer` 上，跟着进程走）。
  *
  * 为什么需要它（用户反馈 2026-10-21）：收藏页 / 个人资料页每次进入都会重建 ViewModel，
@@ -94,6 +105,37 @@ class AccountCache {
     }
 
     // ------------------------------------------------------------------
+    // 收藏夹里的漫画列表（夹内页用）
+    // ------------------------------------------------------------------
+
+    /**
+     * 每个收藏夹已加载的漫画，key = `folderId#order`（`folderId` 空串表示「全部收藏」）。
+     *
+     * 用户反馈 2026-10-21：夹内页每次进入都重新请求太浪费——**收藏夹内容基本不变**，
+     * 所以进页面先用这份缓存，只有下面这些情况才整份作废：
+     * - 收藏 / 取消收藏（[AccountRepository.toggleFavorite]）
+     * - 移到收藏夹（[AccountRepository.moveToFolder]）
+     * - 新建 / 删除收藏夹（夹内的东西跟着变了）
+     * - 登录 / 退出（[clear]）
+     * - 用户下拉刷新（只覆盖自己那一个 key）
+     */
+    private val albumPages = java.util.concurrent.ConcurrentHashMap<String, AlbumsSnapshot>()
+
+    fun cachedAlbums(folderId: String?, order: String): AlbumsSnapshot? =
+        albumPages[albumsKey(folderId, order)]
+
+    fun putAlbums(folderId: String?, order: String, snapshot: AlbumsSnapshot) {
+        albumPages[albumsKey(folderId, order)] = snapshot
+    }
+
+    /** 收藏关系变了：所有夹的内容都可能过期（一本从 A 夹搬到 B 夹会同时影响两个夹）。 */
+    fun invalidateAlbums() {
+        albumPages.clear()
+    }
+
+    private fun albumsKey(folderId: String?, order: String): String = "${folderId.orEmpty()}#$order"
+
+    // ------------------------------------------------------------------
     // 每本是否已在账号收藏里
     // ------------------------------------------------------------------
 
@@ -119,6 +161,7 @@ class AccountCache {
         profileDetail = null
         folders = null
         favoriteFlags.clear()
+        albumPages.clear()
         favoritesDirty = true
         profileDirty = true
         foldersDirty = true

@@ -1990,3 +1990,29 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | 3 | 已收藏的漫画进详情页，按钮先「收藏」再变「已收藏」 | ① 点收藏/移出/移夹成功后把结果写回 `t_jm_album.is_favorite`（新增 `AlbumDao.setFavoriteFlag`，见 `Repository.setAlbumFavoriteFlag`）并记进 `AccountCache`；② 进页面时缓存有结论就直接用、不再请求；③ 首屏联网拉详情时直接采用那次 `/album` 的 `is_favorite`（`favoriteFlagSynced` 置位），不再重复请求同一本 |
 
 > 闪变的原因（答用户问）：详情页 init 里只要已登录就调一次 `Repository.fetchAlbumFavoriteFlag(aid)` → 内部是 **`GET /album?id={aid}`**，用它返回的 `is_favorite` 覆盖按钮状态。本机 `is_favorite` 之前从不回写（点收藏只打 `POST /favorite`），所以初值可能是过期的 false。现在写回 + 进程内缓存之后，同一本再次进入不会再翻。
+### 9. 第四批微调（用户反馈 2026-10-21）
+
+**收藏夹内页也要缓存**（用户要求：夹内内容基本不变，进页面别重新请求，下拉刷新即可）。
+
+| 项 | 做法 |
+|---|---|
+| 缓存 | `AccountCache` 新增 `albumPages`（`ConcurrentHashMap<"folderId#order", AlbumsSnapshot>`，快照含已加载列表 / `total` / 下一页页码）。夹内页进页面先铺快照，**不转圈、不联网** |
+| 作废时机 | ① **收藏 / 取消收藏**（`toggleFavorite`）② **移到收藏夹**（`moveToFolder`）③ **新建 / 删除收藏夹**（夹内容跟着变）④ **登录 / 退出**（`clear()`）。改名只改夹名，不影响夹内容，缓存保留 |
+| 下拉刷新 | 夹内页也套了 `PullToRefreshBox`：下拉强制重拉第 1 页并覆盖该 `folderId#order` 的缓存；"加载更多"追加后同样写回快照（含下一页页码） |
+| 重复 loading | `inFlight` 标志 + `refreshing` 状态：下拉途中再拉 / 连点重试只发一次；有内容时只转下拉圈，首屏才转整页 |
+| 换排序 | 按 `folderId#order` 各存一份，切回收藏时间/更新时间时若缓存命中就直接铺，不联网 |
+| 本页移出 | 移出成功后本地列表就地减一，并把这份（已减掉的）快照重新写回缓存，返回列表再进来不用等网络 |
+
+> 没覆盖到的场景：**在网页版/另一台设备上改了收藏** —— 进程内无从得知，只能靠用户下拉刷新。
+### 10. 第五批微调（用户反馈 2026-10-21）
+
+详情页「收藏」面板在**已收藏**状态下的文案/配色：
+
+| 行 | 改前 | 改后 |
+|---|---|---|
+| 第一行 | `全部收藏` + 小字「取消收藏」 | **`移出收藏`**（`MaterialTheme.colorScheme.error`，深色模式同样跟主题走），箭头同色，不再带小字 |
+| 收藏夹行 | 名字 + `N 本` + 箭头 | 名字 + **`移动至`** + 箭头（已收藏时语义就是"搬过去"，直接把动作写出来） |
+| 顶部说明 | 「点「全部收藏」会取消收藏」 | 「点某个收藏夹就会移动过去（一本只能放一个夹）；点「移出收藏」会取消收藏」 |
+
+未收藏状态的文案保持原样（`全部收藏` + 「只收藏，不归类」；夹行显示 `N 本`）。
+`FolderChoiceRow` 增加 `labelColor` / `iconTint` / `trailingColor` 三个参数，颜色全部从 `colorScheme` 取，不写死色值。

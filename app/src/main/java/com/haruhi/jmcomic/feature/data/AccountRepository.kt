@@ -126,6 +126,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteToggle(aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "操作失败，请稍后重试")
         cache.invalidateFavorites()
+        cache.invalidateAlbums()
         val added = when (dto.type) {
             "add" -> true
             "remove" -> false
@@ -142,6 +143,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "move", folderId = folderId, folderName = folderName, aid = aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "移动失败，请稍后重试")
         cache.invalidateFavorites()
+        cache.invalidateAlbums()
         cache.rememberFavoriteFlag(aid, true)
     }
 
@@ -150,6 +152,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "add", folderName = name) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "新建收藏夹失败")
         cache.invalidateFavorites()
+        cache.invalidateAlbums()
         // 新建会让面板的收藏夹缓存过期（用户要求：新增/删除才清缓存）
         cache.invalidateFolders()
         // `/favorite_folder` 不返回新 FID，只能重拉一次列表按名字找（夹名服务端唯一）。
@@ -166,6 +169,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "edit", folderId = folderId, folderName = newName) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "改名失败")
         cache.invalidateFavorites()
+        cache.invalidateAlbums()
         // 改名只改已有条目，就地更新即可，不必让面板下次再拉一遍
         cache.renameFolder(folderId, newName)
     }
@@ -180,6 +184,7 @@ class AccountRepository(
         val dto = guarded { api().favoriteFolder(type = "del", folderId = folderId) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "删除收藏夹失败")
         cache.invalidateFavorites()
+        cache.invalidateAlbums()
         cache.invalidateFolders()
     }
 
