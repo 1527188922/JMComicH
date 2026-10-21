@@ -1969,3 +1969,15 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 
 > 真机冒烟测试**未跑**：本机当前 `adb devices` 没有设备。登录 / 收藏的接口层行为已用 Node 探针
 > 对真实账号验证过（见 `docs/official-api-manga.md`），但 UI 流程还需要一次真机验收。
+### 7. 第二批微调（用户反馈 2026-10-21）
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 1 | 收藏页 / 个人资料页每次进入都重新加载 → 内容闪一下 | 新增 `feature/data/AccountCache.kt`（进程内快照，挂 `AppContainer`）：进页面**先铺上次的内容**，不转圈、不联网；只有"数据被动过"（详情页加/移收藏、夹增删改）才**静默**补一次。写操作里调 `invalidateFavorites()`，登录/退出 `clear()` |
+| 2 | 收藏页顶栏「刷新」按钮 | 去掉，只保留下拉释放刷新 |
+| 3 | 收藏页/资料页要有下拉刷新 | 两页都套 `PullToRefreshBox`：`isRefreshing` 只在"已有内容、正在重拉"时为 true；空态/加载态用 `ScrollableFullScreenBox` 包住才能拉得动 |
+| 4 | 重复 loading | 两个 ViewModel 各加 `inFlight` 标志：下拉途中再拉、错误页连点重试，都只发一次 |
+| 5 | 夹内页「共 N 本」单独占一行 | 数量并进标题：`← 收藏夹1（178本）`；加载中只显示夹名，拿到 total 再补括号 |
+| 6 | 「加载更多」按钮跑到卡片格里 | 网格 footer 用 `item(span = { GridItemSpan(maxLineSpan) })` 占满整行（上一批已改，本次确认在代码里） |
+
+> 说明：本批**未跑**单测 / lint（用户要求只保证编译通过，自行真机验收）。

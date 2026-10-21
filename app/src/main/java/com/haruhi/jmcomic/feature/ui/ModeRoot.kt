@@ -443,8 +443,8 @@ fun ModeRoot(
                 composable(Routes.ACCOUNT_FAVORITES) { entry ->
                     val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
-                    LaunchedEffect(Unit) { vm.load() }
-                    OnResumeEffect { vm.refresh(initial = false) }
+                    // 进页面**不再自动刷新**：ViewModel 先用进程内快照铺内容（见 AccountCache），
+                    // 只有数据被动过才静默补一次；用户想刷新就下拉。
                     AccountFavoritesScreen(
                         state = state,
                         onBack = { navController.popBackStack() },
@@ -454,7 +454,7 @@ fun ModeRoot(
                         onCreate = vm::create,
                         onRename = vm::rename,
                         onDelete = vm::delete,
-                        onRefresh = { vm.refresh(initial = false) },
+                        onRefresh = vm::refresh,
                         onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES)) },
                         onMessage = showMessage,
                         onConsumeMessage = vm::consumeMessage,
@@ -502,7 +502,7 @@ fun ModeRoot(
                             vm.logout()
                             navController.popBackStack()
                         },
-                        onRetry = vm::load,
+                        onRefresh = vm::refresh,
                     )
                 }
 
@@ -1088,7 +1088,10 @@ class ViewModelFactory(
             AccountAuthViewModel(container.accountRepository) as T
 
         modelClass.isAssignableFrom(AccountFavoritesViewModel::class.java) ->
-            AccountFavoritesViewModel(container.accountRepository) as T
+            AccountFavoritesViewModel(
+                account = container.accountRepository,
+                cache = container.accountCache,
+            ) as T
 
         modelClass.isAssignableFrom(AccountAlbumsViewModel::class.java) ->
             AccountAlbumsViewModel(
@@ -1098,7 +1101,10 @@ class ViewModelFactory(
             ) as T
 
         modelClass.isAssignableFrom(AccountProfileViewModel::class.java) ->
-            AccountProfileViewModel(container.accountRepository) as T
+            AccountProfileViewModel(
+                account = container.accountRepository,
+                cache = container.accountCache,
+            ) as T
 
         modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
             SettingsViewModel(

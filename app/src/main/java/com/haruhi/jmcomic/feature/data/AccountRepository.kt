@@ -1,4 +1,4 @@
-package com.haruhi.jmcomic.feature.data
+﻿package com.haruhi.jmcomic.feature.data
 
 import com.haruhi.jmcomic.core.account.AccountSession
 import com.haruhi.jmcomic.core.account.AccountState
@@ -36,6 +36,8 @@ class AccountRepository(
      * 页面级 `viewModelScope` 会跟着被取消，挂在它上面的 `/logout` 就打不完了。
      */
     private val scope: CoroutineScope,
+    /** 账号数据的进程内缓存（进页面先渲染上次的快照，避免每次进来都闪一下）。 */
+    private val cache: AccountCache,
 ) {
 
     val state: StateFlow<AccountState> get() = session.state
@@ -59,6 +61,8 @@ class AccountRepository(
         val profile = dto.toProfile()
         val jwt = dto.jwtToken.orEmpty()
         val avs = dto.avs.orEmpty()
+        // 换账号：上一份收藏/资料快照必须作废
+        cache.clear()
         session.signIn(profile, jwt, avs)
         return profile
     }
@@ -67,6 +71,7 @@ class AccountRepository(
     suspend fun logout() {
         runCatching { api().logout() }
             .onFailure { Timber.tag("jm").d(it, "退出登录时 /logout 失败（已忽略）") }
+        cache.clear()
         session.signOut()
     }
 
@@ -95,6 +100,7 @@ class AccountRepository(
     suspend fun toggleFavorite(aid: Long): FavoriteToggleResult {
         val dto = guarded { api().favoriteToggle(aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "操作失败，请稍后重试")
+        cache.invalidateFavorites()
         val added = when (dto.type) {
             "add" -> true
             "remove" -> false
@@ -109,12 +115,14 @@ class AccountRepository(
     suspend fun moveToFolder(aid: Long, folderId: String, folderName: String? = null) {
         val dto = guarded { api().favoriteFolder(type = "move", folderId = folderId, folderName = folderName, aid = aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "移动失败，请稍后重试")
+        cache.invalidateFavorites()
     }
 
     /** 新建收藏夹，返回新夹（从返回后的列表里按名字找）。 */
     suspend fun createFolder(name: String): AccountFolder {
         val dto = guarded { api().favoriteFolder(type = "add", folderName = name) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "新建收藏夹失败")
+        cache.invalidateFavorites()
         // `/favorite_folder` 不返回新 FID，只能重拉一次列表按名字找（夹名服务端唯一）。
         // 实测服务端偶尔"晚一拍"才把新夹放进 folder_list（多节点），所以重试几次再放弃。
         repeat(FOLDER_LOOKUP_ATTEMPTS) { attempt ->
@@ -128,6 +136,7 @@ class AccountRepository(
     suspend fun renameFolder(folderId: String, newName: String) {
         val dto = guarded { api().favoriteFolder(type = "edit", folderId = folderId, folderName = newName) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "改名失败")
+        cache.invalidateFavorites()
     }
 
     /**
@@ -139,6 +148,7 @@ class AccountRepository(
     suspend fun deleteFolder(folderId: String) {
         val dto = guarded { api().favoriteFolder(type = "del", folderId = folderId) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "删除收藏夹失败")
+        cache.invalidateFavorites()
     }
 
     // ------------------------------------------------------------------

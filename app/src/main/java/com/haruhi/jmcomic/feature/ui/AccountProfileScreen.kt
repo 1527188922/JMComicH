@@ -21,12 +21,14 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,12 +48,14 @@ import com.haruhi.jmcomic.feature.api.UserEditDto
  *
  * 会员相关信息（`超级会员 · 至 …`）**只在是会员时出现**（用户要求）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountProfileScreen(
     state: AccountProfileUiState,
     onBack: () -> Unit,
     onLogout: () -> Unit,
-    onRetry: () -> Unit,
+    /** 下拉刷新 / 报错后的「重试」（进页面不再自动联网，见 `AccountProfileViewModel`）。 */
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -77,18 +81,26 @@ fun AccountProfileScreen(
                 .weight(1f)
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            // 下拉刷新：内置"已经有资料、正在重拉"时才转下拉圈（进页面不再自动联网）
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = {
+                    if (!state.loading && !state.refreshing) onRefresh()
+                },
+                modifier = Modifier.fillMaxSize(),
             ) {
-                val profile = state.profile
-                if (!state.signedIn || profile == null) {
-                    EmptyBox("还没有登录", "登录后才能查看个人资料")
-                    return@Column
-                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val profile = state.profile
+                    if (!state.signedIn || profile == null) {
+                        EmptyBox("还没有登录", "登录后才能查看个人资料")
+                        return@Column
+                    }
 
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -140,23 +152,24 @@ fun AccountProfileScreen(
                     state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { InfoRow("关于我", it) }
                 }
 
-                state.error?.let { error ->
-                    Text(
-                        text = "部分资料未能加载：$error",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    TextButton(onClick = onRetry) { Text("重试") }
-                }
+                    state.error?.let { error ->
+                        Text(
+                            text = "部分资料未能加载：$error",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = onRefresh) { Text("重试") }
+                    }
 
-                TextButton(
-                    onClick = onLogout,
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    modifier = Modifier.padding(top = 8.dp),
-                ) {
-                    Text("退出登录")
+                    TextButton(
+                        onClick = onLogout,
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.padding(top = 8.dp),
+                    ) {
+                        Text("退出登录")
+                    }
+                    Spacer(Modifier.height(24.dp))
                 }
-                Spacer(Modifier.height(24.dp))
             }
         }
     }

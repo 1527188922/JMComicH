@@ -45,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +70,7 @@ private const val AUTO_FILL_MIN_ITEMS = 12
  * 退化点都在界面上：非空夹「删除」置灰（L4）、没有夹排序（L5）、
  * 夹的「N 本 / 封面」是补拉出来的（L6，拉不到显示「…」）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountFavoritesScreen(
     state: AccountFavoritesUiState,
@@ -92,14 +94,8 @@ fun AccountFavoritesScreen(
             title = "收藏",
             onBack = onBack,
             actions = {
+                // 刷新入口只留"下拉释放"，顶栏不再放刷新按钮（用户 2026-10-21 要求）
                 if (state.signedIn) {
-                    TextButton(onClick = onRefresh, enabled = !state.refreshing) {
-                        if (state.refreshing) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("刷新")
-                        }
-                    }
                     TextButton(onClick = { showCreate = true }) { Text("新建") }
                 }
             },
@@ -111,56 +107,70 @@ fun AccountFavoritesScreen(
                 .weight(1f)
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            when {
-                !state.signedIn -> EmptyWithAction(
-                    title = "还没有登录",
-                    hint = "登录后可以使用账号收藏夹",
-                    actionText = "去登录",
-                    onAction = onLogin,
-                )
-
-                state.loading -> LoadingBox()
-                state.error != null -> EmptyWithAction(
-                    title = "账号收藏加载失败",
-                    hint = state.error,
-                    actionText = "重试",
-                    onAction = onRefresh,
-                )
-
-                else -> LazyColumn(
-                    contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    // 「全部收藏」= 虚拟卡（含所有夹内的 + 未归类的），等价本机的「默认收藏夹」
-                    item(key = "all") {
-                        FavoriteFolderCard(
-                            name = "全部收藏",
-                            count = state.total,
-                            coverAlbumId = state.allCoverAlbumId,
-                            subtitleSuffix = "含未归类",
-                            onOpen = { onOpenFolder(null, "全部收藏") },
-                            onRename = null,
-                            onDelete = null,
+            // 下拉刷新：只有"已经有内容、正在重拉"时才转下拉圈；首屏加载由 LoadingBox 表达。
+            // 进页面**不再自动联网**（用进程内快照铺），所以不会每次进来都闪一下。
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = {
+                    if (!state.loading && !state.refreshing) onRefresh()
+                },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                when {
+                    !state.signedIn -> ScrollableFullScreenBox {
+                        EmptyWithAction(
+                            title = "还没有登录",
+                            hint = "登录后可以使用账号收藏夹",
+                            actionText = "去登录",
+                            onAction = onLogin,
                         )
                     }
-                    items(state.folders, key = { it.fid }) { folder ->
-                        FavoriteFolderCard(
-                            name = folder.name,
-                            count = folder.count,
-                            coverAlbumId = folder.coverAlbumId,
-                            subtitleSuffix = null,
-                            busy = state.busyFolderId == folder.fid,
-                            onOpen = { onOpenFolder(folder.fid, folder.name) },
-                            onRename = { renameTarget = folder },
-                            // L4：非空夹不能删（服务端会拒绝），直接不给点；
-                            // 数量未知（还没补拉到）时也不给删，避免点了才发现有漫画
-                            onDelete = if (folder.count == 0) {
-                                { deleteTarget = folder }
-                            } else {
-                                null
-                            },
+
+                    state.loading -> LoadingBox()
+                    state.error != null -> ScrollableFullScreenBox {
+                        EmptyWithAction(
+                            title = "账号收藏加载失败",
+                            hint = state.error,
+                            actionText = "重试",
+                            onAction = onRefresh,
                         )
+                    }
+
+                    else -> LazyColumn(
+                        contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        // 「全部收藏」= 虚拟卡（含所有夹内的 + 未归类的），等价本机的「默认收藏夹」
+                        item(key = "all") {
+                            FavoriteFolderCard(
+                                name = "全部收藏",
+                                count = state.total,
+                                coverAlbumId = state.allCoverAlbumId,
+                                subtitleSuffix = "含未归类",
+                                onOpen = { onOpenFolder(null, "全部收藏") },
+                                onRename = null,
+                                onDelete = null,
+                            )
+                        }
+                        items(state.folders, key = { it.fid }) { folder ->
+                            FavoriteFolderCard(
+                                name = folder.name,
+                                count = folder.count,
+                                coverAlbumId = folder.coverAlbumId,
+                                subtitleSuffix = null,
+                                busy = state.busyFolderId == folder.fid,
+                                onOpen = { onOpenFolder(folder.fid, folder.name) },
+                                onRename = { renameTarget = folder },
+                                // L4：非空夹不能删（服务端会拒绝），直接不给点；
+                                // 数量未知（还没补拉到）时也不给删，避免点了才发现有漫画
+                                onDelete = if (folder.count == 0) {
+                                    { deleteTarget = folder }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -227,9 +237,16 @@ fun AccountAlbumsScreen(
     var orderExpanded by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<AccountAlbum?>(null) }
 
+    // 数量并进标题（用户要求：`← 收藏夹1（178本）`），不再单独占一行
+    val titleText = if (state.loading && state.total == 0) {
+        state.title
+    } else {
+        "${state.title}（${state.total}本）"
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         TopBar(
-            title = state.title,
+            title = titleText,
             onBack = onBack,
             actions = {
                 Box {
@@ -280,12 +297,6 @@ fun AccountAlbumsScreen(
                 )
 
                 else -> Column(modifier = Modifier.fillMaxSize()) {
-                    Text(
-                        text = "共 ${state.total} 本",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    )
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         contentPadding = PaddingValues(GRID_CONTENT_PADDING),

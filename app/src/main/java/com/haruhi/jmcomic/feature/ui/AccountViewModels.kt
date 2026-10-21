@@ -7,10 +7,13 @@ import com.haruhi.jmcomic.core.account.MemberProfile
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.feature.api.UserEditDto
 import com.haruhi.jmcomic.feature.data.AccountAlbum
+import com.haruhi.jmcomic.feature.data.AccountCache
 import com.haruhi.jmcomic.feature.data.AccountFolder
 import com.haruhi.jmcomic.feature.data.AccountRepository
+import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
 import com.haruhi.jmcomic.feature.data.Repository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -233,29 +236,68 @@ data class AccountFavoritesUiState(
  * 各夹的数量与封面再**并发补拉**（每夹一次 `?folder_id=X&page=1`，上限 3 并发），
  * 拉不到就显示「…」——不退化成整页报错。
  */
-class AccountFavoritesViewModel(private val account: AccountRepository) : ViewModel() {
+class AccountFavoritesViewModel(
+    private val account: AccountRepository,
+    /** 进程内快照：进页面先铺上次的内容，避免每次进来都重新联网而闪一下。 */
+    private val cache: AccountCache,
+) : ViewModel() {
 
     private val _state = MutableStateFlow(AccountFavoritesUiState())
     val state: StateFlow<AccountFavoritesUiState> = _state.asStateFlow()
 
-    private var loaded = false
+    /** 正在拉数据（防重复：连续下拉 / 下拉时又点了重试，都只发一次）。 */
+    private var inFlight = false
 
-    fun load() {
-        if (loaded) return
-        loaded = true
-        refresh(initial = true)
+    private var backfillJob: Job? = null
+
+    init {
+        restoreOrLoad()
     }
 
-    fun refresh(initial: Boolean = false) {
+    /**
+     * 进页面：**有快照就直接铺**，不转圈、不联网（用户反馈：每次进来都重新加载会闪一下）。
+     *
+     * 只有快照被"动过"（[AccountCache.favoritesDirty]，例如在详情页加了收藏）才静默补一次，
+     * 补的时候内容还在，不闪。
+     */
+    private fun restoreOrLoad() {
         if (!account.isSignedIn) {
             _state.update { it.copy(signedIn = false, loading = false) }
             return
         }
+        val cached = cache.favorites
+        if (cached != null) {
+            _state.value = AccountFavoritesUiState(
+                signedIn = true,
+                loading = false,
+                refreshing = false,
+                folders = cached.folders,
+                total = cached.total,
+                allCoverAlbumId = cached.allCoverAlbumId,
+            )
+            if (cache.favoritesDirty) fetch(silent = true)
+            return
+        }
+        fetch(silent = false)
+    }
+
+    /** 用户下拉刷新 / 报错后的「重试」：走顶部下拉圈。 */
+    fun refresh() = fetch(silent = false)
+
+    private fun fetch(silent: Boolean) {
+        if (inFlight) return
+        if (!account.isSignedIn) {
+            _state.update { it.copy(signedIn = false, loading = false) }
+            return
+        }
+        inFlight = true
+        val hasContent = _state.value.folders.isNotEmpty() || _state.value.total > 0
         _state.update {
             it.copy(
                 signedIn = true,
-                loading = initial || it.folders.isEmpty(),
-                refreshing = !initial,
+                // 首屏（没有内容）才转整页 LoadingBox；有内容时只在静默刷新，不闪烁
+                loading = !hasContent && !silent,
+                refreshing = hasContent && !silent,
                 error = null,
             )
         }
@@ -272,21 +314,30 @@ class AccountFavoritesViewModel(private val account: AccountRepository) : ViewMo
                             allCoverAlbumId = page.albums.firstOrNull()?.id,
                         )
                     }
+                    publishCache()
                     backfillFolders(page.folders)
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
                     _state.update {
-                        it.copy(loading = false, refreshing = false, error = e.toUserMessage())
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            // 已有内容时不清空列表，只弹一句提示；首屏失败才显示整页错误
+                            error = if (hasContent) null else e.toUserMessage(),
+                            message = if (hasContent) e.toUserMessage() else it.message,
+                        )
                     }
                 }
+            inFlight = false
         }
     }
 
     /** 给每个夹补「N 本 + 封面」：一次 `page=1` 就够（`total` 与第一条都在里面）。 */
     private fun backfillFolders(folders: List<AccountFolder>) {
         if (folders.isEmpty()) return
-        viewModelScope.launch {
+        backfillJob?.cancel()
+        backfillJob = viewModelScope.launch {
             val semaphore = Semaphore(MAX_BACKFILL_CONCURRENCY)
             coroutineScope {
                 folders.map { folder ->
@@ -314,7 +365,21 @@ class AccountFavoritesViewModel(private val account: AccountRepository) : ViewMo
                     }
                 }.awaitAll()
             }
+            // 补拉完再写一次快照：下次进页面「N 本 + 封面」直接就有
+            publishCache()
         }
+    }
+
+    private fun publishCache() {
+        val current = _state.value
+        if (!current.signedIn) return
+        cache.putFavorites(
+            FavoritesSnapshot(
+                folders = current.folders,
+                total = current.total,
+                allCoverAlbumId = current.allCoverAlbumId,
+            ),
+        )
     }
 
     fun create(name: String) {
@@ -328,7 +393,7 @@ class AccountFavoritesViewModel(private val account: AccountRepository) : ViewMo
             runCatching { account.createFolder(trimmed) }
                 .onSuccess { folder ->
                     _state.update { it.copy(message = "已创建「${folder.name}」") }
-                    refresh(initial = false)
+                    fetch(silent = true)
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
@@ -349,7 +414,7 @@ class AccountFavoritesViewModel(private val account: AccountRepository) : ViewMo
             runCatching { account.renameFolder(folderId, trimmed) }
                 .onSuccess {
                     _state.update { it.copy(message = "已重命名为「$trimmed」") }
-                    refresh(initial = false)
+                    fetch(silent = true)
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
@@ -365,7 +430,7 @@ class AccountFavoritesViewModel(private val account: AccountRepository) : ViewMo
             runCatching { account.deleteFolder(folderId) }
                 .onSuccess {
                     _state.update { it.copy(message = "收藏夹已删除") }
-                    refresh(initial = false)
+                    fetch(silent = true)
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
@@ -513,6 +578,8 @@ data class AccountProfileUiState(
     val profile: MemberProfile? = null,
     val detail: UserEditDto? = null,
     val loading: Boolean = true,
+    /** 用户下拉刷新中（顶部下拉圈）。 */
+    val refreshing: Boolean = false,
     val error: String? = null,
 ) {
     val memberLine: String?
@@ -522,34 +589,86 @@ data class AccountProfileUiState(
         }
 }
 
-class AccountProfileViewModel(private val account: AccountRepository) : ViewModel() {
+/**
+ * 个人资料（只读）。
+ *
+ * 与收藏页同一套缓存策略：进页面**先铺上次的资料**（[AccountCache.profileDetail]），
+ * 不转圈、不联网；只有被动过或用户下拉时才重新拉
+ * （用户反馈 2026-10-21：每次进来都刷新会闪一下）。
+ */
+class AccountProfileViewModel(
+    private val account: AccountRepository,
+    private val cache: AccountCache,
+) : ViewModel() {
 
     private val _state = MutableStateFlow(
         AccountProfileUiState(profile = account.profile, signedIn = account.isSignedIn),
     )
     val state: StateFlow<AccountProfileUiState> = _state.asStateFlow()
 
+    private var inFlight = false
+
     init {
-        load()
+        restoreOrLoad()
     }
 
-    fun load() {
+    private fun restoreOrLoad() {
         val profile = account.profile
         if (!account.isSignedIn || profile == null) {
             _state.update { it.copy(signedIn = false, loading = false) }
             return
         }
-        _state.update { it.copy(profile = profile, loading = true, error = null) }
+        val cached = cache.profileDetail
+        if (cached != null) {
+            _state.update {
+                it.copy(signedIn = true, profile = profile, detail = cached, loading = false, refreshing = false)
+            }
+            if (cache.profileDirty) fetch(silent = true)
+            return
+        }
+        fetch(silent = false)
+    }
+
+    /** 用户下拉刷新 / 报错后的「重试」。 */
+    fun refresh() = fetch(silent = false)
+
+    private fun fetch(silent: Boolean) {
+        if (inFlight) return
+        val profile = account.profile
+        if (!account.isSignedIn || profile == null) {
+            _state.update { it.copy(signedIn = false, loading = false, refreshing = false) }
+            return
+        }
+        inFlight = true
+        val hasContent = _state.value.detail != null
+        _state.update {
+            it.copy(
+                profile = profile,
+                loading = !hasContent && !silent,
+                refreshing = hasContent && !silent,
+                error = null,
+            )
+        }
         viewModelScope.launch {
             runCatching { account.userEdit(profile.uid) }
                 .onSuccess { detail ->
-                    _state.update { it.copy(loading = false, detail = detail, error = null) }
+                    cache.putProfileDetail(detail)
+                    _state.update {
+                        it.copy(loading = false, refreshing = false, detail = detail, error = null)
+                    }
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
                     // 资料拉不到不算致命：快照还能显示昵称/等级/收藏数
-                    _state.update { it.copy(loading = false, error = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            error = if (hasContent) null else e.toUserMessage(),
+                        )
+                    }
                 }
+            inFlight = false
         }
     }
 

@@ -118,7 +118,19 @@ class AppContainer(private val appContext: Context) {
             session = accountSession,
             // 退出登录挂在应用级作用域：个人资料页点完就弹回上一页，不能被页面级作用域带走
             scope = appScope,
+            // 收藏页/资料页进页面先用上次的快照渲染，避免每次重建 ViewModel 都重新联网而"闪一下"
+            cache = accountCache,
         )
+    }
+
+    /**
+     * 账号数据的进程内缓存（挂在容器上，跟着进程走）。
+     *
+     * 只缓存"列表快照"这类展示数据：登录/退出时清空，进程结束自然消失。
+     * 见 `feature/data/AccountCache.kt` 的注释。
+     */
+    val accountCache: com.haruhi.jmcomic.feature.data.AccountCache by lazy {
+        com.haruhi.jmcomic.feature.data.AccountCache()
     }
 
     /**
