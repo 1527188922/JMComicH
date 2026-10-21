@@ -33,6 +33,6 @@ class ReaderCacheModeTest {
     @Test
     fun `labels are distinct and user facing`() {
         assertThat(ReaderCacheMode.entries.map { it.label }.toSet())
-            .containsExactly("原图缓存", "解扰后落盘")
+            .containsExactly("省空间（推荐）", "存成品图")
     }
 }

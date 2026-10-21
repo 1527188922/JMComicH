@@ -2540,7 +2540,7 @@ class AlbumDetailViewModel(
             val folder = album.albumFolderName
             if (folder.isNullOrBlank()) return@launch
             val chapter = _state.value.chapters.firstOrNull { it.chapterId == chapterId } ?: return@launch
-            runCatching { repo.deleteChapterFiles(folder, chapter.title) }
+            runCatching { repo.deleteChapterFiles(album.id, chapterId, folder, chapter.title) }
                 .onSuccess { freed ->
                     _state.update { it.copy(message = "已删除这一话的本地文件（${formatBytes(freed)}）") }
                     refreshLocalStats()

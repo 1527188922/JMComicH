@@ -23,10 +23,10 @@ package com.haruhi.jmcomic.core.settings
  */
 enum class ReaderCacheMode(val label: String) {
     /** 原图缓存：只存站点原始字节，显示时就地解扰（默认）。 */
-    RAW("原图缓存"),
+    RAW("使用缓存"),
 
     /** 解扰后落盘：下完就地解扰 + 无损重编码成成品（旧行为，可与下载共用文件）。 */
-    DESCRAMBLED("解扰后落盘"),
+    DESCRAMBLED("直接下载"),
 
     ;
 

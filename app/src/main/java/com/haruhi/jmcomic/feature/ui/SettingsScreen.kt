@@ -915,11 +915,10 @@ private fun ReadingSection(
         CardDivider()
         // 两套取图管线都保留，用户可以随时切回旧的那套（见 docs/PROGRESS.md「阅读器取图管线」）
         ChoiceRow(
-            title = "图片缓存方式",
-            hint = "在线看漫画时怎么把图弄到屏幕上",
-            help = "「原图缓存」只把站点原图存下来（每页几十 KB），显示时就地解扰，更快、占空间更小；" +
-                "「解扰后落盘」是旧做法：下完就地解扰并无损重编码成成品，更占空间、首次加载更慢，" +
-                "但和「下载」共用同一份文件。两者随时可以切回来，只影响在线看，下载永远是解扰后的成品。",
+            title = "在线阅读图片保存方式",
+            hint = "该配置决定在线观看时的漫画图片保存在哪",
+            help = "「使用缓存」：看过的图只保存缓存，在线观看图片加载更快，对手机内存使用稍有增多。" +
+                "\n「直接下载」：会直接下载看过的图，在线观看时图片加载稍慢。",
             options = ReaderCacheMode.entries.map { it.label },
             selectedIndex = ReaderCacheMode.entries.indexOf(state.readerCacheMode),
             onSelect = { onSetReaderCacheMode(ReaderCacheMode.entries[it]) },

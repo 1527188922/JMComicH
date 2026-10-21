@@ -1987,7 +1987,7 @@ private fun ChapterRowItem(
     if (confirmDelete) {
         ConfirmDialog(
             title = "删除「${chapter.title}」的图片？",
-            text = "删除这一话已经下载的图片。",
+            text = "删除这一话已经下载的图片和阅读缓存，之后再看会重新联网加载。",
             confirmText = "删除图片",
             onConfirm = { confirmDelete = false; onDeleteFiles() },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),

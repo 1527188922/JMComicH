@@ -1014,12 +1014,25 @@ class Repository(
      *
      * 只删文件不删清单：清单是"这一话应该有哪些图"的权威来源，
      * 删掉它就没法判断缺图，也没法重新下载。
+     *
+     * 同时删掉这一话的阅读原图缓存（`reader-cache/<aid>/<cid>`）：用户点"删除图片"
+     * 就是要把这一话占的空间清掉，缓存继续留着没有意义，也会让"删了还有"看起来像没删干净。
      */
-    suspend fun deleteChapterFiles(albumFolderName: String, chapterFolder: String): Long {
+    suspend fun deleteChapterFiles(
+        albumId: Long,
+        chapterId: Long,
+        albumFolderName: String,
+        chapterFolder: String,
+    ): Long {
         if (albumFolderName.isBlank() || chapterFolder.isBlank()) return 0L
-        val dir = dirs.chapterDir(albumFolderName, chapterFolder)
-        val freed = dirs.sizeOf(dir)
-        dir.deleteRecursively()
+        var freed = 0L
+        listOf(
+            dirs.chapterDir(albumFolderName, chapterFolder),
+            dirs.readerCacheChapterDir(albumId, chapterId),
+        ).forEach { dir ->
+            freed += dirs.sizeOf(dir)
+            dir.deleteRecursively()
+        }
         return freed
     }
 
