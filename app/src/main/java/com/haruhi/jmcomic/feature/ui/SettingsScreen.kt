@@ -1087,7 +1087,7 @@ private fun LineSection(
     SettingsSection("线路") {
         LineSummaryRow(
             title = "接口线路",
-            hint = "获取漫画详情、图片清单与搜索都走这条线路",
+            hint = "该线路影响所有接口响应速度，如获取漫画详情、评论、搜索、分类等",
             host = state.apiLine.host,
             label = state.apiLine.label,
             isDefault = LineCatalog.isDefaultApi(state.apiLine.host),
@@ -1096,7 +1096,7 @@ private fun LineSection(
         CardDivider()
         LineSummaryRow(
             title = "图片线路",
-            hint = "下载章节图片、边看边下取图都走这条线路",
+            hint = "该线路影响所有图片加载速度，如在线阅读、漫画下载、封面图等",
             host = state.imageLine.host,
             label = null,
             isDefault = LineCatalog.isDefaultImage(state.imageLine.host),
@@ -1107,7 +1107,7 @@ private fun LineSection(
     if (showApiPicker) {
         LinePickerSheet(
             title = "接口线路",
-            hint = "不同网络下,同一条线路的延迟可能不同哦！",
+            hint = "不同网络环境下，同一条线路的延迟可能不同哦！",
             options = remember(state.apiLine) { apiPickerOptions(state.apiLine) },
             selectedHost = state.apiLine.host,
             defaultHost = LineCatalog.DEFAULT_API_HOST,
