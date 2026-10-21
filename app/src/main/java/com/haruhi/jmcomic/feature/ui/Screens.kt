@@ -169,7 +169,10 @@ fun LibraryScreen(
     /** 标题；在收藏夹内时为收藏夹名字（用户要求第 7 点：显示当前收藏夹名称）。 */
     title: String? = null,
     /** 是否显示「收藏」快捷筛选。收藏夹内不需要（用户要求第 7 点）。 */
-    showCollectedChip: Boolean = true,
+    // 【本地UI隐藏】书库的「收藏」筛选 chip（本机收藏夹语义）。
+    // v3 起收藏走账号在线收藏、入口在「我的」里，书库这个筛选项没有对应语义了；
+    // 想让书库恢复"只看已收藏"，把它改回 true 即可（chip 的实现一行没动）。
+    showCollectedChip: Boolean = false,
     /** 「继续阅读」卡片被点击（计划 §9 第 4 条）。 */
     onContinueReading: ((Long) -> Unit)? = null,
     /** 「继续阅读」卡片右上角 ✕ 被点击：清掉独立指针（卡片消失，不动逐本记录）。 */

@@ -1,0 +1,563 @@
+package com.haruhi.jmcomic.feature.ui
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.haruhi.jmcomic.core.account.AccountState
+import com.haruhi.jmcomic.core.account.MemberProfile
+import com.haruhi.jmcomic.core.network.toUserMessage
+import com.haruhi.jmcomic.feature.api.UserEditDto
+import com.haruhi.jmcomic.feature.data.AccountAlbum
+import com.haruhi.jmcomic.feature.data.AccountFolder
+import com.haruhi.jmcomic.feature.data.AccountRepository
+import com.haruhi.jmcomic.feature.data.Repository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import timber.log.Timber
+
+// ======================================================================
+// 我的（原「更多」）
+// ======================================================================
+
+/**
+ * 「我的」页状态。
+ *
+ * 账号部分**全部来自 [AccountRepository.state]**（唯一真相源）；
+ * 「最近浏览」条数仍来自本机数据库（本机数据，与账号无关）。
+ */
+data class MyUiState(
+    val account: AccountState = AccountState.Anonymous,
+    val recentCount: Int = 0,
+    /** 账号收藏夹个数（进页面时拉一次，失败就是 null → 副标题不显示夹数）。 */
+    val folderCount: Int? = null,
+    val loggingOut: Boolean = false,
+) {
+    val profile: MemberProfile? get() = account.profileOrNull
+    val signedIn: Boolean get() = account.isSignedIn
+
+    /** 账户卡第一行下面的那行小字：`Lv.4 · 地上的月影`。 */
+    val levelLine: String?
+        get() = profile?.let { p ->
+            buildString {
+                append("Lv.").append(p.level)
+                if (p.levelName.isNotBlank()) append(" · ").append(p.levelName)
+            }
+        }
+
+    /** 会员行；**非会员返回 null**（用户要求：不是会员就不展示会员信息）。 */
+    val memberLine: String?
+        get() = profile?.takeIf { it.adFree }?.let { p ->
+            val until = p.memberUntil
+            if (until.isNullOrBlank()) "超级会员" else "超级会员 · 至 $until"
+        }
+
+    /** 「收藏」副标题：`178/600 · 2 个收藏夹`（上限拿不到时就只显示已收藏数）。 */
+    val favoritesSummary: String?
+        get() = profile?.let { p ->
+            buildString {
+                append(p.albumFavorites)
+                if (p.albumFavoritesMax > 0) append('/').append(p.albumFavoritesMax)
+                append(" 本")
+                folderCount?.let { append(" · ").append(it).append(" 个收藏夹") }
+            }
+        }
+}
+
+class MyViewModel(
+    private val account: AccountRepository,
+    repo: Repository,
+) : ViewModel() {
+
+    private val recentCount: StateFlow<Int> = repo.observeRecentAlbums()
+        .map { it.size }
+        .catch { e ->
+            Timber.tag("jm").w(e, "最近浏览条数查询失败")
+            emit(0)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    private val folderCount = MutableStateFlow<Int?>(null)
+    private val loggingOut = MutableStateFlow(false)
+
+    val state: StateFlow<MyUiState> = combine(
+        account.state,
+        recentCount,
+        folderCount,
+        loggingOut,
+    ) { accountState, recent, folders, out ->
+        MyUiState(account = accountState, recentCount = recent, folderCount = folders, loggingOut = out)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = MyUiState(account = account.state.value),
+    )
+
+    /** 进页面/回到页面时刷新账号收藏夹个数（一个请求；失败就保持旧值）。 */
+    fun refreshFolderCount() {
+        viewModelScope.launch {
+            if (!account.isSignedIn) {
+                folderCount.value = null
+                return@launch
+            }
+            runCatching { account.favorites(page = 1).folders.size }
+                .onSuccess { folderCount.value = it }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    Timber.tag("jm").d(e, "拉账号收藏夹个数失败")
+                }
+        }
+    }
+
+    fun logout() {
+        viewModelScope.launch {
+            loggingOut.value = true
+            runCatching { account.logout() }
+                .onFailure { if (it is CancellationException) throw it else Timber.tag("jm").w(it, "退出登录失败") }
+            folderCount.value = null
+            loggingOut.value = false
+        }
+    }
+}
+
+// ======================================================================
+// 登录
+// ======================================================================
+
+data class LoginUiState(
+    val username: String = "",
+    val password: String = "",
+    val passwordVisible: Boolean = false,
+    val submitting: Boolean = false,
+    val usernameError: String? = null,
+    val passwordError: String? = null,
+    /** 接口级错误（服务端 `errorMsg` 原文或网络错误文案）。 */
+    val error: String? = null,
+    /** 登录成功（页面据此关闭）。 */
+    val done: Boolean = false,
+) {
+    val canSubmit: Boolean get() = !submitting
+}
+
+/**
+ * 登录页 ViewModel。
+ *
+ * 只做登录（注册 / 验证码 / 找回密码本版未接入，页面上有一行说明）。
+ * 请求纪律：**空字段不发请求**、提交中重复点击忽略、服务端错误原样展示。
+ */
+class AccountAuthViewModel(private val account: AccountRepository) : ViewModel() {
+
+    private val _state = MutableStateFlow(LoginUiState())
+    val state: StateFlow<LoginUiState> = _state.asStateFlow()
+
+    fun setUsername(value: String) = _state.update {
+        it.copy(username = value, usernameError = null, error = null)
+    }
+
+    fun setPassword(value: String) = _state.update {
+        it.copy(password = value, passwordError = null, error = null)
+    }
+
+    fun togglePasswordVisible() = _state.update { it.copy(passwordVisible = !it.passwordVisible) }
+
+    fun consumeError() = _state.update { it.copy(error = null) }
+
+    fun submit() {
+        val current = _state.value
+        if (current.submitting) return
+        val username = current.username.trim()
+        val password = current.password
+        var hasError = false
+        var next = current.copy(error = null)
+        if (username.isEmpty()) {
+            next = next.copy(usernameError = "请输入用户名")
+            hasError = true
+        }
+        if (password.isEmpty()) {
+            next = next.copy(passwordError = "请输入密码")
+            hasError = true
+        }
+        if (hasError) {
+            _state.value = next
+            return
+        }
+        _state.update { it.copy(submitting = true) }
+        viewModelScope.launch {
+            runCatching { account.login(username, password) }
+                .onSuccess {
+                    _state.update { s -> s.copy(submitting = false, done = true, error = null) }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { s -> s.copy(submitting = false, error = e.toUserMessage()) }
+                }
+        }
+    }
+}
+
+// ======================================================================
+// 账号收藏（收藏夹列表）
+// ======================================================================
+
+data class AccountFavoritesUiState(
+    val signedIn: Boolean = true,
+    val loading: Boolean = true,
+    val refreshing: Boolean = false,
+    /** 不含「全部收藏」（那是虚拟卡）。 */
+    val folders: List<AccountFolder> = emptyList(),
+    /** 全部收藏的总数（虚拟卡上的数字）。 */
+    val total: Int = 0,
+    val allCoverAlbumId: Long? = null,
+    val error: String? = null,
+    val message: String? = null,
+    /** 正在执行增删改的夹（按钮转圈用）。 */
+    val busyFolderId: String? = null,
+)
+
+/**
+ * 账号收藏夹列表（`docs/account-design.md` §5）。
+ *
+ * 首屏只发一个请求（全部收藏第一页），拿到 `folder_list`；
+ * 各夹的数量与封面再**并发补拉**（每夹一次 `?folder_id=X&page=1`，上限 3 并发），
+ * 拉不到就显示「…」——不退化成整页报错。
+ */
+class AccountFavoritesViewModel(private val account: AccountRepository) : ViewModel() {
+
+    private val _state = MutableStateFlow(AccountFavoritesUiState())
+    val state: StateFlow<AccountFavoritesUiState> = _state.asStateFlow()
+
+    private var loaded = false
+
+    fun load() {
+        if (loaded) return
+        loaded = true
+        refresh(initial = true)
+    }
+
+    fun refresh(initial: Boolean = false) {
+        if (!account.isSignedIn) {
+            _state.update { it.copy(signedIn = false, loading = false) }
+            return
+        }
+        _state.update {
+            it.copy(
+                signedIn = true,
+                loading = initial || it.folders.isEmpty(),
+                refreshing = !initial,
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching { account.favorites(page = 1) }
+                .onSuccess { page ->
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            error = null,
+                            folders = page.folders,
+                            total = page.total,
+                            allCoverAlbumId = page.albums.firstOrNull()?.id,
+                        )
+                    }
+                    backfillFolders(page.folders)
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update {
+                        it.copy(loading = false, refreshing = false, error = e.toUserMessage())
+                    }
+                }
+        }
+    }
+
+    /** 给每个夹补「N 本 + 封面」：一次 `page=1` 就够（`total` 与第一条都在里面）。 */
+    private fun backfillFolders(folders: List<AccountFolder>) {
+        if (folders.isEmpty()) return
+        viewModelScope.launch {
+            val semaphore = Semaphore(MAX_BACKFILL_CONCURRENCY)
+            coroutineScope {
+                folders.map { folder ->
+                    async {
+                        semaphore.withPermit {
+                            runCatching { account.favorites(page = 1, folderId = folder.fid) }
+                                .getOrNull()
+                                ?.let { page ->
+                                    _state.update { current ->
+                                        current.copy(
+                                            folders = current.folders.map { f ->
+                                                if (f.fid == folder.fid) {
+                                                    f.copy(
+                                                        count = page.total,
+                                                        coverAlbumId = page.albums.firstOrNull()?.id,
+                                                    )
+                                                } else {
+                                                    f
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                        }
+                    }
+                }.awaitAll()
+            }
+        }
+    }
+
+    fun create(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(message = "请输入收藏夹名称") }
+            return
+        }
+        _state.update { it.copy(busyFolderId = BUSY_CREATE) }
+        viewModelScope.launch {
+            runCatching { account.createFolder(trimmed) }
+                .onSuccess { folder ->
+                    _state.update { it.copy(message = "已创建「${folder.name}」") }
+                    refresh(initial = false)
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(message = e.toUserMessage()) }
+                }
+            _state.update { it.copy(busyFolderId = null) }
+        }
+    }
+
+    fun rename(folderId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(message = "名称不能为空") }
+            return
+        }
+        _state.update { it.copy(busyFolderId = folderId) }
+        viewModelScope.launch {
+            runCatching { account.renameFolder(folderId, trimmed) }
+                .onSuccess {
+                    _state.update { it.copy(message = "已重命名为「$trimmed」") }
+                    refresh(initial = false)
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(message = e.toUserMessage()) }
+                }
+            _state.update { it.copy(busyFolderId = null) }
+        }
+    }
+
+    fun delete(folderId: String) {
+        _state.update { it.copy(busyFolderId = folderId) }
+        viewModelScope.launch {
+            runCatching { account.deleteFolder(folderId) }
+                .onSuccess {
+                    _state.update { it.copy(message = "收藏夹已删除") }
+                    refresh(initial = false)
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(message = e.toUserMessage()) }
+                }
+            _state.update { it.copy(busyFolderId = null) }
+        }
+    }
+
+    fun consumeMessage() = _state.update { it.copy(message = null) }
+
+    private companion object {
+        const val MAX_BACKFILL_CONCURRENCY = 3
+        const val BUSY_CREATE = "__create__"
+    }
+}
+
+// ======================================================================
+// 账号收藏（夹内漫画网格）
+// ======================================================================
+
+data class AccountAlbumsUiState(
+    val title: String = "",
+    /** null = 全部收藏。 */
+    val folderId: String? = null,
+    val albums: List<AccountAlbum> = emptyList(),
+    val total: Int = 0,
+    val order: String = AccountRepository.ORDER_BY_TIME,
+    val loading: Boolean = true,
+    val loadingMore: Boolean = false,
+    val error: String? = null,
+    val message: String? = null,
+    val removingId: Long? = null,
+) {
+    val isEmpty: Boolean get() = !loading && error == null && albums.isEmpty()
+    val hasMore: Boolean get() = albums.size < total
+}
+
+class AccountAlbumsViewModel(
+    private val account: AccountRepository,
+    private val folderId: String?,
+    title: String,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(
+        AccountAlbumsUiState(
+            title = title.ifBlank { if (folderId.isNullOrBlank()) "全部收藏" else "收藏夹" },
+            folderId = folderId,
+        ),
+    )
+    val state: StateFlow<AccountAlbumsUiState> = _state.asStateFlow()
+
+    private var nextPage = 1
+
+    init {
+        refresh()
+    }
+
+    fun refresh() {
+        if (!account.isSignedIn) {
+            _state.update { it.copy(loading = false, error = "登录状态已失效，请重新登录") }
+            return
+        }
+        nextPage = 1
+        _state.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            runCatching { account.favorites(page = 1, folderId = _state.value.folderId, order = _state.value.order) }
+                .onSuccess { page ->
+                    nextPage = 2
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            albums = page.albums,
+                            total = page.total,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(loading = false, error = e.toUserMessage()) }
+                }
+        }
+    }
+
+    fun loadMore() {
+        val current = _state.value
+        if (current.loading || current.loadingMore || !current.hasMore) return
+        _state.update { it.copy(loadingMore = true) }
+        val page = nextPage
+        viewModelScope.launch {
+            runCatching { account.favorites(page = page, folderId = current.folderId, order = current.order) }
+                .onSuccess { result ->
+                    nextPage = page + 1
+                    _state.update { s ->
+                        val merged = (s.albums + result.albums).distinctBy { it.id }
+                        s.copy(loadingMore = false, albums = merged, total = result.total)
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(loadingMore = false, message = e.toUserMessage()) }
+                }
+        }
+    }
+
+    fun setOrder(order: String) {
+        if (_state.value.order == order) return
+        _state.update { it.copy(order = order) }
+        refresh()
+    }
+
+    /** 从收藏里移出（= 取消收藏；官方不支持"只移出夹"，见 design §4.3 L2）。 */
+    fun remove(albumId: Long) {
+        if (_state.value.removingId != null) return
+        _state.update { it.copy(removingId = albumId) }
+        viewModelScope.launch {
+            runCatching { account.toggleFavorite(albumId) }
+                .onSuccess { result ->
+                    _state.update { s ->
+                        s.copy(
+                            removingId = null,
+                            albums = if (result.added) s.albums else s.albums.filterNot { it.id == albumId },
+                            total = if (result.added) s.total else (s.total - 1).coerceAtLeast(0),
+                            message = if (result.added) "已重新加入收藏" else "已从收藏移出",
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(removingId = null, message = e.toUserMessage()) }
+                }
+        }
+    }
+
+    fun consumeMessage() = _state.update { it.copy(message = null) }
+}
+
+// ======================================================================
+// 个人资料（只读）
+// ======================================================================
+
+data class AccountProfileUiState(
+    val signedIn: Boolean = true,
+    val profile: MemberProfile? = null,
+    val detail: UserEditDto? = null,
+    val loading: Boolean = true,
+    val error: String? = null,
+) {
+    val memberLine: String?
+        get() = profile?.takeIf { it.adFree }?.let { p ->
+            val until = p.memberUntil
+            if (until.isNullOrBlank()) "超级会员" else "超级会员 · 至 $until"
+        }
+}
+
+class AccountProfileViewModel(private val account: AccountRepository) : ViewModel() {
+
+    private val _state = MutableStateFlow(
+        AccountProfileUiState(profile = account.profile, signedIn = account.isSignedIn),
+    )
+    val state: StateFlow<AccountProfileUiState> = _state.asStateFlow()
+
+    init {
+        load()
+    }
+
+    fun load() {
+        val profile = account.profile
+        if (!account.isSignedIn || profile == null) {
+            _state.update { it.copy(signedIn = false, loading = false) }
+            return
+        }
+        _state.update { it.copy(profile = profile, loading = true, error = null) }
+        viewModelScope.launch {
+            runCatching { account.userEdit(profile.uid) }
+                .onSuccess { detail ->
+                    _state.update { it.copy(loading = false, detail = detail, error = null) }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    // 资料拉不到不算致命：快照还能显示昵称/等级/收藏数
+                    _state.update { it.copy(loading = false, error = e.toUserMessage()) }
+                }
+        }
+    }
+
+    /**
+     * 退出登录。
+     *
+     * 走应用级作用域（[AccountRepository.logoutInBackground]）：这个页面点完就弹回去了，
+     * 挂在页面 `viewModelScope` 上的请求会被一起取消。
+     */
+    fun logout() = account.logoutInBackground()
+}

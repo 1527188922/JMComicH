@@ -128,3 +128,32 @@ material3 1.4.0 的 `ModalBottomSheet` 把面板拖动挂在**整块内容**上�
 - [ ] 点遮罩、点「关闭」、返回键：都还能关；
 - [ ] 内容溢出的列表面板：右边缘出现那根 3dp 胶囊（静止淡、滑动加深），内容不溢出时不出现；
 - [ ] 把系统字号调到最大 / 用小屏设备：面板底部按钮仍够得到（外层兜底滚动生效）。
+
+## 3. 本机收藏下线 / 账号收藏上线：隐藏规则
+
+> 2026-10-21 起：**收藏统一走官方在线收藏**（入口在「我的」里），本机收藏的界面下线。
+> 设计见 `docs/account-design.md` §4 / §10，接口见 `docs/official-api-manga.md` §8。
+
+### 规则（必须遵守）
+
+1. **隐藏点必须带标记**：`// 【本地UI隐藏】…` 后面写清"放开即可恢复"，并说明恢复时要一起放开哪几处。
+2. **只许注释 / 改调用，不许删代码**：
+   - `Repository` 的收藏与最近浏览方法、`FavoriteDao`、`FavoritesViewModel`、`FavoritePickerSheet`、
+     `FavoritePickerForSelection`、`RecentScreen`、`Repository.touchRecent()` **一行都不许删**；
+   - 隐藏的方式只有两种：注释调用点，或把开关参数的默认值改掉（例如 `LibraryScreen(showCollectedChip = false)`）。
+3. **恢复要成套放开**：`Tab.FAVORITES`、`Routes.FAVORITES` / `Routes.FAVORITE_ALBUMS` 两个 composable、
+   详情页本机面板、书库「收藏」筛选与多选「修改收藏夹」——少放开一处就会出现"有入口没页面"。
+4. **最近浏览始终是本机数据**：不走官方 `/watch_list`（那个接口的 `POST` 是**删记录**，官方也没有"上报观看"的调用点）。
+5. **账号请求的前置检查只有一处**：`AccountRepository.guarded()`（未登录直接抛"请先登录"）。
+   401 一律翻译成"登录已失效"并把会话标成 `Expired`，页面里不许各自弹 401 对话框。
+6. **`POST` 不自动重试**：`ApiClient.postDecrypted` 刻意不套 `withTimeoutRetry`——
+   `POST /favorite` 是**切换**语义，重放一次等于把刚加上的收藏取消掉。
+
+### 验收清单（改收藏链路后照着跑）
+
+- [ ] 底栏 4 项，点「我的 → 收藏」能进账号收藏夹列表，夹卡有「N 本 + 封面」；
+- [ ] 详情页点「收藏」开的是账号面板；未登录先跳登录、登录后回到详情页（不自动收藏）；
+- [ ] 未收藏点某个夹 → 加入并归入该夹；已收藏点该夹 → 换夹；点「全部收藏」→ 加入/取消；
+- [ ] 非空夹的「删除」按钮不出现；空夹能删；
+- [ ] 书库筛选里没有「收藏」，长按多选里没有「修改收藏夹」；
+- [ ] 全局搜索 `Routes.FAVORITES` / `Routes.MORE` 的调用点都在注释里。

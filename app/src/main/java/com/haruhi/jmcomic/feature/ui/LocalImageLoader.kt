@@ -3,7 +3,10 @@ package com.haruhi.jmcomic.feature.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import coil3.ImageLoader
+import coil3.compose.AsyncImage
 import com.haruhi.jmcomic.core.protocol.Defaults
 
 /**
@@ -26,6 +29,38 @@ val LocalImageLoader = staticCompositionLocalOf<ImageLoader?> { null }
 /** 取当前生效的应用级 ImageLoader；没安装时返回 null（此时用 Coil 的单例）。 */
 @Composable
 fun currentImageLoader(): ImageLoader? = LocalImageLoader.current
+
+/**
+ * 非封面图（**头像**那类）的加载入口：与 `Cover` 同一个应用级 ImageLoader（正确 UA / 代理、
+ * 同一份磁盘缓存），但 `imageLoader` 参数是**非空**的 Coil API，所以这里替调用方分一次流。
+ *
+ * 与 `CONVENTIONS.md` 第 1 条一致：头像不属于封面，不传 albumId、不改 `Cover` 的缓存 key。
+ */
+@Composable
+fun AvatarImage(
+    model: Any?,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    val loader = currentImageLoader()
+    if (loader != null) {
+        AsyncImage(
+            model = model,
+            contentDescription = contentDescription,
+            imageLoader = loader,
+            contentScale = contentScale,
+            modifier = modifier,
+        )
+    } else {
+        AsyncImage(
+            model = model,
+            contentDescription = contentDescription,
+            contentScale = contentScale,
+            modifier = modifier,
+        )
+    }
+}
 
 /**
  * 当前选中的图片线路（图片 CDN 域名）。

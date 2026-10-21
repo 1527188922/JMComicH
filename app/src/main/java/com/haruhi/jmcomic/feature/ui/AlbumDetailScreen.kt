@@ -177,10 +177,21 @@ fun AlbumDetailScreen(
     onToggleReversed: () -> Unit,
     onToggleDescription: () -> Unit,
     onAddToLibrary: () -> Unit,
+    // 【本地UI隐藏】v3 起「收藏」走账号在线收藏（见 docs/account-design.md §4.4），
+    // 下面四个本机收藏夹回调暂时没有 UI 入口，参数与实现都保留，放开注释即可恢复。
     onMoveToFavorite: (Long) -> Unit,
     onAddToFavorite: (Long) -> Unit,
     onRemoveFromFavorite: (Long) -> Unit,
     onCreateFavoriteAndAdd: (String) -> Unit,
+    /** 打开账号收藏面板（未登录时由上层跳登录页）。 */
+    onOpenAccountFavoriteSheet: () -> Unit,
+    onDismissAccountFavoriteSheet: () -> Unit,
+    /** 面板里点一行：`folderId == null` = 「全部收藏」。 */
+    onChooseAccountFavorite: (String?, String?) -> Unit,
+    /** 面板里「新建收藏夹并加入」。 */
+    onCreateAccountFolderAndAdd: (String) -> Unit,
+    /** 面板里点「去登录」。 */
+    onRequireLogin: () -> Unit,
     /** 点章节行进阅读器（读到哪一话由点的那一行为准）。 */
     onReadChapter: (Long) -> Unit,
     /** 头部「阅读」按钮：**从第一章开始读**（用户要求第 4 点）。 */
@@ -232,7 +243,8 @@ fun AlbumDetailScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showDeleteFilesDialog by remember { mutableStateOf(false) }
     var showDeleteRecordDialog by remember { mutableStateOf(false) }
-    var showFavoriteSheet by remember { mutableStateOf(false) }
+    // 【本地UI隐藏】本机收藏夹面板的开关；现在点「收藏」走账号面板（state.accountSheetOpen）
+    // var showFavoriteSheet by remember { mutableStateOf(false) }
     // 面板的展开状态由本页自己管：它是纯界面状态，不需要活过页面重建
     var showDownloadSheet by remember { mutableStateOf(false) }
     // 待删除的导出成品文件名（null = 没有待确认的删除）
@@ -446,7 +458,7 @@ fun AlbumDetailScreen(
                             // 已入库时那颗按钮是"移出书库"：走和菜单里同一段逻辑、
                             // 同一个二次确认框（会删本地图片，不能点一下就执行）
                             onRemoveFromLibrary = { showDeleteRecordDialog = true },
-                            onOpenFavoriteSheet = { showFavoriteSheet = true },
+                            onOpenAccountFavoriteSheet = onOpenAccountFavoriteSheet,
                             onToggleDescription = onToggleDescription,
                             onRead = onReadFromStart,
                             onSearchAuthor = onSearchAuthor,
@@ -584,15 +596,30 @@ fun AlbumDetailScreen(
         )
     }
 
-    if (showFavoriteSheet) {
-        FavoritePickerSheet(
-            allFavorites = state.allFavorites,
-            currentFavoriteIds = state.favoriteIds,
-            onDismiss = { showFavoriteSheet = false },
-            onMoveTo = { onMoveToFavorite(it); showFavoriteSheet = false },
-            onAdd = { onAddToFavorite(it) },
-            onRemove = { onRemoveFromFavorite(it) },
-            onCreate = { onCreateFavoriteAndAdd(it) },
+    // 【本地UI隐藏】本机收藏夹面板（原实现保留在 FavoritePickerSheet 里，放开这段即可恢复）
+    // if (showFavoriteSheet) {
+    //     FavoritePickerSheet(
+    //         allFavorites = state.allFavorites,
+    //         currentFavoriteIds = state.favoriteIds,
+    //         onDismiss = { showFavoriteSheet = false },
+    //         onMoveTo = { onMoveToFavorite(it); showFavoriteSheet = false },
+    //         onAdd = { onAddToFavorite(it) },
+    //         onRemove = { onRemoveFromFavorite(it) },
+    //         onCreate = { onCreateFavoriteAndAdd(it) },
+    //     )
+    // }
+
+    // 账号收藏面板（官方在线收藏）
+    if (state.accountSheetOpen) {
+        AccountFavoriteSheet(
+            signedIn = state.accountSignedIn,
+            inFavorites = state.accountInFavorites,
+            folders = state.accountFolders,
+            busy = state.accountFavoriteBusy,
+            onDismiss = onDismissAccountFavoriteSheet,
+            onChoose = onChooseAccountFavorite,
+            onCreateAndAdd = onCreateAccountFolderAndAdd,
+            onRequireLogin = onRequireLogin,
         )
     }
     if (showDeleteFilesDialog) {
@@ -1531,7 +1558,8 @@ private fun AlbumHeader(
     onAddToLibrary: () -> Unit,
     /** 已入库时点那颗按钮 = 移出书库：只负责弹二次确认，真正执行由上层 [AlbumDetailScreen]。 */
     onRemoveFromLibrary: () -> Unit,
-    onOpenFavoriteSheet: () -> Unit,
+    /** 打开账号收藏面板（官方在线收藏；未登录时上层会跳登录页）。 */
+    onOpenAccountFavoriteSheet: () -> Unit,
     onToggleDescription: () -> Unit,
     onRead: () -> Unit,
     /** 点作者：**直接打开搜索结果页**，进页面就按作者名搜（用户要求）。 */
@@ -1669,9 +1697,9 @@ private fun AlbumHeader(
                 }
                 Text(if (state.inLibrary) "已入库" else "未入库")
             }
-            // 「收藏」直接打开收藏夹面板选夹（用户要求第 5 点：不再单独放「收藏夹」按钮）
-            OutlinedButton(onClick = onOpenFavoriteSheet) {
-                Text(if (album.collected == true) "已收藏" else "收藏")
+            // 「收藏」直接打开**账号**收藏夹面板（官方在线收藏，单夹模型见设计 §4.4）
+            OutlinedButton(onClick = onOpenAccountFavoriteSheet) {
+                Text(if (state.accountInFavorites) "已收藏" else "收藏")
             }
         }
 

@@ -25,6 +25,8 @@ import com.haruhi.jmcomic.feature.data.fixCategorySelection
 import com.haruhi.jmcomic.feature.data.mergeCategoryItems
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.FavoriteWriteResult
+import com.haruhi.jmcomic.feature.data.AccountFolder
+import com.haruhi.jmcomic.feature.data.AccountRepository
 import com.haruhi.jmcomic.feature.data.AlbumCleaner
 import com.haruhi.jmcomic.feature.data.CommentCache
 import com.haruhi.jmcomic.feature.data.CommentRow
@@ -37,6 +39,7 @@ import com.haruhi.jmcomic.feature.data.Repository
 import com.haruhi.jmcomic.feature.data.OnlineSearchItem
 import com.haruhi.jmcomic.feature.data.OnlineSearchResult
 import com.haruhi.jmcomic.feature.data.ReadingPosition
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1783,6 +1786,19 @@ data class AlbumDetailUiState(
     val commentsLoaded: Boolean = false,
     /** 已经到底了（服务端没有更多，或条数已经够 total）。 */
     val commentsReachedEnd: Boolean = false,
+
+    // ---------------- 账号收藏（官方在线收藏，见 docs/account-design.md §4.4） ----------------
+
+    /** 当前是否已登录（未登录时收藏按钮点了要先去登录）。 */
+    val accountSignedIn: Boolean = false,
+    /** 这本是否已在账号收藏里（**以服务端为准**；本机 `collected` 字段不再用作这个含义）。 */
+    val accountInFavorites: Boolean = false,
+    /** 收藏夹列表（打开面板时拉一次）。 */
+    val accountFolders: List<AccountFolder> = emptyList(),
+    /** 正在写收藏（按钮/行转圈，防重复提交）。 */
+    val accountFavoriteBusy: Boolean = false,
+    /** 收藏面板是否展开（放 VM 里，重组/转屏后不会自己关掉）。 */
+    val accountSheetOpen: Boolean = false,
 ) {
     /**
      * 「评论」tab 上那个数字：优先用 `/forum` 给的 `total`，
@@ -1893,6 +1909,8 @@ class AlbumDetailViewModel(
      * 用户完全可能删到一半就自己按返回，挂在 `viewModelScope` 上会随导航 entry 一起取消。
      */
     private val appScope: CoroutineScope,
+    /** 账号（官方在线收藏）：详情页的收藏按钮/面板都走它。 */
+    private val account: AccountRepository,
     private val albumId: Long,
 ) : ViewModel() {
 
@@ -1983,6 +2001,15 @@ class AlbumDetailViewModel(
                 .collect { ids ->
                     _state.update { it.copy(favoriteIds = ids) }
                 }
+        }
+
+        // 4.5) 账号（官方在线收藏）：登录态 + `is_favorite` 只信服务端
+        //      （本机库里的 colleted 是"本机收藏夹"的旧语义，与账号收藏无关）
+        viewModelScope.launch {
+            account.state.collect { accountState ->
+                _state.update { it.copy(accountSignedIn = accountState.isSignedIn) }
+                if (accountState.isSignedIn) refreshAccountFavoriteFlag()
+            }
         }
 
         // 5) 阅读进度（用户第十一轮要求第 1 点）：有进度主按钮就是「继续阅读」。
@@ -2405,6 +2432,136 @@ class AlbumDetailViewModel(
                 }
                 refreshLocalStats()
             }.onFailure { e -> _state.update { it.copy(message = e.toUserMessage()) } }
+        }
+    }
+
+    // ---------------- 账号收藏（官方在线收藏） ----------------
+
+    /** 面板打开时向服务端核对一次 `is_favorite`（本机库里的旧值不可信）。 */
+    private suspend fun refreshAccountFavoriteFlag() {
+        val flag = repo.fetchAlbumFavoriteFlag(albumId) ?: return
+        _state.update { it.copy(accountInFavorites = flag) }
+    }
+
+    fun openAccountFavoriteSheet() {
+        _state.update { it.copy(accountSheetOpen = true) }
+        if (!account.isSignedIn) return
+        viewModelScope.launch {
+            refreshAccountFavoriteFlag()
+            runCatching { account.favorites(page = 1) }
+                .onSuccess { page -> _state.update { it.copy(accountFolders = page.folders) } }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    Timber.tag("jm").d(e, "拉账号收藏夹失败")
+                }
+        }
+    }
+
+    fun dismissAccountFavoriteSheet() = _state.update { it.copy(accountSheetOpen = false) }
+
+    /**
+     * 面板里点了一行（`docs/account-design.md` §4.4 的状态机）。
+     *
+     * - 未收藏 · 点某个夹：`add` + `move`（两步；move 失败时如实提示"只加了收藏"）；
+     * - 未收藏 · 点「全部收藏」：只 `add`；
+     * - 已收藏 · 点某个夹：只 `move`；
+     * - 已收藏 · 点「全部收藏」：`toggle` 一次 = 取消收藏。
+     */
+    fun chooseAccountFavorite(folderId: String?, folderName: String?) {
+        if (_state.value.accountFavoriteBusy) return
+        _state.update { it.copy(accountFavoriteBusy = true) }
+        viewModelScope.launch {
+            try {
+                val wasIn = _state.value.accountInFavorites
+                if (wasIn && folderId == null) {
+                    account.toggleFavorite(albumId)
+                    _state.update {
+                        it.copy(
+                            accountFavoriteBusy = false,
+                            accountInFavorites = false,
+                            accountSheetOpen = false,
+                            message = "已从收藏移出",
+                        )
+                    }
+                    return@launch
+                }
+                if (!wasIn) {
+                    account.toggleFavorite(albumId)
+                }
+                if (folderId != null) {
+                    try {
+                        account.moveToFolder(albumId, folderId, folderName)
+                        _state.update {
+                            it.copy(
+                                accountFavoriteBusy = false,
+                                accountInFavorites = true,
+                                accountSheetOpen = false,
+                                message = if (wasIn) {
+                                    "已移动到「${folderName ?: "收藏夹"}」"
+                                } else {
+                                    "已加入「${folderName ?: "收藏夹"}」"
+                                },
+                            )
+                        }
+                        return@launch
+                    } catch (moveError: Throwable) {
+                        if (moveError is CancellationException) throw moveError
+                        _state.update {
+                            it.copy(
+                                accountFavoriteBusy = false,
+                                accountInFavorites = true,
+                                message = "已加入收藏，但归入收藏夹失败：${moveError.toUserMessage()}",
+                            )
+                        }
+                        return@launch
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        accountFavoriteBusy = false,
+                        accountInFavorites = true,
+                        accountSheetOpen = false,
+                        message = "已加入收藏（未归类）",
+                    )
+                }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                _state.update {
+                    it.copy(accountFavoriteBusy = false, message = e.toUserMessage())
+                }
+            }
+        }
+    }
+
+    /** 面板里「新建收藏夹并加入」：先建夹，再（必要时）加收藏，最后移入。 */
+    fun createAccountFolderAndAdd(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _state.update { it.copy(message = "请输入收藏夹名称") }
+            return
+        }
+        if (_state.value.accountFavoriteBusy) return
+        _state.update { it.copy(accountFavoriteBusy = true) }
+        viewModelScope.launch {
+            try {
+                val folder = account.createFolder(trimmed)
+                if (!_state.value.accountInFavorites) account.toggleFavorite(albumId)
+                account.moveToFolder(albumId, folder.fid, folder.name)
+                _state.update {
+                    it.copy(
+                        accountFavoriteBusy = false,
+                        accountInFavorites = true,
+                        accountSheetOpen = false,
+                        accountFolders = (it.accountFolders + folder).distinctBy { f -> f.fid },
+                        message = "已加入「${folder.name}」",
+                    )
+                }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                _state.update {
+                    it.copy(accountFavoriteBusy = false, message = e.toUserMessage())
+                }
+            }
         }
     }
 

@@ -124,24 +124,25 @@ class ReaderAndTaskLogicTest {
     // ---------------- 底栏切换方向（用户要求第 1 点） ----------------
 
     /**
-     * 底栏从 2026-10-19 起是 **书库 / 分类 / 发现 / 收藏 / 更多** 五项。
+     * 底栏从 2026-10 起是 **书库 / 分类 / 发现 / 我的** 四项
+     * （「收藏」tab 下线，收藏入口在「我的」里，见 `docs/account-design.md`）。
      *
-     * 这两个用例原来写的是更早那一版（书库 / 最近 / 发现 / 收藏 / 任务），
-     * 「最近」「任务」搬进「更多」之后就一直是失败的陈旧断言；这里按当前五项重写，
-     * 顺带把「分类」插在书库与发现之间这件事也锁住（换位置要改这里）。
+     * 这两个用例历史上改过两次：最早是「书库 / 最近 / 发现 / 收藏 / 任务」，
+     * 后来「最近」「任务」搬进「更多」变成五项；现在收藏也收进「我的」，变成四项。
+     * 位置再变时**只改这里**。
      */
     @Test
     fun `switching to a tab on the right slides in from the right`() {
         assertThat(tabShift(Routes.LIBRARY, Routes.CATEGORY)).isEqualTo(1)
-        // 书库 → 更多：隔了四个位置，位移是 4（方向只看正负，距离用于动画方向）
-        assertThat(tabShift(Routes.LIBRARY, Routes.MORE)).isEqualTo(4)
-        assertThat(tabShift(Routes.DISCOVER, Routes.FAVORITES)).isEqualTo(1)
+        // 书库 → 我的：隔了三个位置，位移是 3（方向只看正负，距离用于动画方向）
+        assertThat(tabShift(Routes.LIBRARY, Routes.MINE)).isEqualTo(3)
+        assertThat(tabShift(Routes.DISCOVER, Routes.MINE)).isEqualTo(1)
     }
 
     @Test
     fun `switching to a tab on the left slides in from the left`() {
-        assertThat(tabShift(Routes.MORE, Routes.FAVORITES)).isEqualTo(-1)
-        assertThat(tabShift(Routes.FAVORITES, Routes.LIBRARY)).isEqualTo(-3)
+        assertThat(tabShift(Routes.MINE, Routes.DISCOVER)).isEqualTo(-1)
+        assertThat(tabShift(Routes.DISCOVER, Routes.LIBRARY)).isEqualTo(-2)
     }
 
     @Test

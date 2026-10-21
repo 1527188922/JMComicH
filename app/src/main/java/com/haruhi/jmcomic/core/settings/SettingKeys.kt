@@ -117,12 +117,27 @@ internal object SettingKeys {
          * 空值（没设置过、或刚「恢复默认」）= 简中。
          */
         const val API_LANGUAGE = "api_language"
+
+        /**
+         * 账号资料快照（JSON 一行）。
+         *
+         * 只用于「我的」页首屏（离线也能显示上次的昵称/头像/收藏数），
+         * **不是账号数据的真相**；凭证在 [SecretStore] 里，见 `core/account/AccountStore`。
+         * 退出登录时清空。
+         */
+        const val ACCOUNT_PROFILE = "account_profile"
     }
 
     // ---------------- 敏感凭据（单独的安全存储，键名同样不外露） ----------------
     const val SECRET_JM_ZIP_PASSWORD = "secret_jm_zip_password"
     const val SECRET_JM_PDF_PASSWORD = "secret_jm_pdf_password"
     const val SECRET_JM_PROXY_PASSWORD = "secret_jm_proxy_password"
+
+    /** 账号登录凭证：官方接口的 `jwttoken`（`Authorization: Bearer …`）。 */
+    const val SECRET_JWT = "secret_jwt"
+
+    /** 账号登录凭证：官方接口的 `s`（`Cookie: AVS=…`）。 */
+    const val SECRET_AVS = "secret_avs"
 
     /**
      * 历史遗留：旧「全局作用域」的代理密码。

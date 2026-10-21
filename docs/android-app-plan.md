@@ -14,8 +14,12 @@
 >   `com.haruhi.jmcomic`，数据库文件 `haruhibox.db` → `jmcomic.db`。
 > - **内部包结构重规划**：`core/jm` → `core/protocol`，`feature/jm/{api,data,ui}` →
 >   `feature/{api,data,ui}`，同时去掉了冗余的 `Jm*` 类名前缀。
+> - **账号相关决策作废（2026-10 起）**：本文 §1.1「不做 JM 账号/登录」、§9 第 3 条
+>   「不做账号型『我的』页面」、§9.3 末尾「不添加 JM 登录、账号或用户体系」都**已不再成立**：
+>   现在有可选登录 + 官方在线收藏，底栏 4 项（书库 / 分类 / 发现 / 我的）。
+>   以 `docs/account-design.md` 为准。
 >
-> 改动详情见 `docs/PROGRESS.md` 的「改造：纯漫画版」一节与 `README.md`。
+> 改动详情见 `docs/PROGRESS.md` 的「改造：纯漫画版」与「改造：账号体系 v3」两节、`README.md`。
 
 > 本文档供**新会话**直接执行。新会话没有历史上下文，请先完整读完第 0～3 节再动手。
 

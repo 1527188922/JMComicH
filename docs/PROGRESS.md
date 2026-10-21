@@ -1905,3 +1905,67 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 - 没做"下载时也预取原图"：下载永远产出成品，两套缓存互不复用（换来的是语义清晰、不会把加扰图当下载结果）。
   唯一的例外是**单向复用**：下载时会先看 `reader-cache` 里有没有现成原图（有就不联网、直接解扰发布），
   反过来阅读器不会去偷 `library` 的半成品。
+
+## 改造：账号体系 v3（2026-10-21）
+
+用户要求：先把**登录**做进 App；「更多」页改造成「我的」；把**本机收藏页隐藏**；收藏改用**官方在线收藏**、
+入口放进「我的」。设计与实测依据见 `docs/account-design.md`（v3）与 `docs/official-api-manga.md`。
+
+### 1. 做了什么
+
+| 层 | 改动 |
+|---|---|
+| 协议 | `ApiClient` 新增 `multipart/form-data` **POST**（`postRaw` / `postDecrypted`）与鉴权头 `authProvider`；**POST 一律不自动重试**（`POST /favorite` 是切换语义，重放会把刚加的收藏取消掉） |
+| 账号 | 新增 `core/account/{AccountStore,AccountSession,AccountState,MemberProfile}.kt`：凭证进 `SecretStore`（Keystore），资料快照进 DataStore；**不保存密码**；401 → `Expired`（清凭证、留快照） |
+| 数据 | 新增 `feature/data/AccountRepository.kt`：登录/退出、收藏分页、收藏切换、收藏夹增删改移、资料读取；401 统一在这里翻译成"登录已失效" |
+| UI | 新增 `MyScreen`（替代 `MoreScreen`）、`AccountLoginScreen`、`AccountFavoritesScreen`（收藏夹列表 + 夹内网格 + 详情页面板）、`AccountProfileScreen`（只读）；`ModeRoot` 底栏 4 项 + 4 条新路由 + `next` 回跳 |
+| 详情页 | 「收藏」按钮改开**账号**收藏面板：未收藏点夹=加入并移入（add+move 两步）、已收藏点夹=搬过去、点「全部收藏」=只加入/取消收藏 |
+| 设置 | 新增 `SettingKeys.Jm.ACCOUNT_PROFILE`、`SECRET_JWT`、`SECRET_AVS` |
+
+### 2. 官方收藏的六条硬规则（实测，已写进 DTO 与注释）
+
+1. **单夹模型**：一本漫画同时只在一个收藏夹里（`move` 是搬家）；
+2. **不能把漫画移出夹子**：`move` 的 `folder_id` 传空/`0` 会被拒（只能取消收藏）；
+3. **非空收藏夹不能删**：服务端回 `该收藏夹裡还有漫画，请先删除漫画`；
+4. **加入时不能指定夹**：`POST /favorite` 忽略 `folder_id`，所以"点夹加入"是两次请求；
+5. **批量 aid 不可靠**：逗号拼接返回的 `type` 与实际状态不符，所以不做批量；
+6. **写完立刻回读可能拿到旧值**：以写接口的 `type`/`status` 为准。
+
+### 3. 本机收藏 UI 隐藏清单（只隐藏收藏，最近浏览原样保留）
+
+| 位置 | 隐藏方式 |
+|---|---|
+| `ModeRoot.Tab` 的 `FAVORITES` | 注释枚举项 → 底栏自动变 4 项 |
+| `ModeRoot` 的 `Routes.FAVORITES` / `Routes.FAVORITE_ALBUMS` 两个 composable | 整块注释（`/* … */`） |
+| 详情页「收藏 / 已收藏」按钮 + `FavoritePickerSheet` | 按钮改绑账号面板；面板调用注释、函数体保留 |
+| 书库「收藏」筛选 chip | `LibraryScreen(showCollectedChip = false)` 默认值 + 标记 |
+| 书库多选「修改收藏夹」 | 调用点注释（ViewModel 方法与面板都保留） |
+| `Repository` / `FavoriteDao` / `FavoritesViewModel` | **一行未改** |
+
+全部隐藏点都带 `【本地UI隐藏】` 标记，放开注释即可恢复。
+
+### 4. 这次没做（下一步）
+
+- **注册 / 邮箱验证 / 找回密码**：官方接口是 `POST /register`、`/confirm`、`/forgot`（本次未实测，登录页底部有一行说明指向网页版）。
+- **我的留言**（`/forum?uid=` + 详情页发/删评论）、**个人资料编辑**（`POST /useredit` 整条覆盖，必须全量提交）——资料页目前**只读**。
+- **保持登录 / 静默重登**：需要按 token 真实寿命再定（官方本地写死 1 小时，本次未验证）。
+- **收藏夹预选**：`GET /favorite` 的列表项不带所属夹，想看"现在在哪个夹"要翻遍每个夹，所以面板不预选，只用一行说明。
+
+### 5. 验证
+
+- `:app:compileDebugKotlin` ✅
+- 新增单测 `core/account/AccountModelTest`：会员行只对会员显示、三种会话状态、真实响应样本解析（登录 / 收藏列表 / 收藏操作成败）。
+- `ReaderAndTaskLogicTest` 里底栏方向的两个用例按新的四项重写（书库→我的位移 3）。
+### 6. 验证结果（本机实跑）
+
+| 检查 | 结果 |
+|---|---|
+| `:app:compileDebugKotlin` | ✅ |
+| `:app:lintDebug` | ✅ **0 error / 31 warning**（warning 均为既有项） |
+| `:app:assembleDebug` | ✅ |
+| `:app:assembleRelease`（R8 + lintVital） | ✅ |
+| `:app:testDebugUnitTest` | 403 个用例 / **8 个失败**，与改动前 HEAD 的基线**逐条一致**（在 `git worktree` 出来的干净 HEAD 上跑同样 8 条也失败）：`AlbumCleanerTest` 3 条 NPE/断言、`DownloadManagerTest` 3 条 15s 超时、`ReaderCacheModeTest` / `ReaderAndTaskLogicTest` 各 1 条**陈旧文案断言**（代码里已改成"使用缓存/直接下载""上下翻页/左右翻页"，测试还在断言旧文案）。**本次改动未新增失败** |
+| 新增 `AccountModelTest` | ✅ 10 条全绿（会员行只对会员显示、三种会话状态、真实响应样本解析） |
+
+> 真机冒烟测试**未跑**：本机当前 `adb devices` 没有设备。登录 / 收藏的接口层行为已用 Node 探针
+> 对真实账号验证过（见 `docs/official-api-manga.md`），但 UI 流程还需要一次真机验收。

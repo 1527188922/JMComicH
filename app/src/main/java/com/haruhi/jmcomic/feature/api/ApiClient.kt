@@ -14,6 +14,7 @@ import com.haruhi.jmcomic.core.network.withTimeoutRetry
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import timber.log.Timber
@@ -27,7 +28,12 @@ import java.net.URLEncoder
  * `/search`、`/album`、`/chapter`、`/chapter_view_template`；
  * 详情页「评论」tab 用的 `/forum`，以及分类页用的 `/categories` + `/categories/filter`
  * 也在这里。
- * **`/login` 不实现**（已确认不做 JM 账号）。
+ *
+ * **账号接口**（`/login`、`/favorite`、`/favorite_folder`、`/useredit`）在 2026-10 加入：
+ * 它们都是 `multipart/form-data` 的 **POST**，响应仍是同一个 `{code,data(密文)}` 信封，
+ * 解密密钥同样由 `ts` 派生（见 [postRaw] / [postDecrypted]）。
+ * 登录态由构造时的 [authProvider] 提供，**本类不保存任何账号状态**（保持无状态，
+ * 401 只按 `NetworkError.HttpStatus(401)` 往上抛，由 `AccountRepository` 翻译）。
  *
  * 官方 2.1.11 的两套协议面（`/comic_read` + 新签名）在这里按 [ChapterSource] /
  * [SignatureScheme] 分派，默认走新的、旧的一并保留（见 `core/protocol/ApiScheme.kt`）。
@@ -81,6 +87,14 @@ class ApiClient(
      * 与"每次取用"的其它 provider 一致：改设置后新请求立刻生效，不用重建客户端。
      */
     private val languageProvider: () -> ApiLanguage = { ApiLanguage.DEFAULT },
+    /**
+     * 登录态 header（`Authorization: Bearer …` + `Cookie: AVS=…`）。
+     *
+     * 默认 null = 匿名请求，一个 header 都不加。官方 App 匿名时发的是**空串**，
+     * 在 OkHttp 里发空 header 没有意义，所以这里干脆不发。
+     * 同样做成"每次取用"的闭包：登录/退出后新请求立刻生效，不用重建客户端。
+     */
+    private val authProvider: () -> AuthHeaders? = { null },
 ) {
 
     private val apiDomain: String get() = apiDomainProvider().ifBlank { Defaults.DEFAULT_API_DOMAIN }
@@ -317,6 +331,123 @@ class ApiClient(
         .trim()
 
     // ------------------------------------------------------------------
+    // 账号（JM 会员）—— 契约见 docs/official-api-manga.md §7 / §8
+    // ------------------------------------------------------------------
+
+    /**
+     * `POST /login`。
+     *
+     * 失败形态（实测）：**HTTP 401 + 顶层 `errorMsg`**（明文，`data` 为空），
+     * 例如 `无效的用户名和/或密码!` / `用户名和密码字段不能留空!`。
+     * 所以这里不能走 [postDecrypted]（它只认 `data`），必须自己读 `errorMsg`。
+     */
+    suspend fun login(username: String, password: String): LoginDto {
+        val raw = postRaw(
+            path = "/login",
+            fields = listOf("username" to username.trim(), "password" to password),
+        )
+        val env = runCatching { ApiJson.decodeFromString(AccountEnvelopeDto.serializer(), raw.body) }
+            .getOrNull()
+        val message = env?.errorMsg?.takeIf { it.isNotBlank() }
+            ?: env?.msg?.takeIf { it.isNotBlank() }
+        if (raw.http !in 200..299 || env?.code != 200 || env.data.isNullOrBlank()) {
+            throw NetworkError.Business(message ?: "登录失败（HTTP ${raw.http}）")
+        }
+        val plain = runCatching { Crypto.decryptData(raw.ts, env.data, signatureSchemeProvider()) }
+            .getOrElse { throw NetworkError.Business("登录响应解密失败，接口版本可能已变更") }
+        val dto = runCatching { ApiJson.decodeFromString(LoginDto.serializer(), plain) }
+            .getOrElse { throw NetworkError.Malformed("/login", "登录响应字段与预期不符：${it.message}") }
+        if (dto.jwtToken.isNullOrBlank() || dto.avs.isNullOrBlank()) {
+            throw NetworkError.Business("登录响应缺少凭证，请稍后重试")
+        }
+        return dto
+    }
+
+    /** `POST /logout`。**失败不抛**：退出登录在本地必须成功（调用方照旧清凭证）。 */
+    suspend fun logout() {
+        runCatching { postRaw(path = "/logout", fields = emptyList()) }
+            .onFailure { Timber.tag("jm").d(it, "logout 失败（已忽略）") }
+    }
+
+    /**
+     * `GET /favorite`：账号收藏列表。
+     *
+     * @param folderId 收藏夹 `FID`；null/空 = **全部收藏**（未归类的也在里面）。
+     * @param order `mr` 收藏时间（默认，与不传一致）/ `mp` 更新时间。
+     */
+    suspend fun favoritePage(
+        page: Int = 1,
+        folderId: String? = null,
+        order: String = "mr",
+    ): FavoritePageDto = getDecrypted(
+        path = "/favorite",
+        params = buildList {
+            add("page" to (if (page < 1) 1 else page).toString())
+            if (!folderId.isNullOrBlank()) add("folder_id" to folderId)
+            if (order.isNotBlank()) add("o" to order)
+        },
+        retry = retryProvider(),
+        decode = { json -> ApiJson.decodeFromString(FavoritePageDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /favorite`：**切换**收藏（未收藏 → 加入；已收藏 → 移除）。
+     *
+     * 实测 `folder_id` 参数会被忽略，所以"加进某个夹"必须再调一次 [favoriteFolder]。
+     * 也**不要**把多个 aid 用逗号拼在一起（实测返回的 `type` 与实际状态不符）。
+     */
+    suspend fun favoriteToggle(aid: Long): EditResultDto = postDecrypted(
+        path = "/favorite",
+        fields = listOf("aid" to aid.toString()),
+        decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /favorite_folder`：收藏夹增删改移。
+     *
+     * @param type `add`（新建，需 folderName）/ `edit`（改名）/ `del`（删除，只能删空夹）/
+     *   `move`（把 [aid] 搬进 [folderId]）。
+     *
+     * 业务失败**仍是 HTTP 200**，看返回的 `status`/`code`（见 [EditResultDto.isOk]）。
+     */
+    suspend fun favoriteFolder(
+        type: String,
+        folderId: String? = null,
+        folderName: String? = null,
+        aid: Long? = null,
+    ): EditResultDto = postDecrypted(
+        path = "/favorite_folder",
+        fields = buildList {
+            add("type" to type)
+            if (!folderId.isNullOrBlank()) add("folder_id" to folderId)
+            if (!folderName.isNullOrBlank()) add("folder_name" to folderName)
+            if (aid != null) add("aid" to aid.toString())
+        },
+        decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+    )
+
+    /** `GET /useredit/{uid}`：个人资料。 */
+    suspend fun userEditGet(uid: String): UserEditDto = getDecrypted(
+        path = "/useredit/$uid",
+        params = emptyList(),
+        retry = retryProvider(),
+        decode = { json -> ApiJson.decodeFromString(UserEditDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /useredit/{uid}`：写个人资料。
+     *
+     * **整条覆盖**（实测）：没提交的字段会被写成默认值，所以调用方必须把
+     * [userEditGet] 拿到的 24 个字段原样回传（`password`/`password_confirm` 留空 = 不改密码）。
+     */
+    suspend fun userEditPost(uid: String, fields: List<Pair<String, String>>): UserEditDto =
+        postDecrypted(
+            path = "/useredit/$uid",
+            fields = fields,
+            decode = { json -> ApiJson.decodeFromString(UserEditDto.serializer(), json) },
+        )
+
+    // ------------------------------------------------------------------
     // 内部实现
     // ------------------------------------------------------------------
 
@@ -402,15 +533,19 @@ class ApiClient(
     /** 发一次 GET 并读响应体。超时抛 [NetworkError.Timeout]，供 `withTimeoutRetry` 判定。 */
     private suspend fun execute(url: String, token: String, tokenParam: String): String =
         withContext(Dispatchers.IO) {
-            val request = Request.Builder()
+            val builder = Request.Builder()
                 .url(url)
                 .header("token", token)
                 .header("tokenparam", tokenParam)
                 // 参考实现第 91 行的固定 UA，必须带；OkHttp 的默认 UA 会被拒
                 .header("user-agent", Defaults.USER_AGENT)
-                .build()
+            // 登录后才有：`/album` 的 liked/is_favorite、`/favorite` 等都靠它
+            authProvider()?.let { auth ->
+                builder.header("Authorization", "Bearer ${auth.jwt}")
+                builder.header("Cookie", "AVS=${auth.avs}")
+            }
             try {
-                client.newCall(request).execute().use { response ->
+                client.newCall(builder.build()).execute().use { response ->
                     if (!response.isSuccessful) {
                         throw NetworkError.HttpStatus(url, response.code)
                     }
@@ -422,6 +557,83 @@ class ApiClient(
                 else NetworkError.from(url, e)
             }
         }
+
+    /** 一次 POST 的原始结果：HTTP 状态 + 这次请求用的 `ts` + 响应体（解密要用 `ts`）。 */
+    private class RawApiResponse(val http: Int, val ts: Long, val body: String)
+
+    /**
+     * 发一次 `multipart/form-data` POST，**原样**返回响应体（不解密、不判 `code`）。
+     *
+     * **故意不重试**：登录、收藏、发留言都不是幂等操作；`POST /favorite` 更是切换语义，
+     * 重放一次等于把刚加上的收藏又取消。失败一律抛给 UI，由用户自己点重试。
+     */
+    private suspend fun postRaw(path: String, fields: List<Pair<String, String>>): RawApiResponse =
+        withContext(Dispatchers.IO) {
+            val ts = nowSeconds()
+            val headers = Crypto.headerParams(ts, signatureSchemeProvider())
+            val url = "https://$apiDomain$path"
+            val form = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .apply { fields.forEach { (k, v) -> addFormDataPart(k, v) } }
+                .build()
+            val builder = Request.Builder()
+                .url(url)
+                .header("token", headers.token)
+                .header("tokenparam", headers.tokenParam)
+                .header("user-agent", Defaults.USER_AGENT)
+                .post(form)
+            authProvider()?.let { auth ->
+                builder.header("Authorization", "Bearer ${auth.jwt}")
+                builder.header("Cookie", "AVS=${auth.avs}")
+            }
+            try {
+                client.newCall(builder.build()).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (body.isBlank()) {
+                        throw NetworkError.Malformed(url, "响应为空", retryable = true)
+                    }
+                    RawApiResponse(response.code, ts, body)
+                }
+            } catch (e: IOException) {
+                throw if (e.isNetworkTimeout()) NetworkError.Timeout(url, e)
+                else NetworkError.from(url, e)
+            }
+        }
+
+    /**
+     * POST + 信封校验 + AES 解密 + 反序列化（与 [getDecrypted] 同一套解密规则，但没有重试）。
+     *
+     * 三类失败分开抛：
+     * - 401 → [NetworkError.HttpStatus]（由账号层翻译成"登录已失效"）；
+     * - 信封 `code != 200` → [NetworkError.Business]（`errorMsg`/`msg` 原文）；
+     * - 字段解析失败 → [NetworkError.Malformed]。
+     */
+    private suspend fun <T> postDecrypted(
+        path: String,
+        fields: List<Pair<String, String>>,
+        decode: (String) -> T,
+    ): T {
+        val raw = postRaw(path, fields)
+        val url = "https://$apiDomain$path"
+        val env = runCatching { ApiJson.decodeFromString(AccountEnvelopeDto.serializer(), raw.body) }
+            .getOrNull()
+            ?: throw NetworkError.Malformed(url, "响应不是合法 JSON 信封", retryable = true)
+        if (raw.http == 401 || env.code == 401) throw NetworkError.HttpStatus(url, 401)
+        if (raw.http !in 200..299) throw NetworkError.HttpStatus(url, raw.http)
+        val message = env.errorMsg?.takeIf { it.isNotBlank() } ?: env.msg?.takeIf { it.isNotBlank() }
+        if (env.code != 200) {
+            throw NetworkError.Business(message ?: "接口返回错误（code=${env.code}）")
+        }
+        val encrypted = env.data
+        if (encrypted.isNullOrBlank()) {
+            throw NetworkError.Business(message ?: "接口返回的 data 为空")
+        }
+        val plain = runCatching { Crypto.decryptData(raw.ts, encrypted, signatureSchemeProvider()) }
+            .getOrElse { throw NetworkError.Business("响应解密失败，可能是接口版本已变更：${it.message}") }
+        return runCatching { decode(plain) }.getOrElse { e ->
+            throw NetworkError.Malformed(url, "响应字段与预期不符：${e.message}")
+        }
+    }
 
     /**
      * `var scramble_id = 220980;` → 220980。

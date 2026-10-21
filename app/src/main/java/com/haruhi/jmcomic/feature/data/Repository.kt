@@ -1040,6 +1040,16 @@ class Repository(
     fun localSize(albumFolderName: String?): Long =
         albumFolderName?.takeIf { it.isNotBlank() }?.let { dirs.sizeOf(dirs.albumDir(it)) } ?: 0L
 
+    /**
+     * 只读一次在线详情，取 `is_favorite`（**账号收藏**的状态）。
+     *
+     * 为什么单独开一个口：`is_favorite` 只有登录后才有意义，而且会**在别处被改**
+     * （网页版、另一台设备），所以不能只信本机数据库里的旧值。
+     * 失败返回 null（不抛），调用方按"状态未知"处理。
+     */
+    suspend fun fetchAlbumFavoriteFlag(aid: Long): Boolean? =
+        runCatching { api.album(aid).isFavorite }.getOrNull()
+
     private fun nowText(): String = TEXT_FORMAT.format(LocalDateTime.now())
 
     private fun encodeStringList(list: List<String>?): String? =

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.List as CategoryListI
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -91,12 +92,26 @@ object Routes {
     const val CATEGORY = "jm/category"
 
     /**
-     * 「更多」tab（用户 2026-10-15 定的底栏项）。
+     * 「我的」tab（原「更多」，2026-10 改名）。
      *
-     * 底栏固定为 **书库 / 分类 / 发现 / 收藏 / 更多**；「最近浏览」「下载任务」「应用设置」
-     * 都收在这一页里，所以底栏不因为它们变长。
+     * 底栏固定为 **书库 / 分类 / 发现 / 我的**；「收藏」（账号在线收藏）、「最近浏览」
+     * 「下载任务」「应用设置」都收在这一页里，所以底栏不因为它们变长。
      */
-    const val MORE = "jm/more"
+    const val MINE = "jm/mine"
+
+    // ---------------- 账号（JM 会员，见 docs/account-design.md） ----------------
+
+    /** 登录页。`next` 是登录成功后要落到的页面（空 = 回「我的」）。 */
+    const val LOGIN = "jm/account/login?next={next}"
+
+    /** 账号收藏夹列表。 */
+    const val ACCOUNT_FAVORITES = "jm/account/favorites"
+
+    /** 某个收藏夹内的漫画网格；`folderId <= 0` 表示「全部收藏」。 */
+    const val ACCOUNT_FAVORITE_ALBUMS = "jm/account/favorites/{folderId}?name={name}"
+
+    /** 个人资料（只读）。 */
+    const val ACCOUNT_PROFILE = "jm/account/profile"
 
     /**
      * 应用设置页（「更多」→ 应用设置）。
@@ -120,6 +135,22 @@ object Routes {
 
     fun favoriteAlbums(id: Long, name: String) =
         "jm/favorites/$id?name=${encodeRouteArg(name)}"
+
+    /**
+     * 登录页地址。
+     *
+     * @param next 登录成功后要落到的页面路由；空串 = 回「我的」。
+     *        必须走 [encodeRouteArg]（它本身是带 `?` 与中文的任意路由串）。
+     */
+    fun login(next: String = "") = "jm/account/login?next=${encodeRouteArg(next)}"
+
+    /**
+     * 账号收藏夹内页。
+     *
+     * @param folderId null = 「全部收藏」（路由里用 `0` 表示，Long 参数类型天然支持）。
+     */
+    fun accountFavoriteAlbums(folderId: String?, name: String) =
+        "jm/account/favorites/${folderId?.takeIf { it.isNotBlank() } ?: "0"}?name=${encodeRouteArg(name)}"
 
     /**
      * 结果页的地址。
@@ -164,8 +195,10 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
     LIBRARY(Routes.LIBRARY, "书库", Icons.Default.Home),
     CATEGORY(Routes.CATEGORY, "分类", Icons.AutoMirrored.Filled.CategoryListIcon),
     DISCOVER(Routes.DISCOVER, "发现", Icons.Default.Search),
-    FAVORITES(Routes.FAVORITES, "收藏", Icons.Default.Favorite),
-    MORE(Routes.MORE, "更多", Icons.Default.MoreVert),
+    // 【本地UI隐藏】v3 起收藏走账号在线收藏（入口在「我的」里），底栏不再有收藏 tab。
+    // 放开下面这一行即可恢复 5 项底栏（本机收藏页的 composable 也要一起放开）。
+    // FAVORITES(Routes.FAVORITES, "收藏", Icons.Default.Favorite),
+    MINE(Routes.MINE, "我的", Icons.Default.Person),
     ;
 
     companion object {
@@ -256,7 +289,7 @@ fun ModeRoot(
                                     }
                                 },
                                 icon = {
-                                    if (tab == Tab.MORE) {
+                                    if (tab == Tab.MINE) {
                                         TaskBadgeIcon(
                                             badgeCount = taskState.badgeCount,
                                             hasFailure = taskState.failedCount > 0,
@@ -332,24 +365,144 @@ fun ModeRoot(
                         // 长按多选（用户要求第 1 点）
                         onDeleteFiles = vm::deleteFiles,
                         onRemoveFromLibrary = vm::removeFromLibrary,
-                        // 批量"修改收藏夹"：多选 + 就地新建，点确认才执行（用户要求第 3 点）
-                        onModifyFavorites = vm::modifyFavorites,
-                        onCreateFavorite = vm::createFavoriteForSelection,
+                        // 【本地UI隐藏】批量「修改收藏夹」：本机收藏夹的 UI 已下线（收藏改走账号
+                        // 在线收藏，入口在「我的」）。ViewModel 的方法与面板实现都保留，
+                        // 放开这四行即可恢复书库多选里的「修改收藏夹」。
+                        // onModifyFavorites = vm::modifyFavorites,
+                        // onCreateFavorite = vm::createFavoriteForSelection,
                         // 往下翻页（用户第十轮要求第 4 点：筛选也要能翻到后面的页）
                         onLoadMore = vm::loadMore,
                     )
                 }
 
-                composable(Routes.MORE) { entry ->
-                    val vm: MoreViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                    val recentCount by vm.recentCount.collectAsStateWithLifecycle()
-                    // 本页自己没有 Snackbar 宿主，也不产生一次性提示，所以不需要 MessageEffect
-                    MoreScreen(
-                        recentCount = recentCount,
+                composable(Routes.MINE) { entry ->
+                    val vm: MyViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    // 进页面/从别处回来时刷新账号收藏夹个数（一个请求；未登录直接跳过）
+                    OnResumeEffect { vm.refreshFolderCount() }
+                    val accountState = state.account
+                    MyScreen(
+                        state = state,
                         taskState = taskState,
+                        // 未登录点账号入口 = 直接去登录页，登录成功后回到「收藏」
+                        onOpenFavorites = {
+                            if (accountState.isSignedIn) {
+                                navController.navigate(Routes.ACCOUNT_FAVORITES)
+                            } else {
+                                navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES))
+                            }
+                        },
                         onOpenRecent = { navController.navigate(Routes.RECENT) },
                         onOpenTasks = { navController.navigate(Routes.TASKS) },
                         onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                        onOpenProfile = {
+                            if (accountState.isSignedIn) {
+                                navController.navigate(Routes.ACCOUNT_PROFILE)
+                            } else {
+                                navController.navigate(Routes.login(Routes.ACCOUNT_PROFILE))
+                            }
+                        },
+                        onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES)) },
+                        onLogout = vm::logout,
+                    )
+                }
+
+                // 登录页：成功后关掉自己，有 next 就去 next（否则留在「我的」）
+                composable(
+                    route = Routes.LOGIN,
+                    arguments = listOf(navArgument("next") { type = NavType.StringType; defaultValue = "" }),
+                ) { entry ->
+                    val next = remember(entry.arguments?.getString("next")) {
+                        decodeRouteArg(entry.arguments?.getString("next").orEmpty())
+                    }
+                    val vm: AccountAuthViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountLoginScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onUsernameChange = vm::setUsername,
+                        onPasswordChange = vm::setPassword,
+                        onTogglePasswordVisible = vm::togglePasswordVisible,
+                        onSubmit = vm::submit,
+                        onConsumeError = vm::consumeError,
+                        onLoggedIn = {
+                            // 一次性把登录页从栈里摘掉，再落到 next（没有 next 就留在「我的」）。
+                            // 不用"先 pop 再 navigate"：两次导航挨着调用时，第二次可能基于旧栈。
+                            if (next.isBlank()) {
+                                navController.popBackStack()
+                            } else {
+                                navController.navigate(next) {
+                                    popUpTo(Routes.LOGIN) { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                            }
+                        },
+                    )
+                }
+
+                composable(Routes.ACCOUNT_FAVORITES) { entry ->
+                    val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(Unit) { vm.load() }
+                    OnResumeEffect { vm.refresh(initial = false) }
+                    AccountFavoritesScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onOpenFolder = { folderId, name ->
+                            navController.navigate(Routes.accountFavoriteAlbums(folderId, name))
+                        },
+                        onCreate = vm::create,
+                        onRename = vm::rename,
+                        onDelete = vm::delete,
+                        onRefresh = { vm.refresh(initial = false) },
+                        onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES)) },
+                        onMessage = showMessage,
+                        onConsumeMessage = vm::consumeMessage,
+                    )
+                }
+
+                composable(
+                    route = Routes.ACCOUNT_FAVORITE_ALBUMS,
+                    arguments = listOf(
+                        navArgument("folderId") { type = NavType.LongType },
+                        navArgument("name") { type = NavType.StringType; defaultValue = "" },
+                    ),
+                ) { entry ->
+                    val rawFolderId = entry.arguments?.getLong("folderId") ?: 0L
+                    val name = remember(entry.arguments?.getString("name")) {
+                        decodeRouteArg(entry.arguments?.getString("name").orEmpty())
+                    }
+                    val folderId = rawFolderId.takeIf { it > 0L }?.toString()
+                    val vm: AccountAlbumsViewModel = viewModel(
+                        viewModelStoreOwner = entry,
+                        factory = ViewModelFactory(container, accountFolderId = folderId, accountFolderName = name),
+                    )
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountAlbumsScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onOpenAlbum = { navController.navigate(Routes.detail(it)) },
+                        onLoadMore = vm::loadMore,
+                        onOrderChange = vm::setOrder,
+                        onRemove = vm::remove,
+                        onRefresh = vm::refresh,
+                        onMessage = showMessage,
+                        onConsumeMessage = vm::consumeMessage,
+                    )
+                }
+
+                composable(Routes.ACCOUNT_PROFILE) { entry ->
+                    val vm: AccountProfileViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountProfileScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        // 退出走应用级作用域：这一页随即被弹掉，页面级协程会被取消
+                        onLogout = {
+                            vm.logout()
+                            navController.popBackStack()
+                        },
+                        onRetry = vm::load,
                     )
                 }
 
@@ -475,6 +628,9 @@ fun ModeRoot(
                     )
                 }
 
+                // 【本地UI隐藏】本机收藏夹页（v3 起收藏走账号在线收藏，入口在「我的」）。
+                // 放开这段注释 + `Tab` 里那一行 + `Routes.FAVORITE_ALBUMS` 那段，即可完整恢复。
+                /*
                 composable(Routes.FAVORITES) { entry ->
                     val vm: FavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
@@ -490,6 +646,7 @@ fun ModeRoot(
                         onSortChange = vm::setSort,
                     )
                 }
+                */
 
                 composable(Routes.TASKS) {
                     MessageEffect(
@@ -566,6 +723,9 @@ fun ModeRoot(
                     )
                 }
 
+                // 【本地UI隐藏】本机收藏夹内页（原「夹内复用书库布局」）。
+                // 与上面的 `Routes.FAVORITES` 一起放开即可恢复。
+                /*
                 composable(
                     route = Routes.FAVORITE_ALBUMS,
                     arguments = listOf(
@@ -608,6 +768,7 @@ fun ModeRoot(
                         onLoadMore = vm::loadMore,
                     )
                 }
+                */
 
                 composable(
                     route = Routes.DETAIL,
@@ -639,6 +800,21 @@ fun ModeRoot(
                         onAddToFavorite = vm::addToFavorite,
                         onRemoveFromFavorite = vm::removeFromFavorite,
                         onCreateFavoriteAndAdd = vm::createFavoriteAndAdd,
+                        // ---- 账号收藏（官方在线收藏）----
+                        // 未登录点「收藏」= 去登录，登录成功回到本详情页（不自动收藏，用户再点一次）
+                        onOpenAccountFavoriteSheet = {
+                            if (state.accountSignedIn) {
+                                vm.openAccountFavoriteSheet()
+                            } else {
+                                navController.navigate(Routes.login(Routes.detail(albumId)))
+                            }
+                        },
+                        onDismissAccountFavoriteSheet = vm::dismissAccountFavoriteSheet,
+                        onChooseAccountFavorite = vm::chooseAccountFavorite,
+                        onCreateAccountFolderAndAdd = vm::createAccountFolderAndAdd,
+                        onRequireLogin = {
+                            navController.navigate(Routes.login(Routes.detail(albumId)))
+                        },
                         // 点章节进阅读器：**先把这个本子的进度改写成这一话**，
                         // 阅读器再按"从这一话第一张开始"打开（用户第十一轮要求第 1 点）
                         onReadChapter = { chapterId ->
@@ -862,6 +1038,9 @@ class ViewModelFactory(
     private val albumId: Long? = null,
     private val chapterId: Long? = null,
     private val searchEntry: OnlineSearchEntry? = null,
+    /** 账号收藏夹内页用：null = 全部收藏。 */
+    private val accountFolderId: String? = null,
+    private val accountFolderName: String = "",
 ) : ViewModelProvider.Factory {
 
     @Suppress("UNCHECKED_CAST")
@@ -899,8 +1078,27 @@ class ViewModelFactory(
         modelClass.isAssignableFrom(TaskViewModel::class.java) ->
             TaskViewModel(container.downloadTasks, container.jmDownloads, container.jmExports) as T
 
-        modelClass.isAssignableFrom(MoreViewModel::class.java) ->
-            MoreViewModel(container.jmRepository) as T
+        modelClass.isAssignableFrom(MyViewModel::class.java) ->
+            MyViewModel(
+                account = container.accountRepository,
+                repo = container.jmRepository,
+            ) as T
+
+        modelClass.isAssignableFrom(AccountAuthViewModel::class.java) ->
+            AccountAuthViewModel(container.accountRepository) as T
+
+        modelClass.isAssignableFrom(AccountFavoritesViewModel::class.java) ->
+            AccountFavoritesViewModel(container.accountRepository) as T
+
+        modelClass.isAssignableFrom(AccountAlbumsViewModel::class.java) ->
+            AccountAlbumsViewModel(
+                account = container.accountRepository,
+                folderId = accountFolderId,
+                title = accountFolderName,
+            ) as T
+
+        modelClass.isAssignableFrom(AccountProfileViewModel::class.java) ->
+            AccountProfileViewModel(container.accountRepository) as T
 
         modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
             SettingsViewModel(
@@ -942,6 +1140,7 @@ class ViewModelFactory(
                 // 移出书库的删除挂在应用级作用域上：页面退出不该把它取消掉
                 //（详情页不再自动返回，用户可能删到一半就自己退）
                 appScope = container.appScope,
+                account = container.accountRepository,
                 albumId = albumId ?: error("详情页必须传 albumId"),
             ) as T
 

@@ -2,6 +2,8 @@ package com.haruhi.jmcomic.core.di
 
 import android.content.Context
 import com.haruhi.jmcomic.BuildConfig
+import com.haruhi.jmcomic.core.account.AccountSession
+import com.haruhi.jmcomic.core.account.AccountStore
 import com.haruhi.jmcomic.core.database.JmComicDatabase
 import com.haruhi.jmcomic.core.network.NetworkClientFactory
 import com.haruhi.jmcomic.core.network.NetworkMonitor
@@ -90,6 +92,34 @@ class AppContainer(private val appContext: Context) {
     }
 
     val secrets: SecretStore by lazy { SecretStore(appContext) }
+
+    // ---------------- 账号（JM 会员） ----------------
+
+    /**
+     * 账号凭证与资料快照的落盘。
+     *
+     * 凭证（`jwttoken` / `s`）走 [SecretStore]（Keystore AES-GCM），资料快照走 DataStore；
+     * **不保存密码**（官方把账号密码明文存 localStorage 用来静默重登，这里不这么做）。
+     */
+    val accountStore: AccountStore by lazy { AccountStore(settings, secrets) }
+
+    /**
+     * 账号会话（进程内唯一真相源）。
+     *
+     * `ApiClient.authProvider`、「我的」页、账号页都读它；首页`by lazy` 触发时
+     * 会同步读一次资料快照（一个很小的字符串），保证第一帧就能显示昵称/头像。
+     */
+    val accountSession: AccountSession by lazy { AccountSession(accountStore) }
+
+    /** 账号数据入口（登录/退出/收藏/资料）；UI 不直接碰 `ApiClient`。 */
+    val accountRepository: com.haruhi.jmcomic.feature.data.AccountRepository by lazy {
+        com.haruhi.jmcomic.feature.data.AccountRepository(
+            api = { jmApi },
+            session = accountSession,
+            // 退出登录挂在应用级作用域：个人资料页点完就弹回上一页，不能被页面级作用域带走
+            scope = appScope,
+        )
+    }
 
     /**
      * 当前接口语言（请求里的 `lang`）的**热流**。
@@ -244,6 +274,8 @@ class AppContainer(private val appContext: Context) {
             apiDomainProvider = { runBlocking { jmApiDomain() } },
             // 接口语言（`lang`）：取容器的热流，切完语言新请求立刻生效
             languageProvider = { apiLanguage.value },
+            // 登录态：登录/退出后新请求立刻带上/去掉 Authorization 与 Cookie
+            authProvider = { accountSession.authHeaders() },
         )
 
     /**
