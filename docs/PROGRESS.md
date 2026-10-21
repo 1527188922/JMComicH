@@ -2030,3 +2030,21 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 > 而是指"拿到了封面所属漫画的 id"（`GET /favorite?folder_id=X&page=1` 的 `list[0].id`）。
 > `loading` 只等**接口请求**全部返回；封面图本身仍由 Coil 异步加载，加载中就是卡片底色占位
 > （`Cover` 外面垫的 `colorScheme.surface`），这块行为没动、也不要动。
+### 12. 第七批微调（用户反馈 2026-10-21）
+
+**收藏夹页补拉时已经拿到的第一页，直接复用给夹内页**（避免点进夹里又请求一次）。
+
+- `AccountFavoritesViewModel.fetch`：第一页（`folder_id` 空 = 全部收藏，`o=mr`）除了拿 `total`/封面，还把
+  `list`（20 条）写进 `AccountCache.putAlbums(null, "mr", AlbumsSnapshot(albums, total, nextPage = 2))`；
+- `backfillFolders` 每补一个夹，把那次 `page=1` 的结果同样写进 `putAlbums(fid, "mr", …)`；
+- `AccountAlbumsViewModel` 进夹时先查这份缓存（已有逻辑）→ **首次点进任何收藏夹都不再发请求**，
+  点「加载更多」从 `nextPage = 2` 接着翻；
+- 缓存仍然只在"收藏/取消收藏、移夹、新建/删除夹、登录退出"时整份作废，下拉刷新覆盖单个 key。
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 首次进收藏夹列表 | 1 次（夹目录+全部第一页）+ N 次（每夹补拉） | 同左，但结果全部落缓存 |
+| 首次点进某个夹（`o=mr`） | 1 次请求 | **0 次**（用补拉缓存） |
+| 点进「全部收藏」 | 1 次请求 | **0 次**（用首屏那一页） |
+| 夹内切到「更新时间」排序 | 1 次请求 | 仍 1 次（那是另一份 key） |
+| 夹内下拉刷新 / 加载更多 | 请求 | 请求（覆盖/追加缓存） |

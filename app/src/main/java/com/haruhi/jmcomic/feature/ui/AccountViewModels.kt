@@ -316,6 +316,17 @@ class AccountFavoritesViewModel(
                 }
                 // 收藏夹名单顺手写进缓存：详情页的「收藏」面板下次打开就不用再请求了
                 cache.putFolders(page.folders)
+                // 这一页（`folder_id` 空 = 全部收藏，`o=mr`）顺手缓存成「全部收藏」的第一页：
+                // 点进「全部收藏」时就不用再发一次请求（用户要求 2026-10-21）
+                cache.putAlbums(
+                    folderId = null,
+                    order = AccountRepository.ORDER_BY_TIME,
+                    snapshot = AlbumsSnapshot(
+                        albums = page.albums,
+                        total = page.total,
+                        nextPage = 2,
+                    ),
+                )
                 // 列表先换名字，但**沿用旧的「N 本 / 封面」**——否则会先闪成「…」再填上
                 val previous = _state.value.folders.associateBy { it.fid }
                 _state.update {
@@ -358,6 +369,17 @@ class AccountFavoritesViewModel(
                         runCatching { account.favorites(page = 1, folderId = folder.fid) }
                             .getOrNull()
                             ?.let { page ->
+                                // 这次补拉拿到的就是该夹的第一页（20 条）——顺手缓存下来，
+                                // 之后点进这个夹（`o=mr`）就不用再请求一次了（用户要求 2026-10-21）
+                                cache.putAlbums(
+                                    folderId = folder.fid,
+                                    order = AccountRepository.ORDER_BY_TIME,
+                                    snapshot = AlbumsSnapshot(
+                                        albums = page.albums,
+                                        total = page.total,
+                                        nextPage = 2,
+                                    ),
+                                )
                                 _state.update { current ->
                                     current.copy(
                                         folders = current.folders.map { f ->
