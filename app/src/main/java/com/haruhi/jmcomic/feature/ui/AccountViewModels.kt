@@ -14,7 +14,6 @@ import com.haruhi.jmcomic.feature.data.AlbumsSnapshot
 import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
 import com.haruhi.jmcomic.feature.data.Repository
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -249,8 +248,6 @@ class AccountFavoritesViewModel(
     /** 正在拉数据（防重复：连续下拉 / 下拉时又点了重试，都只发一次）。 */
     private var inFlight = false
 
-    private var backfillJob: Job? = null
-
     init {
         restoreOrLoad()
     }
@@ -303,24 +300,8 @@ class AccountFavoritesViewModel(
             )
         }
         viewModelScope.launch {
-            runCatching { account.favorites(page = 1) }
-                .onSuccess { page ->
-                    // 收藏夹名单顺手写进缓存：详情页的「收藏」面板下次打开就不用再请求了
-                    cache.putFolders(page.folders)
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            refreshing = false,
-                            error = null,
-                            folders = page.folders,
-                            total = page.total,
-                            allCoverAlbumId = page.albums.firstOrNull()?.id,
-                        )
-                    }
-                    publishCache()
-                    backfillFolders(page.folders)
-                }
-                .onFailure { e ->
+            try {
+                val page = runCatching { account.favorites(page = 1) }.getOrElse { e ->
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(
@@ -331,45 +312,70 @@ class AccountFavoritesViewModel(
                             message = if (hasContent) e.toUserMessage() else it.message,
                         )
                     }
+                    return@launch
                 }
-            inFlight = false
+                // 收藏夹名单顺手写进缓存：详情页的「收藏」面板下次打开就不用再请求了
+                cache.putFolders(page.folders)
+                // 列表先换名字，但**沿用旧的「N 本 / 封面」**——否则会先闪成「…」再填上
+                val previous = _state.value.folders.associateBy { it.fid }
+                _state.update {
+                    it.copy(
+                        folders = page.folders.map { folder ->
+                            previous[folder.fid]?.let { old ->
+                                folder.copy(count = old.count, coverAlbumId = old.coverAlbumId)
+                            } ?: folder
+                        },
+                        total = page.total,
+                        allCoverAlbumId = page.albums.firstOrNull()?.id,
+                        error = null,
+                    )
+                }
+                // 关键：**等所有并发的补拉都结束**才收掉 loading / 下拉圈（用户要求），
+                // 不然 LoadingBox 先消失、卡片先显示「…」，再一个个变成「N 本 + 封面」。
+                backfillFolders(page.folders)
+                _state.update { it.copy(loading = false, refreshing = false, error = null) }
+                publishCache()
+                // 有夹没补拉成功（数量未知）→ 标脏：下次进来静默重试一次，不闪
+                if (_state.value.folders.any { it.count == null }) cache.invalidateFavorites()
+            } finally {
+                inFlight = false
+            }
         }
     }
 
-    /** 给每个夹补「N 本 + 封面」：一次 `page=1` 就够（`total` 与第一条都在里面）。 */
-    private fun backfillFolders(folders: List<AccountFolder>) {
+    /**
+     * 给每个夹补「N 本 + 封面」：一次 `page=1` 就够（`total` 与第一条都在里面）。
+     *
+     * 是 **suspend** 的：调用方要等它（以及它内部所有并发请求）全部结束才收 loading。
+     */
+    private suspend fun backfillFolders(folders: List<AccountFolder>) {
         if (folders.isEmpty()) return
-        backfillJob?.cancel()
-        backfillJob = viewModelScope.launch {
-            val semaphore = Semaphore(MAX_BACKFILL_CONCURRENCY)
-            coroutineScope {
-                folders.map { folder ->
-                    async {
-                        semaphore.withPermit {
-                            runCatching { account.favorites(page = 1, folderId = folder.fid) }
-                                .getOrNull()
-                                ?.let { page ->
-                                    _state.update { current ->
-                                        current.copy(
-                                            folders = current.folders.map { f ->
-                                                if (f.fid == folder.fid) {
-                                                    f.copy(
-                                                        count = page.total,
-                                                        coverAlbumId = page.albums.firstOrNull()?.id,
-                                                    )
-                                                } else {
-                                                    f
-                                                }
-                                            },
-                                        )
-                                    }
+        val semaphore = Semaphore(MAX_BACKFILL_CONCURRENCY)
+        coroutineScope {
+            folders.map { folder ->
+                async {
+                    semaphore.withPermit {
+                        runCatching { account.favorites(page = 1, folderId = folder.fid) }
+                            .getOrNull()
+                            ?.let { page ->
+                                _state.update { current ->
+                                    current.copy(
+                                        folders = current.folders.map { f ->
+                                            if (f.fid == folder.fid) {
+                                                f.copy(
+                                                    count = page.total,
+                                                    coverAlbumId = page.albums.firstOrNull()?.id,
+                                                )
+                                            } else {
+                                                f
+                                            }
+                                        },
+                                    )
                                 }
-                        }
+                            }
                     }
-                }.awaitAll()
-            }
-            // 补拉完再写一次快照：下次进页面「N 本 + 封面」直接就有
-            publishCache()
+                }
+            }.awaitAll()
         }
     }
 

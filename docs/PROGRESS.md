@@ -2016,3 +2016,17 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 
 未收藏状态的文案保持原样（`全部收藏` + 「只收藏，不归类」；夹行显示 `N 本`）。
 `FolderChoiceRow` 增加 `labelColor` / `iconTint` / `trailingColor` 三个参数，颜色全部从 `colorScheme` 取，不写死色值。
+### 11. 第六批微调（用户反馈 2026-10-21）
+
+**收藏夹列表页的 loading 要等补拉全部结束**（否则 LoadingBox 先消失、卡片先显示「…」再不封面/数量填上，看起来闪一下）。
+
+- `AccountFavoritesViewModel.fetch`：拿到第一页后**先只换夹名**，并沿用旧的「N 本 / 封面」（`previous[fid]` 合并），
+  然后 `await` 完 `backfillFolders`（内部 ≤3 并发）才把 `loading` / `refreshing` 置回 false，最后写缓存。
+- `backfillFolders` 由"另起一个 job"改成 **suspend**：所有并发请求结束才返回（`coroutineScope + awaitAll`）。
+- 首次进入：LoadingBox 一直转到全部补拉结束；下拉刷新：下拉圈同理（内容保持旧数量，不闪）。
+- 补拉有夹失败（`count == null`）时把收藏页缓存标脏：下次进来静默重试一次，同样不闪。
+
+> 术语澄清（用户 2026-10-21 追问）：上面说的"封面就绪"**不是**指图片下载完成，
+> 而是指"拿到了封面所属漫画的 id"（`GET /favorite?folder_id=X&page=1` 的 `list[0].id`）。
+> `loading` 只等**接口请求**全部返回；封面图本身仍由 Coil 异步加载，加载中就是卡片底色占位
+> （`Cover` 外面垫的 `colorScheme.surface`），这块行为没动、也不要动。
