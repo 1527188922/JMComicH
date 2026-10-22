@@ -722,6 +722,8 @@ fun ModeRoot(
                         // 高级：接口请求重试（所有接口共用）与图片加载/下载重试（仅超时）
                         onSetRequestRetry = vm::setRequestRetry,
                         onSetImageRetry = vm::setImageRetry,
+                        // 账号只读接口是否复用服务端缓存（关掉后请求带 t，强制回源）
+                        onSetAccountApiCache = vm::setAccountApiCache,
                         // 恢复默认：只重置偏好，不动书库与文件、不动凭据
                         onResetSettings = vm::resetSettings,
                     )

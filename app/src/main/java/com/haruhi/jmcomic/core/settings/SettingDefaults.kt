@@ -144,6 +144,14 @@ object SettingDefaults {
          * 只对**网络超时**重试（见 `FileDownloader`）。
          */
         const val RETRY_IMAGE = 2
+
+        /**
+         * 账号类只读接口默认**复用服务端缓存**（不加 `t` 参数）。
+         *
+         * 官方 App 的请求形态就是如此；只有多设备 / 多线路同时登录同一账号、
+         * 需要绕过服务端缓存时才在设置里关掉。
+         */
+        const val ACCOUNT_API_CACHE = true
     }
 }
 

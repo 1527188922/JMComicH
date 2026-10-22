@@ -62,6 +62,15 @@ class ApiClient(
      * 只管"重发几次"，**不影响什么错误值得重发**（那由 `isRetryableApiError()` 决定）。
      */
     private val retryProvider: () -> Int = { Defaults.RETRY_DEFAULT },
+    /**
+     * 账号类只读接口是否复用服务端缓存（设置页「高级 → 账号接口缓存」，默认 true）。
+     *
+     * false 时给 `/favorite`、`/useredit` 的 URL 补一个 `t=<秒级时间戳>`：
+     * 服务端按「线路 + URL」缓存这些 GET 的明文响应，1app 的写入不会失效另一条线路的
+     * 缓存——双开 / 多线路同时登录同一账号时，纯下拉刷新会一直拿到旧数据。
+     * URL 变了缓存键就变，强制回源；代价是这些请求不再命中服务端缓存。
+     */
+    private val accountCacheProvider: () -> Boolean = { true },
     /** 接口线路；默认取 [Defaults.DEFAULT_API_DOMAIN]。 */
     private val apiDomainProvider: () -> String = { Defaults.DEFAULT_API_DOMAIN },
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
@@ -381,11 +390,11 @@ class ApiClient(
         order: String = "mr",
     ): FavoritePageDto = getDecrypted(
         path = "/favorite",
-        params = buildList {
+        params = withAccountCacheBuster(buildList {
             add("page" to (if (page < 1) 1 else page).toString())
             if (!folderId.isNullOrBlank()) add("folder_id" to folderId)
             if (order.isNotBlank()) add("o" to order)
-        },
+        }),
         retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(FavoritePageDto.serializer(), json) },
     )
@@ -429,7 +438,7 @@ class ApiClient(
     /** `GET /useredit/{uid}`：个人资料。 */
     suspend fun userEditGet(uid: String): UserEditDto = getDecrypted(
         path = "/useredit/$uid",
-        params = emptyList(),
+        params = withAccountCacheBuster(emptyList()),
         retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(UserEditDto.serializer(), json) },
     )
@@ -512,6 +521,17 @@ class ApiClient(
     private fun withLanguage(params: List<Pair<String, String>>): List<Pair<String, String>> =
         if (params.any { it.first == "lang" }) params
         else params + ("lang" to languageProvider().code)
+
+    /**
+     * 账号类只读接口的防缓存参数（设置页「高级 → 账号接口缓存」）。
+     *
+     * 开启（默认）时原样返回；关闭时补 `t=<秒级时间戳>`，让服务端按 URL 缓存的键每次都不同。
+     * 只给账号数据接口用（`/favorite`、`/useredit`），其它公开接口保持官方形态。
+     */
+    private fun withAccountCacheBuster(
+        params: List<Pair<String, String>>,
+    ): List<Pair<String, String>> =
+        if (accountCacheProvider()) params else params + ("t" to nowSeconds().toString())
 
     /**
      * 响应体 → JSON 信封的 `data` 字段。

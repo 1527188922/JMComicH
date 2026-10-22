@@ -210,6 +210,15 @@ data class SettingsUiState(
      */
     val imageRetry: Int = SettingDefaults.Jm.RETRY_IMAGE,
 
+    /**
+     * 账号只读接口（收藏夹 / 个人资料）是否复用服务端缓存。
+     *
+     * **默认开启**（请求形态与官方一致，不加 `t`）。服务端按「线路 + URL」缓存这些 GET，
+     * 另一台设备在别的线路上写入后，本机纯下拉刷新可能一直拿到旧数据；关掉后每次请求
+     * 都带 `t=<秒级时间戳>`，强制回源。
+     */
+    val accountApiCache: Boolean = SettingDefaults.Jm.ACCOUNT_API_CACHE,
+
     val message: String? = null,
 )
 
@@ -323,6 +332,7 @@ class SettingsViewModel(
         )
         val requestRetry = settings.resolveJmRequestRetry()
         val imageRetry = settings.resolveJmImageRetry()
+        val accountApiCache = settings.resolveJmAccountApiCache()
         val timeout = settings
             .jmInt(SettingKeys.Jm.REQUEST_TIMEOUT_SECONDS, SettingDefaults.Jm.REQUEST_TIMEOUT_SECONDS)
             .first()
@@ -369,6 +379,7 @@ class SettingsViewModel(
                 resolved = resolved,
                 requestRetry = requestRetry,
                 imageRetry = imageRetry,
+                accountApiCache = accountApiCache,
             )
         }
     }
@@ -695,6 +706,16 @@ class SettingsViewModel(
         viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.RETRY_IMAGE, clamped) }
     }
 
+    /**
+     * 「账号接口缓存」：开启 = 不加防缓存参数（官方形态）；关闭 = 账号只读接口带 `t`。
+     *
+     * 即时保存：`AppContainer.jmApi` 每次取用都现读，下一次请求立刻按新值拼 URL。
+     */
+    fun setAccountApiCache(enabled: Boolean) {
+        _state.update { it.copy(accountApiCache = enabled) }
+        viewModelScope.launch { settings.putJmBoolean(SettingKeys.Jm.ACCOUNT_API_CACHE, enabled) }
+    }
+
     // ------------------------------------------------------------------
     // 恢复默认
     // ------------------------------------------------------------------
@@ -768,6 +789,8 @@ fun SettingsScreen(
     onSetRequestRetry: (Int) -> Unit,
     /** 「图片加载/下载失败重试次数」：只管章节图片，且仅网络超时重试。 */
     onSetImageRetry: (Int) -> Unit,
+    /** 「账号接口缓存」：开启 = 不加防缓存参数；关闭 = 账号只读接口带 `t` 强制回源。 */
+    onSetAccountApiCache: (Boolean) -> Unit,
     // 恢复默认
     onResetSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -848,6 +871,7 @@ fun SettingsScreen(
                     state = state,
                     onSetRequestRetry = onSetRequestRetry,
                     onSetImageRetry = onSetImageRetry,
+                    onSetAccountApiCache = onSetAccountApiCache,
                 )
                 ResetSection(onReset = { confirmReset = true })
                 Spacer(Modifier.height(24.dp))
@@ -1497,6 +1521,7 @@ private fun AdvancedSection(
     state: SettingsUiState,
     onSetRequestRetry: (Int) -> Unit,
     onSetImageRetry: (Int) -> Unit,
+    onSetAccountApiCache: (Boolean) -> Unit,
 ) {
     SettingsSection("高级") {
         Text(
@@ -1525,6 +1550,15 @@ private fun AdvancedSection(
                 "（阅读器里失败的那一页可以单独手动重试）。",
             value = state.imageRetry,
             onCommit = onSetImageRetry,
+        )
+        CardDivider()
+        SwitchRow(
+            title = "账号接口缓存",
+            hint = "收藏夹与个人资料等只读接口复用服务端缓存",
+            help = "开启：需要登录才能调用的GET类接口可从缓存获取数据，提升接口响应速度；" +
+                "\n关闭：每次越过缓存获取最新数据。" ,
+            checked = state.accountApiCache,
+            onCheckedChange = onSetAccountApiCache,
         )
     }
 }

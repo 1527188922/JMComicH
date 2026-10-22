@@ -110,6 +110,18 @@ internal object SettingKeys {
         const val RETRY_IMAGE = "retry_image"
 
         /**
+         * 账号类只读接口（`/favorite`、`/useredit`）是否复用服务端缓存。
+         *
+         * **默认 true**（不额外加参数，保持官方请求形态）：服务端会按「线路 + URL」缓存
+         * 这些 GET 的明文响应，1app 的写入不会失效另一条线路的缓存——双开 / 多线路同时
+         * 登录同一账号时，纯下拉刷新可能一直拿到旧数据。
+         *
+         * 关掉后每次请求都补一个 `t=<秒级时间戳>`，URL 变化 → 缓存必然 miss → 强制回源。
+         * 对应设置页「高级 → 账号接口缓存」。
+         */
+        const val ACCOUNT_API_CACHE = "account_api_cache"
+
+        /**
          * 接口语言：`"CN"` 简中 / `"TW"` 繁中（官方 App 的 `localStorage.lang`）。
          *
          * 存的是协议里的**取值**而不是枚举序号（见 `core/protocol/ApiScheme.kt` 的

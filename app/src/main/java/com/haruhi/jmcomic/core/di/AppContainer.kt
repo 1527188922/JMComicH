@@ -283,6 +283,8 @@ class AppContainer(private val appContext: Context) {
             config = { runBlocking { settings.resolveJmNetwork(secrets) } },
             // 所有接口共用同一项重试次数（设置页「高级 → 请求重试次数」）
             retryProvider = { runBlocking { settings.resolveJmRequestRetry() } },
+            // 账号只读接口是否复用服务端缓存（设置页「高级 → 账号接口缓存」，默认开启）
+            accountCacheProvider = { runBlocking { settings.resolveJmAccountApiCache() } },
             apiDomainProvider = { runBlocking { jmApiDomain() } },
             // 接口语言（`lang`）：取容器的热流，切完语言新请求立刻生效
             languageProvider = { apiLanguage.value },
