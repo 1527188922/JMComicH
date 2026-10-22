@@ -211,7 +211,7 @@ data class SettingsUiState(
     val imageRetry: Int = SettingDefaults.Jm.RETRY_IMAGE,
 
     /**
-     * 账号只读接口（收藏夹 / 个人资料）是否复用服务端缓存。
+     * 带账号态的只读接口（收藏夹 / 个人资料 / 漫画详情）是否复用服务端缓存。
      *
      * **默认开启**（请求形态与官方一致，不加 `t`）。服务端按「线路 + URL」缓存这些 GET，
      * 另一台设备在别的线路上写入后，本机纯下拉刷新可能一直拿到旧数据；关掉后每次请求

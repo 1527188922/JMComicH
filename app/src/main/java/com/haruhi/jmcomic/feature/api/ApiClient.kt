@@ -65,7 +65,7 @@ class ApiClient(
     /**
      * 账号类只读接口是否复用服务端缓存（设置页「高级 → 账号接口缓存」，默认 true）。
      *
-     * false 时给 `/favorite`、`/useredit` 的 URL 补一个 `t=<秒级时间戳>`：
+     * false 时给 `/favorite`、`/useredit`、`/album` 的 URL 补一个 `t=<秒级时间戳>`：
      * 服务端按「线路 + URL」缓存这些 GET 的明文响应，1app 的写入不会失效另一条线路的
      * 缓存——双开 / 多线路同时登录同一账号时，纯下拉刷新会一直拿到旧数据。
      * URL 变了缓存键就变，强制回源；代价是这些请求不再命中服务端缓存。
@@ -135,10 +135,14 @@ class ApiClient(
         )
     }
 
-    /** `/album`：本子详情，含章节列表（`series`）。 */
+    /**
+     * `/album`：本子详情，含章节列表（`series`）。
+     *
+     * 响应里有账号态字段（`liked` / `is_favorite`），同样受「接口缓存」开关影响。
+     */
     suspend fun album(aid: Long): AlbumDto = getDecrypted(
         path = "/album",
-        params = listOf("id" to aid.toString()),
+        params = withAccountCacheBuster(listOf("id" to aid.toString())),
         retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(AlbumDto.serializer(), json) },
     )
@@ -526,7 +530,8 @@ class ApiClient(
      * 账号类只读接口的防缓存参数（设置页「高级 → 账号接口缓存」）。
      *
      * 开启（默认）时原样返回；关闭时补 `t=<秒级时间戳>`，让服务端按 URL 缓存的键每次都不同。
-     * 只给账号数据接口用（`/favorite`、`/useredit`），其它公开接口保持官方形态。
+     * 只给带账号态的接口用（`/favorite`、`/useredit`、`/album`），
+     * 其它公开接口（搜索、章节、分类等）保持官方形态。
      */
     private fun withAccountCacheBuster(
         params: List<Pair<String, String>>,

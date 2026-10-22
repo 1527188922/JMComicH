@@ -110,7 +110,7 @@ internal object SettingKeys {
         const val RETRY_IMAGE = "retry_image"
 
         /**
-         * 账号类只读接口（`/favorite`、`/useredit`）是否复用服务端缓存。
+         * 带账号态的只读接口（`/favorite`、`/useredit`、`/album`）是否复用服务端缓存。
          *
          * **默认 true**（不额外加参数，保持官方请求形态）：服务端会按「线路 + URL」缓存
          * 这些 GET 的明文响应，1app 的写入不会失效另一条线路的缓存——双开 / 多线路同时

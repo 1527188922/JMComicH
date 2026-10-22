@@ -143,7 +143,7 @@ class SettingsRepository(
      * 账号类只读接口是否复用服务端缓存（设置页「高级 → 账号接口缓存」）。
      *
      * true（默认）= 请求保持官方形态，不加任何防缓存参数；
-     * false = `ApiClient` 给 `/favorite`、`/useredit` 补 `t=<秒级时间戳>`，强制回源。
+     * false = `ApiClient` 给 `/favorite`、`/useredit`、`/album` 补 `t=<秒级时间戳>`，强制回源。
      */
     suspend fun resolveJmAccountApiCache(): Boolean =
         jmBoolean(SettingKeys.Jm.ACCOUNT_API_CACHE, SettingDefaults.Jm.ACCOUNT_API_CACHE).first()
