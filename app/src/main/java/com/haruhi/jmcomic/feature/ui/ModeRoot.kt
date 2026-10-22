@@ -443,6 +443,9 @@ fun ModeRoot(
                 composable(Routes.ACCOUNT_FAVORITES) { entry ->
                     val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
+                    // 从夹内页 / 详情页回来时先按内存快照同步：取消收藏已就地减掉总数，
+                    // 不用用户再下拉刷新一次（用户要求 2026-10-22）。
+                    OnResumeEffect { vm.onScreenResumed() }
                     // 进页面**不再自动刷新**：ViewModel 先用进程内快照铺内容（见 AccountCache），
                     // 只有数据被动过才静默补一次；用户想刷新就下拉。
                     AccountFavoritesScreen(
@@ -478,6 +481,9 @@ fun ModeRoot(
                         factory = ViewModelFactory(container, accountFolderId = folderId, accountFolderName = name),
                     )
                     val state by vm.state.collectAsStateWithLifecycle()
+                    // 从详情页回来时按内存快照同步：在详情页取消收藏后，
+                    // 这本已从缓存里删掉，返回即可见、不用下拉刷新（用户要求 2026-10-22）。
+                    OnResumeEffect { vm.onScreenResumed() }
                     AccountAlbumsScreen(
                         state = state,
                         onBack = { navController.popBackStack() },

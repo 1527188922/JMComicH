@@ -279,6 +279,30 @@ class AccountFavoritesViewModel(
         fetch(silent = false)
     }
 
+    /**
+     * 从夹内页 / 详情页回到本页：先按内存快照同步一次。
+     *
+     * 取消收藏已由 [AccountCache.removeAlbum] 就地减掉（总数 / 受影响夹的数量与封面），
+     * 所以这里不用联网、也不用用户下拉；只有快照被标脏（那本在没缓存到的夹里）时才静默补一次。
+     */
+    fun onScreenResumed() {
+        if (!account.isSignedIn) return
+        cache.favorites?.let { snapshot ->
+            _state.update { current ->
+                if (current.loading || current.refreshing) {
+                    current
+                } else {
+                    current.copy(
+                        folders = snapshot.folders,
+                        total = snapshot.total,
+                        allCoverAlbumId = snapshot.allCoverAlbumId,
+                    )
+                }
+            }
+        }
+        if (cache.favoritesDirty) fetch(silent = true)
+    }
+
     /** 用户下拉刷新 / 报错后的「重试」：走顶部下拉圈。 */
     fun refresh() = fetch(silent = false)
 
@@ -554,6 +578,22 @@ class AccountAlbumsViewModel(
             return
         }
         refresh()
+    }
+
+    /**
+     * 从详情页回到本页：按内存快照同步一次（不联网）。
+     *
+     * 在详情页取消收藏时 [AccountCache.removeAlbum] 已把这本从各夹快照里删掉，
+     * 所以回来就能直接少这一本，不用下拉刷新（用户要求 2026-10-22）。
+     * 正在加载 / 下拉 / 翻页时不覆盖，避免和手上的请求打架。
+     */
+    fun onScreenResumed() {
+        if (inFlight) return
+        val current = _state.value
+        if (current.loading || current.refreshing || current.loadingMore) return
+        val cached = cache.cachedAlbums(folderId, current.order) ?: return
+        nextPage = cached.nextPage
+        _state.update { it.copy(albums = cached.albums, total = cached.total) }
     }
 
     /** 用户下拉刷新 / 报错后的「重试」：强制联网，成功后覆盖缓存。 */

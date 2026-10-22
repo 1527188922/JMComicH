@@ -125,14 +125,21 @@ class AccountRepository(
     suspend fun toggleFavorite(aid: Long): FavoriteToggleResult {
         val dto = guarded { api().favoriteToggle(aid) }
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "操作失败，请稍后重试")
-        cache.invalidateFavorites()
-        cache.invalidateAlbums()
         val added = when (dto.type) {
             "add" -> true
             "remove" -> false
             // 官方在个别场景会回 edit/move（不是"加入/移除"）；此时状态未知，
             // 让 UI 提示刷新，而不是把按钮画成错误的样子。
             else -> throw NetworkError.Business(dto.msg ?: "收藏状态异常，请刷新后重试")
+        }
+        if (added) {
+            // 新加入的这本不知道会落在哪一页 / 哪个夹，只能让各夹内容整份重拉
+            cache.invalidateFavorites()
+            cache.invalidateAlbums()
+        } else {
+            // 取消收藏：把这本从内存快照里**就地删掉**（而不是整份作废）。
+            // 这样返回收藏页 / 夹内页时不用下拉刷新就能看到它消失（用户要求 2026-10-22）。
+            cache.removeAlbum(aid)
         }
         cache.rememberFavoriteFlag(aid, added)
         return FavoriteToggleResult(added = added, message = dto.msg)
