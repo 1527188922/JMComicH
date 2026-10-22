@@ -352,6 +352,31 @@ class CommentLogicTest {
         assertThat(AlbumDetailTab.fromCode(null)).isEqualTo(AlbumDetailTab.CHAPTERS)
     }
 
+    @Test
+    fun `remove drops a main floor together with its replies`() {
+        val root = comment("1").copy(replies = listOf(comment("2"), comment("3")))
+        val other = comment("9")
+        val left = removeComment(listOf(root, other), "1")
+        assertThat(left.map { it.cid }).containsExactly("9")
+    }
+
+    @Test
+    fun `remove only detaches a reply from its parent`() {
+        val root = comment("1").copy(replies = listOf(comment("2"), comment("3")))
+        val left = removeComment(listOf(root), "2")
+        assertThat(left).hasSize(1)
+        assertThat(left[0].cid).isEqualTo("1")
+        assertThat(left[0].replies.map { it.cid }).containsExactly("3")
+    }
+
+    @Test
+    fun `remove tolerates unknown cid and blank input`() {
+        val list = listOf(comment("1"))
+        assertThat(removeComment(list, "404")).isEqualTo(list)
+        assertThat(removeComment(list, "")).isEqualTo(list)
+        assertThat(removeComment(emptyList(), "1")).isEmpty()
+    }
+
     // ------------------------------------------------------------------
 
     private fun comment(cid: String) = CommentRow(cid = cid, author = "u$cid")

@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
@@ -219,6 +220,8 @@ fun AlbumDetailScreen(
     onCancelCommentReply: () -> Unit,
     /** 关掉输入条里的发送提示（✕ 或被界面自动消失时调用）。 */
     onConsumeCommentNotice: () -> Unit,
+    /** 确认删除自己发的一条留言（回复也能删）。 */
+    onDeleteComment: (CommentRow) -> Unit,
     /** 下载面板提交（选中的章节 id）。 */
     onDownloadChapters: (List<Long>) -> Unit,
     onDeleteChapterFiles: (Long) -> Unit,
@@ -264,6 +267,8 @@ fun AlbumDetailScreen(
     var showDownloadSheet by remember { mutableStateOf(false) }
     // 待删除的导出成品文件名（null = 没有待确认的删除）
     var pendingDeleteExport by remember { mutableStateOf<String?>(null) }
+    // 待删除的自己的一条留言（null = 没有待确认的删除）
+    var pendingDeleteComment by remember { mutableStateOf<CommentRow?>(null) }
 
     // 章节分组：哪些组的章节是展开的，默认只有第一组（用户要求：默认展示 10 话）。
     //
@@ -635,6 +640,7 @@ fun AlbumDetailScreen(
                             onLoadMore = onLoadMoreComments,
                             onRetry = onRetryComments,
                             onReply = onReplyComment,
+                            onDelete = { pendingDeleteComment = it },
                         )
                     }
                 }
@@ -713,6 +719,23 @@ fun AlbumDetailScreen(
             },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
             onDismiss = { pendingDeleteExport = null },
+        )
+    }
+
+    // 删留言不可撤销（服务端删了就没了），先确认一次
+    pendingDeleteComment?.let { target ->
+        ConfirmDialog(
+            title = if (target.isReply) "删除这条回复？" else "删除这条留言？",
+            text = "删除后无法恢复。",
+            confirmText = "删除",
+            onConfirm = {
+                pendingDeleteComment = null
+                onDeleteComment(target)
+            },
+            confirmButtonColors = ButtonDefaults.textButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+            onDismiss = { pendingDeleteComment = null },
         )
     }
 
@@ -909,6 +932,7 @@ private fun LazyListScope.commentTabItems(
     onLoadMore: () -> Unit,
     onRetry: () -> Unit,
     onReply: (CommentRow) -> Unit,
+    onDelete: (CommentRow) -> Unit,
 ) {
     if (state.comments.isEmpty()) {
         item(key = "comments_placeholder") {
@@ -940,7 +964,13 @@ private fun LazyListScope.commentTabItems(
     }
 
     items(state.comments, key = { "comment_${it.cid}" }) { comment ->
-        CommentItem(comment = comment, onReply = onReply)
+        CommentItem(
+            comment = comment,
+            ownUid = state.accountUid,
+            deletingCid = state.commentDeletingCid,
+            onReply = onReply,
+            onDelete = onDelete,
+        )
     }
 
     item(key = "comments_footer") {
@@ -1050,6 +1080,31 @@ private fun CommentFooter(
 }
 
 /**
+ * 评论行里的文字动作（「回复」/「删除」）。
+ *
+ * **横向只加 end 内边距**：左边不留白，文字才能和正文 / 昵称左对齐
+ * （用户 2026-10-22 反馈："回复"比评论第一个字往右缩了一截）。
+ * 右边留一点，点击区域更好按，ripple 也不会贴着字。
+ */
+@Composable
+private fun CommentActionText(
+    text: String,
+    color: Color,
+    onClickLabel: String,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(onClickLabel = onClickLabel, onClick = onClick)
+            .padding(end = 8.dp, top = 4.dp, bottom = 4.dp),
+    )
+}
+
+/**
  * 一条评论。
  *
  * 布局是"头像 + 右侧一列"：昵称（+ 等级徽标）→ 时间 → 正文 → 内嵌回复 → 「回复 / 点赞数」。
@@ -1059,9 +1114,16 @@ private fun CommentFooter(
  * 而这一屏本来就是"一条接一条往下读"的列表（章节列表用卡片是因为每一话都是独立动作）。
  *
  * @param onReply 点「回复」：上层把这一条设成回复目标，底部输入条变成「回复 @昵称」。
+ * @param onDelete 点「删除」：只有自己发的留言（`UID` 与当前账号一致）才会出现这个动作。
  */
 @Composable
-private fun CommentItem(comment: CommentRow, onReply: (CommentRow) -> Unit) {
+private fun CommentItem(
+    comment: CommentRow,
+    ownUid: String?,
+    deletingCid: String?,
+    onReply: (CommentRow) -> Unit,
+    onDelete: (CommentRow) -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1105,22 +1167,42 @@ private fun CommentItem(comment: CommentRow, onReply: (CommentRow) -> Unit) {
                 }
                 if (comment.replies.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    CommentReplies(comment.replies, onReply = onReply)
+                    CommentReplies(
+                        replies = comment.replies,
+                        ownUid = ownUid,
+                        deletingCid = deletingCid,
+                        onReply = onReply,
+                        onDelete = onDelete,
+                    )
                 }
                 // 「回复」与点赞数同一行：回复是**动作**，点赞数只是信息，
                 // 但两者都放在正文/回复之后，不抢"读那条评论"的第一眼。
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
+                    CommentActionText(
                         text = "回复",
-                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable(onClickLabel = "回复 ${comment.author}") { onReply(comment) }
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        onClickLabel = "回复 ${comment.author}",
+                        onClick = { onReply(comment) },
                     )
-                    Spacer(Modifier.width(8.dp))
+                    // 自己发的留言才给「删除」（官方的判定就是 UID 与当前账号一致）
+                    if (comment.isAuthoredBy(ownUid)) {
+                        Spacer(Modifier.width(12.dp))
+                        if (deletingCid == comment.cid) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            CommentActionText(
+                                text = "删除",
+                                color = MaterialTheme.colorScheme.error,
+                                onClickLabel = "删除这条留言",
+                                onClick = { onDelete(comment) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
                     comment.likes?.let { likes ->
                         Icon(
                             imageVector = Icons.Default.Favorite,
@@ -1219,7 +1301,13 @@ private fun CommentAvatar(comment: CommentRow, modifier: Modifier = Modifier) {
  * 默认只铺 [COMMENT_REPLY_PREVIEW] 条：有些楼能有十几条回复，全铺出来会把下一条评论顶走。
  */
 @Composable
-private fun CommentReplies(replies: List<CommentRow>, onReply: (CommentRow) -> Unit) {
+private fun CommentReplies(
+    replies: List<CommentRow>,
+    ownUid: String?,
+    deletingCid: String?,
+    onReply: (CommentRow) -> Unit,
+    onDelete: (CommentRow) -> Unit,
+) {
     var expanded by remember(replies) { mutableStateOf(false) }
     val folded = !expanded && replies.size > COMMENT_REPLY_PREVIEW
     val visible = if (folded) replies.take(COMMENT_REPLY_PREVIEW) else replies
@@ -1263,16 +1351,32 @@ private fun CommentReplies(replies: List<CommentRow>, onReply: (CommentRow) -> U
                         )
                     }
                 }
-                // 回复也能被回复（服务端同样用 `comment_id` 指向它的 CID）
-                Text(
-                    text = "回复",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable(onClickLabel = "回复 ${reply.author}") { onReply(reply) }
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
-                )
+                // 回复也能被回复（服务端同样用 `comment_id` 指向它的 CID）。
+                // 自己发的回复同样给「删除」，与主楼一致。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CommentActionText(
+                        text = "回复",
+                        color = MaterialTheme.colorScheme.primary,
+                        onClickLabel = "回复 ${reply.author}",
+                        onClick = { onReply(reply) },
+                    )
+                    if (reply.isAuthoredBy(ownUid)) {
+                        Spacer(Modifier.width(10.dp))
+                        if (deletingCid == reply.cid) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            CommentActionText(
+                                text = "删除",
+                                color = MaterialTheme.colorScheme.error,
+                                onClickLabel = "删除这条回复",
+                                onClick = { onDelete(reply) },
+                            )
+                        }
+                    }
+                }
             }
         }
         if (hidden > 0) {
@@ -1392,34 +1496,46 @@ private fun CommentInputBar(
                     )
                 }
             }
-            Row(
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                placeholder = { Text("写留言…") },
+                textStyle = MaterialTheme.typography.bodyMedium,
+                // 最多三行：再长就内部滚动，输入条不会把评论区挤没
+                maxLines = 3,
+                shape = RoundedCornerShape(18.dp),
+                // 发送按钮做成输入框的 trailingIcon（用户 2026-10-22 要求）：
+                // 与输入框一体，不再另占一颗文字按钮的位置。
+                trailingIcon = {
+                    if (sending) {
+                        Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    } else {
+                        val canSend = input.isNotBlank()
+                        IconButton(onClick = onSend, enabled = canSend) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "发送留言",
+                                tint = if (canSend) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                                },
+                            )
+                        }
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = onInputChange,
-                    placeholder = { Text("写留言…") },
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    // 最多三行：再长就内部滚动，输入条不会把评论区挤没
-                    maxLines = 3,
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = onSend,
-                    enabled = input.isNotBlank() && !sending,
-                ) {
-                    if (sending) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("发送")
-                    }
-                }
-            }
+                    .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+            )
         }
     }
 }

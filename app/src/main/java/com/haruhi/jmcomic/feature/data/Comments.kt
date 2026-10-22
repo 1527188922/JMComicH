@@ -189,6 +189,28 @@ internal fun ForumItemDto.toCommentRow(): CommentRow = CommentRow(
     parentCid = parentCid?.trim()?.takeIf { it.isNotEmpty() && it != "0" && !it.equals("null", ignoreCase = true) },
 )
 
+/**
+ * 从评论列表里删掉一条（详情页删自己的留言 / 回复时用）。
+ *
+ * 两种位置分开处理：
+ * - 命中的是**主楼** → 整条去掉（它内嵌的回复一起消失，与服务端删主楼的效果一致）；
+ * - 命中的是**内嵌回复** → 只从父楼的 `replies` 里摘掉，父楼本身保留。
+ *
+ * 找不到就原样返回（删成功但列表里本来就没有，不该把列表改坏）。
+ */
+fun removeComment(comments: List<CommentRow>, cid: String): List<CommentRow> {
+    if (cid.isBlank() || comments.isEmpty()) return comments
+    return comments.mapNotNull { root ->
+        when {
+            root.cid == cid -> null
+            root.replies.any { it.cid == cid } ->
+                root.copy(replies = root.replies.filterNot { it.cid == cid })
+
+            else -> root
+        }
+    }
+}
+
 // ----------------------------------------------------------------------
 // 发留言 / 回复
 // ----------------------------------------------------------------------

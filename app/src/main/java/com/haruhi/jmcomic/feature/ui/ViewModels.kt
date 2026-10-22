@@ -37,6 +37,7 @@ import com.haruhi.jmcomic.feature.data.DownloadManager
 import com.haruhi.jmcomic.feature.data.ExportFormat
 import com.haruhi.jmcomic.feature.data.ExportManager
 import com.haruhi.jmcomic.feature.data.mergeComments
+import com.haruhi.jmcomic.feature.data.removeComment
 import com.haruhi.jmcomic.feature.data.ReadingRepository
 import com.haruhi.jmcomic.feature.data.Repository
 import com.haruhi.jmcomic.feature.data.OnlineSearchItem
@@ -1829,11 +1830,20 @@ data class AlbumDetailUiState(
     val commentNotice: String? = null,
     /** [commentNotice] 是不是失败（决定用错误色画）。 */
     val commentNoticeError: Boolean = false,
+    /** 正在删除的留言 `cid`（那一行的删除按钮转圈 + 防重复点击）。 */
+    val commentDeletingCid: String? = null,
 
     // ---------------- 账号收藏（官方在线收藏，见 docs/account-design.md §4.4） ----------------
 
     /** 当前是否已登录（未登录时收藏按钮点了要先去登录）。 */
     val accountSignedIn: Boolean = false,
+    /**
+     * 当前登录账号的 uid。
+     *
+     * 「这条留言是不是我发的」只能靠它比 `ForumItemDto.UID`（官方 `ForumList` 同样比 `UID`）；
+     * 未登录 / 资料缺失时为 null，界面据此不显示「删除」。
+     */
+    val accountUid: String? = null,
     /** 这本是否已在账号收藏里（**以服务端为准**；本机 `collected` 字段不再用作这个含义）。 */
     val accountInFavorites: Boolean = false,
     /** 收藏夹列表（打开面板时拉一次）。 */
@@ -2088,7 +2098,15 @@ class AlbumDetailViewModel(
         //      （本机库里的 collected 是"本机收藏夹"的旧语义，与账号收藏无关）
         viewModelScope.launch {
             account.state.collect { accountState ->
-                _state.update { it.copy(accountSignedIn = accountState.isSignedIn) }
+                _state.update {
+                    it.copy(
+                        accountSignedIn = accountState.isSignedIn,
+                        // 只在登录有效时给 uid：失效后"删除"按钮不该还在
+                        accountUid = accountState.profileOrNull?.uid?.takeIf {
+                            accountState.isSignedIn && it.isNotBlank()
+                        },
+                    )
+                }
                 if (accountState.isSignedIn) syncAccountFavoriteOnce()
             }
         }
@@ -2657,6 +2675,62 @@ class AlbumDetailViewModel(
         } else {
             pendingNewReply = row
             pendingNewReplyParent = parentCid
+        }
+    }
+
+    /**
+     * 删除自己发的一条留言 / 回复（详情页评论 tab 里的「删除」）。
+     *
+     * 只有 `UID` 与当前账号一致时界面才会给这个入口（官方 `ForumList` 的判定相同），
+     * 这里再校验一次——删除是不可撤销的，不指望界面那一层兜住。
+     *
+     * 成功后**就地**从列表里摘掉（主楼直接删、回复从父楼的 `replys` 里删），
+     * 不清空整个列表：用户可能已经翻了好几页。同时把 `CommentCache` 清掉，
+     * 下次进这一本时重新拉，避免缓存里还留着已删的那条。
+     */
+    fun deleteComment(comment: CommentRow) {
+        val cid = comment.cid.trim()
+        if (cid.isEmpty()) return
+        val current = _state.value
+        if (current.commentDeletingCid != null) return
+        if (!account.isSignedIn) {
+            _state.update {
+                it.copy(commentNotice = "请先登录后再删除留言", commentNoticeError = true)
+            }
+            return
+        }
+        if (!comment.isAuthoredBy(current.accountUid)) {
+            _state.update { it.copy(commentNotice = "只能删除自己发的留言", commentNoticeError = true) }
+            return
+        }
+        _state.update { it.copy(commentDeletingCid = cid, commentNotice = null) }
+        viewModelScope.launch {
+            runCatching {
+                account.deleteComment(commentId = cid, albumId = comment.albumId ?: albumId)
+            }
+                .onSuccess { result ->
+                    _state.update {
+                        it.copy(
+                            commentDeletingCid = null,
+                            comments = removeComment(it.comments, cid),
+                            commentTotal = (it.commentTotal - 1).coerceAtLeast(0),
+                            commentNotice = result.message,
+                            commentNoticeError = false,
+                        )
+                    }
+                    commentCache.clear(albumId)
+                }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Timber.tag("jm").w(e, "删除留言失败：cid=%s", cid)
+                    _state.update {
+                        it.copy(
+                            commentDeletingCid = null,
+                            commentNotice = e.toUserMessage(),
+                            commentNoticeError = true,
+                        )
+                    }
+                }
         }
     }
 

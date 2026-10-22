@@ -2222,7 +2222,7 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 | `feature/ui/AccountCommentsScreen.kt`（新增） | 留言记录：分页 + 下拉刷新 + 滑到底追加；每行「来自 JMxxxx ›」（跳该本评论 tab）与「删除」（二次确认后就地消失） |
 | `feature/ui/AccountViewModels.kt` | 新增 `AccountCommentsViewModel`（删一条就地摘掉并清对应本子的评论缓存） |
 | `feature/ui/MyScreen.kt` / `ModeRoot.kt` | 「我的」新增「留言记录」入口；新路由 `jm/account/comments`；详情页路由加可选 `?tab=comments` |
-| `test/.../CommentLogicTest.kt` | 新增用例：200 码位截断（emoji 不劈半）、本地校验、`msg` 清洗、`uid` 判定、`AID`/`parent_CID` 映射、`total` 两种类型、删/发响应两种形态、tab code 往返 |
+| `test/.../CommentLogicTest.kt` | 新增用例：200 码位截断（emoji 不劈半）、本地校验、`msg` 清洗、`uid` 判定、`AID`/`parent_CID` 映射、`total` 两种类型、删/发响应两种形态、tab code 往返；第二轮补 `removeComment`（删主楼连回复 / 删回复只摘那一条）3 个 |
 
 ### 验证
 
@@ -2247,4 +2247,18 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
    6 秒自动收走、也能点 ✕ 立刻关；只有它走这条通道，其它详情页提示（收藏、导出等）仍是 Snackbar。
 5. **"勿短时间重复留言"与验证码无关**：官方数学题只是前端门槛，验证码不进请求
    （见 `docs/official-api-manga.md` §6.2 的备注）；那条是服务端按账号的冷却，隔几分钟重发即可。
+
+### 第二轮反馈修复（用户 2026-10-22）
+
+1. **发送按钮改成输入框内的图标**：`OutlinedTextField.trailingIcon` 放
+   `Icons.AutoMirrored.Filled.Send`（= `Icons.Default.Send` 的镜像版，后者已被 Compose 标记 deprecated，
+   视觉一致），与输入框一体；发送中转小圈、输入为空时图标置灰。
+2. **「回复」与正文左对齐**：原来是 `clickable + padding(horizontal = 6.dp)`，那 6dp 让文字
+   比评论第一个字往右缩。抽了 `CommentActionText`：**横向只加 end 内边距**，文字贴住容器左边，
+   点击区域靠右侧留白撑开（回复里嵌回复同样处理）。
+3. **详情页也能删自己的留言**：`AlbumDetailUiState` 新增 `accountUid`（来自 `AccountState.profileOrNull`），
+   评论行的「回复」旁边按 `CommentRow.isAuthoredBy(ownUid)` 决定要不要画「删除」；
+   主楼与内嵌回复都支持。删除走确认框 → `POST /comment_delete` → 成功后**就地**摘掉
+   （主楼连回复一起、回复只从父楼里摘），`CommentCache` 清掉，避免下次进来还看到已删的。
+4. 发送/删除的结果仍走输入条内的 `commentNotice`（`commentDeletingCid` 单独控制按钮转圈）。
 

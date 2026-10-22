@@ -915,6 +915,7 @@ fun ModeRoot(
                         onReplyComment = vm::replyToComment,
                         onCancelCommentReply = vm::cancelCommentReply,
                         onConsumeCommentNotice = vm::consumeCommentNotice,
+                        onDeleteComment = vm::deleteComment,
                         onExport = vm::startExport,
                         onDownloadMissing = vm::downloadMissingChapters,
                         onDismissExportPrecheck = vm::dismissExportPrecheck,
