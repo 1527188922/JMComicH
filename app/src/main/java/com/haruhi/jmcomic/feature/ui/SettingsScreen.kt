@@ -1553,10 +1553,10 @@ private fun AdvancedSection(
         )
         CardDivider()
         SwitchRow(
-            title = "账号接口缓存",
-            hint = "收藏夹与个人资料等只读接口复用服务端缓存",
-            help = "开启：需要登录才能调用的GET类接口可从缓存获取数据，提升接口响应速度；" +
-                "\n关闭：每次越过缓存获取最新数据。" ,
+            title = "接口缓存",
+            hint = "JM官方GET类接口使用线路缓存",
+            help = "【开启】：可提升接口响应速度，但不同线路的缓存数据是隔离的，比如在A线路上新增了一个收藏夹，切换B线路可能不能马上看到刚才新增的收藏夹；" +
+                "\n【关闭】：每次越过缓存获取最新数据。" ,
             checked = state.accountApiCache,
             onCheckedChange = onSetAccountApiCache,
         )
