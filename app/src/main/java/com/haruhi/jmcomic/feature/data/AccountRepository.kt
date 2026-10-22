@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import timber.log.Timber
 
 /**
@@ -87,7 +88,12 @@ class AccountRepository(
     /** 收藏列表。`folderId` 为 null/空 = 全部收藏。 */
     suspend fun favorites(page: Int, folderId: String? = null, order: String = ORDER_BY_TIME): FavoritePage {
         val dto = guarded { api().favoritePage(page = page, folderId = folderId, order = order) }
-        return dto.toPage()
+        val pageData = dto.toPage()
+        // `/favorite` 的 `folder_list` 每次都是**全量返回**（与 page / folder_id 无关，见
+        // `docs/official-api-manga.md` §8.3）：任何一次收藏夹网络请求都顺手覆盖本地缓存，
+        // 「我的」页的夹数量与详情页面板都能立刻用上最新名单（用户要求 2026-10-22）。
+        if (dto.folderList != null) cache.putFolders(pageData.folders)
+        return pageData
     }
 
     /**
@@ -100,13 +106,18 @@ class AccountRepository(
         if (!force) {
             cache.folders?.takeIf { !cache.foldersDirty }?.let { return it }
         }
-        val list = favorites(page = 1).folders
-        cache.putFolders(list)
-        return list
+        // [favorites] 已负责把 `folder_list` 写回缓存
+        return favorites(page = 1).folders
     }
 
-    /** 缓存里的收藏夹；没缓存 / 已作废时返回 null（调用方据此决定要不要转局部 loading）。 */
-    fun cachedFolders(): List<AccountFolder>? = cache.folders?.takeIf { !cache.foldersDirty }
+    /**
+     * 缓存里的收藏夹；没缓存 / 已作废时返回 null（调用方据此决定要不要转局部 loading）。
+     *
+     * @param allowStale true = 即使被标脏也返回旧名单。「我的」页先用它算夹数量铺上，
+     *   网络回来再覆盖，避免副标题先少一截、1～2 秒后才补齐。
+     */
+    fun cachedFolders(allowStale: Boolean = false): List<AccountFolder>? =
+        cache.folders?.takeIf { allowStale || !cache.foldersDirty }
 
     /** 这一本是否在账号收藏里（本进程里核对过的结论）；没核对过返回 null。 */
     fun cachedFavoriteFlag(albumId: Long): Boolean? = cache.cachedFavoriteFlag(albumId)
@@ -160,15 +171,16 @@ class AccountRepository(
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "新建收藏夹失败")
         cache.invalidateFavorites()
         cache.invalidateAlbums()
-        // 新建会让面板的收藏夹缓存过期（用户要求：新增/删除才清缓存）
-        cache.invalidateFolders()
         // `/favorite_folder` 不返回新 FID，只能重拉一次列表按名字找（夹名服务端唯一）。
         // 实测服务端偶尔"晚一拍"才把新夹放进 folder_list（多节点），所以重试几次再放弃。
+        // 每轮 [favorites] 都会把最新 `folder_list` 覆盖进本地缓存，所以找到即缓存已更新。
         repeat(FOLDER_LOOKUP_ATTEMPTS) { attempt ->
             val page = favorites(page = 1)
             page.folders.firstOrNull { it.name == name }?.let { return it }
             if (attempt < FOLDER_LOOKUP_ATTEMPTS - 1) delay(FOLDER_LOOKUP_DELAY_MS)
         }
+        // 服务端一直没把新夹放进列表：标脏，下次打开面板会重拉，而不是继续用缺一项的缓存
+        cache.invalidateFolders()
         throw NetworkError.Business("收藏夹已创建，但列表里还没出现它，请下拉刷新")
     }
 
@@ -192,7 +204,8 @@ class AccountRepository(
         if (!dto.isOk) throw NetworkError.Business(dto.msg ?: "删除收藏夹失败")
         cache.invalidateFavorites()
         cache.invalidateAlbums()
-        cache.invalidateFolders()
+        // 删除成功：本地名单直接去掉这一项并落盘（用户要求 2026-10-22，不再整份作废）
+        cache.removeFolder(folderId)
     }
 
     // ------------------------------------------------------------------
@@ -241,6 +254,7 @@ class AccountRepository(
 data class FavoriteToggleResult(val added: Boolean, val message: String?)
 
 /** 收藏夹（账号）。[count]/[coverAlbumId] 是**补拉**出来的，拉不到就是 null（界面显示"…"）。 */
+@Serializable
 data class AccountFolder(
     val fid: String,
     val name: String,

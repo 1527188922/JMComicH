@@ -126,6 +126,15 @@ internal object SettingKeys {
          * 退出登录时清空。
          */
         const val ACCOUNT_PROFILE = "account_profile"
+
+        /**
+         * 账号收藏夹列表快照（JSON 数组，只有 `{FID, name}`）。
+         *
+         * 「我的」页的「· N 个收藏夹」、详情页的收藏面板都要在第一帧就拿到夹列表，
+         * 所以除了进程内缓存还要落盘；任何一次 `/favorite` 请求或夹增删改都会覆盖它。
+         * **不是真相**：下次联网就纠正。退出登录时清空。
+         */
+        const val ACCOUNT_FOLDERS = "account_folders"
     }
 
     // ---------------- 敏感凭据（单独的安全存储，键名同样不外露） ----------------

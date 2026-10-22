@@ -1,6 +1,14 @@
 package com.haruhi.jmcomic.feature.data
 
+import com.haruhi.jmcomic.core.settings.SettingKeys
+import com.haruhi.jmcomic.core.settings.SettingsRepository
 import com.haruhi.jmcomic.feature.api.UserEditDto
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import timber.log.Timber
 
 /** 账号收藏页要渲染的最小快照（夹列表 + 总数 + 「全部收藏」封面）。 */
 data class FavoritesSnapshot(
@@ -21,18 +29,26 @@ data class AlbumsSnapshot(
 )
 
 /**
- * 账号数据的**进程内缓存**（挂在 `AppContainer` 上，跟着进程走）。
+ * 账号数据的**本地缓存**（挂在 `AppContainer` 上，跟着进程走）。
  *
  * 为什么需要它（用户反馈 2026-10-21）：收藏页 / 个人资料页每次进入都会重建 ViewModel，
  * 重建就要重新联网 —— 列表先清空、再重新铺；夹的「N 本 / 封面」也要重新补拉，
  * 于是每次进来都**闪一下**。现在改成：进页面先用上次的快照渲染（不转圈、不闪），
  * 只有"数据被动过"（[invalidateFavorites]）或用户**下拉**时才打网络。
  *
- * 只在内存里：
- * - 退出登录 / 换账号时 [clear]（不能把上一个账号的收藏夹留在屏幕上）；
- * - 进程结束自然消失，没有"后台删了本地还在"的问题。
+ * 收藏夹列表（[folders]）另外**落盘到 DataStore**（用户要求 2026-10-22）：
+ * 「我的」页的「· N 个收藏夹」在第一帧就要显示，不能等 `/favorite` 的 1～2 秒；
+ * 任何一次收藏夹网络请求、新建 / 删除 / 改名都会覆盖这份快照。
+ * 其余快照只在内存里：退出登录 / 换账号时 [clear]（不能把上一个账号的收藏夹留在屏幕上）。
  */
-class AccountCache {
+class AccountCache(
+    private val settings: SettingsRepository,
+) {
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
 
     @Volatile
     var favorites: FavoritesSnapshot? = null
@@ -78,8 +94,11 @@ class AccountCache {
      * 收藏夹列表（只有 `{FID, name}`，没有数量/封面）。
      *
      * 详情页面板每次打开都重新拉一遍太浪费（用户反馈 2026-10-21）：
-     * **优先用这份缓存**，只有"新建 / 删除收藏夹"才作废（[invalidateFolders]），
-     * 改名直接就地改（[renameFolder]），退出 App 时随进程消失。
+     * **优先用这份缓存**；任何一次 `/favorite` 请求都会用最新全量名单覆盖它，
+     * 新建 / 删除 / 改名也就地更新（[putFolders] / [removeFolder] / [renameFolder]）。
+     *
+     * 进程启动时从 DataStore 同步读回上次的快照（用户要求 2026-10-22），
+     * 所以「我的」页进来就能算出夹数量，不用等网络。
      */
     @Volatile
     var folders: List<AccountFolder>? = null
@@ -89,19 +108,60 @@ class AccountCache {
     var foldersDirty: Boolean = true
         private set
 
-    fun putFolders(list: List<AccountFolder>) {
-        folders = list
-        foldersDirty = false
+    init {
+        // 与 `AccountStore.loadInitialState` 同一种取舍：一个很小的字符串，同步读保证第一帧可用。
+        runCatching { runBlocking { readPersistedFolders() } }
+            .onSuccess { stored ->
+                if (stored != null) {
+                    folders = stored
+                    foldersDirty = false
+                }
+            }
+            .onFailure { Timber.tag("jm").w(it, "读取账号收藏夹缓存失败") }
     }
 
-    /** 新建 / 删除收藏夹后调用：下次打开面板时重新拉一次。 */
+    /** 任何一次 `/favorite` 请求（`folder_list` 全量返回）或夹增删改后都来覆盖一次。 */
+    suspend fun putFolders(list: List<AccountFolder>) {
+        val changed = folders != list
+        folders = list
+        foldersDirty = false
+        if (changed) persistFolders()
+    }
+
+    /** 夹名单不可信（例如新建后服务端一直没把它放进 `folder_list`）时标脏：下次打开面板重拉。 */
     fun invalidateFolders() {
         foldersDirty = true
     }
 
     /** 改名是改了**已有条目**，不用整份作废（否则下次打开面板又要多一次请求）。 */
-    fun renameFolder(folderId: String, newName: String) {
-        folders = folders?.map { if (it.fid == folderId) it.copy(name = newName) else it }
+    suspend fun renameFolder(folderId: String, newName: String) {
+        val current = folders ?: return
+        val next = current.map { if (it.fid == folderId) it.copy(name = newName) else it }
+        if (next == current) return
+        folders = next
+        persistFolders()
+    }
+
+    /** 删除成功后就地去掉这一项（用户要求 2026-10-22：增删要更新缓存，而不是整份作废）。 */
+    suspend fun removeFolder(folderId: String) {
+        val current = folders ?: return
+        val next = current.filterNot { it.fid == folderId }
+        if (next == current) return
+        folders = next
+        foldersDirty = false
+        persistFolders()
+    }
+
+    private suspend fun readPersistedFolders(): List<AccountFolder>? {
+        val raw = settings.jmString(SettingKeys.Jm.ACCOUNT_FOLDERS).first()
+        if (raw.isBlank()) return null
+        return json.decodeFromString<List<AccountFolder>>(raw)
+    }
+
+    private suspend fun persistFolders() {
+        runCatching {
+            settings.putJmString(SettingKeys.Jm.ACCOUNT_FOLDERS, json.encodeToString(folders.orEmpty()))
+        }.onFailure { Timber.tag("jm").w(it, "保存账号收藏夹缓存失败") }
     }
 
     // ------------------------------------------------------------------
@@ -209,8 +269,8 @@ class AccountCache {
         favoriteFlags[albumId] = value
     }
 
-    /** 登录成功 / 退出登录：整份缓存作废（避免把上一个账号的数据留在内存里）。 */
-    fun clear() {
+    /** 登录成功 / 退出登录：整份缓存作废（含落盘的收藏夹列表，避免串账号）。 */
+    suspend fun clear() {
         favorites = null
         profileDetail = null
         folders = null
@@ -219,5 +279,7 @@ class AccountCache {
         favoritesDirty = true
         profileDirty = true
         foldersDirty = true
+        runCatching { settings.putJmString(SettingKeys.Jm.ACCOUNT_FOLDERS, "") }
+            .onFailure { Timber.tag("jm").w(it, "清除账号收藏夹缓存失败") }
     }
 }

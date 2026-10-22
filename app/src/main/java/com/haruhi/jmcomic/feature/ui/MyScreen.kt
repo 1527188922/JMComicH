@@ -24,12 +24,14 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +58,7 @@ import com.haruhi.jmcomic.core.protocol.Defaults
  * 未登录时账号区照常显示，副标题写「登录后可用」，点击直接去登录页
  * （由导航层记住目标，登录成功直达）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyScreen(
     state: MyUiState,
@@ -67,6 +70,8 @@ fun MyScreen(
     onOpenProfile: () -> Unit,
     onLogin: () -> Unit,
     onLogout: () -> Unit,
+    /** 下拉刷新：重拉收藏夹名单，覆盖本地缓存并更新「· N 个收藏夹」。 */
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var showLogoutDialog by remember { mutableStateOf(false) }
@@ -87,70 +92,80 @@ fun MyScreen(
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+            // 下拉刷新：重新拉一次收藏夹名单（`/favorite` 的 `folder_list` 全量返回），
+            // 覆盖本地缓存后「· N 个收藏夹」立刻跟着变。
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = {
+                    if (!state.refreshing) onRefresh()
+                },
+                modifier = Modifier.fillMaxSize(),
             ) {
-                AccountSummaryCard(
-                    state = state,
-                    onOpenProfile = onOpenProfile,
-                    onLogin = onLogin,
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    AccountSummaryCard(
+                        state = state,
+                        onOpenProfile = onOpenProfile,
+                        onLogin = onLogin,
+                    )
 
-                GroupCard {
-                    MyEntryRow(
-                        title = "收藏",
-                        subtitle = if (state.signedIn) {
-                            state.favoritesSummary ?: "查看账号收藏夹"
-                        } else {
-                            "登录后可用"
-                        },
-                        onClick = onOpenFavorites,
-                    )
-                }
-
-                GroupCard {
-                    MyEntryRow(
-                        title = "最近浏览",
-                        subtitle = if (state.recentCount > 0) "浏览过 ${state.recentCount} 本" else "还没有浏览记录",
-                        onClick = onOpenRecent,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    MyEntryRow(
-                        title = "下载任务",
-                        subtitle = taskSummary(taskState),
-                        badgeCount = taskState.badgeCount,
-                        hasFailure = taskState.failedCount > 0,
-                        onClick = onOpenTasks,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    MyEntryRow(
-                        title = "应用设置",
-                        subtitle = "阅读与显示、下载、导出、网络、线路",
-                        onClick = onOpenSettings,
-                    )
-                }
-
-                // 退出登录放在「应用设置」下面（用户要求 2026-10-21）：
-                // 它是本机相关的收尾动作，跟上面的设备级入口同一组更顺。
-                // 未登录时不占位置。
-                if (state.signedIn || state.account is AccountState.Expired) {
-                    // 与上面「本机」那一组拉开距离（用户要求 2026-10-21）：24dp 而不是默认 8dp
-                    GroupCard(topPadding = 24.dp) {
-                        LogoutRow(
-                            loggingOut = state.loggingOut,
-                            onClick = { showLogoutDialog = true },
+                    GroupCard {
+                        MyEntryRow(
+                            title = "收藏",
+                            subtitle = if (state.signedIn) {
+                                state.favoritesSummary ?: "查看账号收藏夹"
+                            } else {
+                                "登录后可用"
+                            },
+                            onClick = onOpenFavorites,
                         )
                     }
-                }
 
-                Text(
-                    text = "版本 ${BuildConfig.VERSION_NAME}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                )
+                    GroupCard {
+                        MyEntryRow(
+                            title = "最近浏览",
+                            subtitle = if (state.recentCount > 0) "浏览过 ${state.recentCount} 本" else "还没有浏览记录",
+                            onClick = onOpenRecent,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        MyEntryRow(
+                            title = "下载任务",
+                            subtitle = taskSummary(taskState),
+                            badgeCount = taskState.badgeCount,
+                            hasFailure = taskState.failedCount > 0,
+                            onClick = onOpenTasks,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        MyEntryRow(
+                            title = "应用设置",
+                            subtitle = "阅读与显示、下载、导出、网络、线路",
+                            onClick = onOpenSettings,
+                        )
+                    }
+
+                    // 退出登录放在「应用设置」下面（用户要求 2026-10-21）：
+                    // 它是本机相关的收尾动作，跟上面的设备级入口同一组更顺。
+                    // 未登录时不占位置。
+                    if (state.signedIn || state.account is AccountState.Expired) {
+                        // 与上面「本机」那一组拉开距离（用户要求 2026-10-21）：24dp 而不是默认 8dp
+                        GroupCard(topPadding = 24.dp) {
+                            LogoutRow(
+                                loggingOut = state.loggingOut,
+                                onClick = { showLogoutDialog = true },
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "版本 ${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                    )
+                }
             }
         }
     }

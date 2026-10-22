@@ -378,12 +378,15 @@ fun ModeRoot(
                 composable(Routes.MINE) { entry ->
                     val vm: MyViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
-                    // 进页面/从别处回来时刷新账号收藏夹个数（一个请求；未登录直接跳过）
-                    OnResumeEffect { vm.refreshFolderCount() }
+                    // 进页面/从别处回来**不联网**：只读本地缓存的夹数量，避免副标题跳动；
+                    // 只有本地完全没有缓存时才请求一次（用户要求 2026-10-22）
+                    OnResumeEffect { vm.restoreCachedFolderCount() }
                     val accountState = state.account
                     MyScreen(
                         state = state,
                         taskState = taskState,
+                        // 下拉刷新：联网重拉收藏夹名单，成功后覆盖本地缓存
+                        onRefresh = { vm.refreshFolderCount() },
                         // 未登录点账号入口 = 直接去登录页，登录成功后回到「收藏」
                         onOpenFavorites = {
                             if (accountState.isSignedIn) {

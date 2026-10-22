@@ -44,9 +44,11 @@ import timber.log.Timber
 data class MyUiState(
     val account: AccountState = AccountState.Anonymous,
     val recentCount: Int = 0,
-    /** 账号收藏夹个数（进页面时拉一次，失败就是 null → 副标题不显示夹数）。 */
+    /** 账号收藏夹个数（优先来自本地缓存，进页面后联网校正）。 */
     val folderCount: Int? = null,
     val loggingOut: Boolean = false,
+    /** 下拉刷新收藏夹数量中（顶部下拉圈）。 */
+    val refreshing: Boolean = false,
 ) {
     val profile: MemberProfile? get() = account.profileOrNull
     val signedIn: Boolean get() = account.isSignedIn
@@ -92,35 +94,83 @@ class MyViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
-    private val folderCount = MutableStateFlow<Int?>(null)
+    /**
+     * 收藏夹个数：初始值直接取本地缓存（落盘的夹名单），首帧就能显示，
+     * 之后每次进页面联网校正（用户要求 2026-10-22）。
+     */
+    private val folderCount = MutableStateFlow(account.cachedFolders(allowStale = true)?.size)
     private val loggingOut = MutableStateFlow(false)
+    private val refreshing = MutableStateFlow(false)
+
+    /** 防止 onResume 与下拉刷新同时打两个 `/favorite`。 */
+    private var folderRequestInFlight = false
 
     val state: StateFlow<MyUiState> = combine(
         account.state,
         recentCount,
         folderCount,
         loggingOut,
-    ) { accountState, recent, folders, out ->
-        MyUiState(account = accountState, recentCount = recent, folderCount = folders, loggingOut = out)
+        refreshing,
+    ) { accountState, recent, folders, out, refreshingNow ->
+        MyUiState(
+            account = accountState,
+            recentCount = recent,
+            folderCount = folders,
+            loggingOut = out,
+            refreshing = refreshingNow,
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = MyUiState(account = account.state.value),
+        initialValue = MyUiState(
+            account = account.state.value,
+            folderCount = account.cachedFolders(allowStale = true)?.size,
+        ),
     )
 
-    /** 进页面/回到页面时刷新账号收藏夹个数（一个请求；失败就保持旧值）。 */
-    fun refreshFolderCount() {
+    /**
+     * 进页面 / 回到页面：**只读本地缓存，不联网**（用户要求 2026-10-22：页面上不能有信息跳动）。
+     *
+     * 只有本地完全没有缓存（刚登录、首次安装）时才请求一次把数量补上。
+     */
+    fun restoreCachedFolderCount() {
+        if (!account.isSignedIn) {
+            folderCount.value = null
+            return
+        }
+        val cached = account.cachedFolders(allowStale = true)
+        if (cached != null) {
+            folderCount.value = cached.size
+            return
+        }
+        requestFolderCount(showRefreshing = false)
+    }
+
+    /** 下拉刷新：强制联网重拉，成功后覆盖本地缓存（用户主动触发，允许数量变化）。 */
+    fun refreshFolderCount() = requestFolderCount(showRefreshing = true)
+
+    private fun requestFolderCount(showRefreshing: Boolean) {
+        if (folderRequestInFlight) return
+        folderRequestInFlight = true
+        if (showRefreshing) refreshing.value = true
         viewModelScope.launch {
-            if (!account.isSignedIn) {
-                folderCount.value = null
-                return@launch
-            }
-            runCatching { account.favorites(page = 1).folders.size }
-                .onSuccess { folderCount.value = it }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    Timber.tag("jm").d(e, "拉账号收藏夹个数失败")
+            try {
+                if (!account.isSignedIn) {
+                    folderCount.value = null
+                    return@launch
                 }
+                // 网络回来前先保持缓存里的数量，避免刷新过程中副标题闪动
+                account.cachedFolders(allowStale = true)?.size?.let { folderCount.value = it }
+                runCatching { account.favorites(page = 1).folders.size }
+                    .onSuccess { folderCount.value = it }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        Timber.tag("jm").d(e, "拉账号收藏夹个数失败")
+                    }
+            } finally {
+                refreshing.value = false
+                folderRequestInFlight = false
+            }
         }
     }
 
@@ -338,8 +388,8 @@ class AccountFavoritesViewModel(
                     }
                     return@launch
                 }
-                // 收藏夹名单顺手写进缓存：详情页的「收藏」面板下次打开就不用再请求了
-                cache.putFolders(page.folders)
+                // 收藏夹名单已由 `AccountRepository.favorites()` 统一写回本地缓存
+                // （`folder_list` 每次全量返回，任何联网请求都会覆盖它）
                 // 这一页（`folder_id` 空 = 全部收藏，`o=mr`）顺手缓存成「全部收藏」的第一页：
                 // 点进「全部收藏」时就不用再发一次请求（用户要求 2026-10-21）
                 cache.putAlbums(

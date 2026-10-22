@@ -124,13 +124,13 @@ class AppContainer(private val appContext: Context) {
     }
 
     /**
-     * 账号数据的进程内缓存（挂在容器上，跟着进程走）。
+     * 账号数据的本地缓存（挂在容器上，跟着进程走）。
      *
-     * 只缓存"列表快照"这类展示数据：登录/退出时清空，进程结束自然消失。
-     * 见 `feature/data/AccountCache.kt` 的注释。
+     * 只缓存"列表快照"这类展示数据：登录/退出时清空，进程结束自然消失；
+     * 收藏夹名单另外落盘到 DataStore（见 `feature/data/AccountCache.kt` 的注释）。
      */
     val accountCache: com.haruhi.jmcomic.feature.data.AccountCache by lazy {
-        com.haruhi.jmcomic.feature.data.AccountCache()
+        com.haruhi.jmcomic.feature.data.AccountCache(settings)
     }
 
     /**
