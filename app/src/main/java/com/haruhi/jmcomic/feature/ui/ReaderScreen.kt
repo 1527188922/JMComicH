@@ -393,7 +393,8 @@ private fun HorizontalReader(
  *   [ReaderPage.bitmap]（原图管线，就地解扰出来的位图）用 `Image` 直接画，
  *   [ReaderPage.displayFile]（解扰后的成品文件）交给 Coil；二者都走同一个占位与失败态；
  * - `LaunchedEffect` 的 key 里有 [ReaderPage.rawFile]：原图（字节）刚被预取回来时，
- *   这一页若已经在视野里就立刻解扰，不会干等下一次滚动；
+ *   这一页若已经在视野里就立刻解扰，不会干等下一次滚动（解扰完成后 rawFile 不会清空，
+ *   位图被窗口回收时靠 key 里的 `state → Pending` 触发重解）；
  * - 取的过程中显示进度圈，只有真的失败才显示"取不回来 + 重试"；
  * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
  *   （用户要求：双指放大是整个页面一起放大，不是单张图片单独放大）。
@@ -407,6 +408,7 @@ private fun ReaderPageItem(
 ) {
     // 进入可视范围（被组合）就取图；本地已有、正在取、失败过时 requestPage 是空操作。
     // rawFile 也在 key 里：预取把字节取回来之后，本页立刻接着解扰。
+    // 位图被内存窗口回收时状态会回到 Pending（rawFile 仍在），这一页重新可见就再解一次。
     LaunchedEffect(page.imageFile, page.state, page.rawFile) {
         if (!page.available && page.state == ReaderPage.PageState.Pending) onRequest()
     }

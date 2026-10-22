@@ -2108,3 +2108,32 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 
 > 待办（下次改文案时一起处理）：`ApiClient.kt:65-73` 里"服务端按「线路 + URL」缓存这些 GET 的明文响应、
 > `t` 能改变缓存键"的断言与实测不符；`SettingsScreen` 原开关文案「关闭：每次越过缓存获取最新数据」也过强。
+
+## 修复：阅读器「已缓存 N 页」「加载中 N」随翻页乱跳（用户反馈 2026-10-22）
+
+用户反馈：**整本漫画的缓存早就全部落盘了**，阅读页左上角的「已缓存 N 页」和右下角的「加载中 N」
+还是跟着上下翻动一直变。根因两处，都是把**内存里的东西**当成了**磁盘上的东西**：
+
+1. `ReaderViewModel.requestPage` 解扰成功后写回 `rawFile = null`。原图管线的一页只有
+   `bitmap` 与 `rawFile` 两个凭据，位图被内存窗口回收（`trimOutsideWindow` /
+   `enforceBitmapBudget`，只留当前页前后 `BITMAP_KEEP_RADIUS` 页）后两者同时为空 →
+   `hasBytes` 变 false → 已缓存数一页页掉；翻回来重解又一页页涨。
+2. `pendingCount` 只看 `PageState.Pending` / `Loading`，而"位图被回收、等本地重解"用的也是
+   `Pending`，于是这些**根本不用联网**的页被算进了「加载中」，底栏跟着窗口回收一起涨落。
+
+改动：
+
+| 文件 | 改动 |
+|---|---|
+| `feature/ui/ReaderViewModel.kt` | `rawFile` 语义改成"字节在本地"，**解扰成功后保留**（`LoadedPage` 多带一个 `raw`）；`pendingCount` 只数 `!hasBytes` 的页 |
+| `feature/ui/ReaderScreen.kt` | 只改注释（`rawFile` 不再清空后，重解靠 `LaunchedEffect` key 里的 `state → Pending`） |
+| `ReaderAndTaskLogicTest` | 新增 2 个用例：位图被回收仍是已缓存、本地有字节的页不算加载中 |
+
+改后的口径：
+
+- **已缓存 N 页** = 磁盘上有字节的页数（成品或原图），与位图窗口无关；全部落盘后顶栏只剩「N 页」；
+- **加载中 N** = 还要联网的页数；纯本地重解不出现；
+- 滚回被回收的页：位图重解一次（本地文件、不联网），两个数字都不动。
+
+设备上核对：先在线把一话从头翻到尾（`reader-cache/<aid>/<cid>/` 里页数齐了），再上下快速翻 30 页——
+左上 / 右下两个数字**全程不变**；换一本没缓存过的，未取到的页仍然会让「已缓存」往上涨、「加载中」往下掉。

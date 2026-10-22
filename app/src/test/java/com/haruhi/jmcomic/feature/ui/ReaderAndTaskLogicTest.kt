@@ -166,6 +166,54 @@ class ReaderAndTaskLogicTest {
         assertThat(state.progressLabel).isEqualTo("3 页 · 已缓存 2 页")
     }
 
+    /**
+     * 位图被内存窗口回收后，这一页仍然是"已缓存"（字节在磁盘上，翻回来只解本地文件、不联网）。
+     *
+     * 回归：以前新管线解扰成功时把 `rawFile` 清成 null，位图一被回收 `hasBytes` 就变 false，
+     * 于是顶栏「已缓存 N 页」与底栏「加载中 N」**跟着上下翻动来回跳**——
+     * 即使整话的原图早就全部落盘了。
+     */
+    @Test
+    fun `a page whose bitmap was evicted is still cached`() {
+        val state = ReaderUiState(
+            pages = listOf(
+                ReaderPage(
+                    index = 0,
+                    imageFile = "00001.webp",
+                    // 原图还在磁盘上，只是位图被回收了：状态回到"待解扰"
+                    rawFile = java.io.File("/tmp/00001.webp"),
+                    state = ReaderPage.PageState.Pending,
+                ),
+            ),
+        )
+        assertThat(state.cachedCount).isEqualTo(1)
+        // 只等本地重解，不能算"加载中"
+        assertThat(state.pendingCount).isEqualTo(0)
+    }
+
+    /** 底栏的「加载中 N」只数**还要联网**的页，本地有字节的页不算。 */
+    @Test
+    fun `only pages without local bytes count as loading`() {
+        val state = ReaderUiState(
+            pages = listOf(
+                ReaderPage(
+                    index = 0,
+                    imageFile = "00001.webp",
+                    rawFile = java.io.File("/tmp/00001.webp"),
+                    state = ReaderPage.PageState.Pending,
+                ),
+                ReaderPage(
+                    index = 1,
+                    imageFile = "00002.webp",
+                    state = ReaderPage.PageState.Loading,
+                ),
+            ),
+        )
+        assertThat(state.cachedCount).isEqualTo(1)
+        assertThat(state.pendingCount).isEqualTo(1)
+        assertThat(state.progressLabel).isEqualTo("2 页 · 已缓存 1 页")
+    }
+
     @Test
     fun `reader knows when it is at either end of the chapter list`() {
         val first = readerState(chapterIndex = 0, chapterCount = 3, pages = listOf(true))
@@ -251,10 +299,12 @@ class ReaderAndTaskLogicTest {
         assertThat(ReadingBackground.fromCode(99)).isEqualTo(ReadingBackground.THEME)
     }
 
-    /** 界面上的选项文案就是计划 §9.3 的那几个词，不允许出现内部枚举名。 */
+    /** 界面上的选项文案就是用户在底栏看到的说法，不允许出现内部枚举名。 */
     @Test
     fun `reading option labels are the user facing wording`() {
-        assertThat(ReadingMode.entries.map { it.label }).containsExactly("纵向连续", "横向分页")
+        // 「上下翻页 / 左右翻页」来自底栏那颗阅读方式按钮（2026-10-22 文案优化），
+        // 断言跟着界面走；这条以前写的是计划里的「纵向连续 / 横向分页」，改名时漏改。
+        assertThat(ReadingMode.entries.map { it.label }).containsExactly("上下翻页", "左右翻页")
         // "护眼暖色"已按用户要求从阅读界面去掉
         assertThat(ReadingBackground.entries.map { it.label })
             .containsExactly("跟随主题", "浅色", "深色")

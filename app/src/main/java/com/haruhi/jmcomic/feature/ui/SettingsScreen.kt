@@ -1136,7 +1136,7 @@ private fun LineSection(
     if (showApiPicker) {
         LinePickerSheet(
             title = "接口线路",
-            hint = "不同网络环境下，同一条线路的延迟可能不同哦！",
+            hint = "不同网络环境下，同一条线路的延迟可能不同哦！\n登录后，不同线路下账号信息可能不同属正常情况，每条线路都有独立的缓存",
             options = remember(state.apiLine) { apiPickerOptions(state.apiLine) },
             selectedHost = state.apiLine.host,
             defaultHost = LineCatalog.DEFAULT_API_HOST,

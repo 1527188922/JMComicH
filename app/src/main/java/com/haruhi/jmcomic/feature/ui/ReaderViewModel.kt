@@ -39,8 +39,9 @@ import kotlin.math.abs
  * - [displayFile]：**解扰后的成品文件**（已下载的、或旧管线缓存下来的），交给 Coil 显示；
  * - [bitmap]：新管线在内存里就地解扰出来的位图，直接 `Image()` 显示。
  *
- * [rawFile] 只在**新管线**里出现：站点原始字节已经落盘，但还没解扰、**不能直接显示**。
- * 它的意义是"字节已经到手"，同时充当界面解扰的触发信号（`LaunchedEffect` 的 key 里有它）。
+ * [rawFile] 只在**新管线**里出现：站点原始字节已经落盘（还没解扰时不能直接显示）。
+ * 它的意义是"字节已经到手"，所以**解扰完成后也留着**——位图会被内存窗口回收，
+ * 而"本地有没有字节"不跟着位图变（见 [hasBytes]）。
  */
 data class ReaderPage(
     val index: Int,
@@ -49,7 +50,14 @@ data class ReaderPage(
     val displayFile: File? = null,
     /** 新管线就地解扰出的位图；可直接显示。 */
     val bitmap: Bitmap? = null,
-    /** 新管线已落盘的原图（未解扰）；只表示"字节在本地"。 */
+    /**
+     * 站点原始字节已经落盘时的文件（新管线）。
+     *
+     * **解扰完成后也不清空**：它的语义是"字节在本地、再显示不用联网"，
+     * 而不是"还没解扰"。顶栏「已缓存 N 页」/底栏「加载中 N」就是靠它来数的——
+     * 位图会被内存窗口回收（[ReaderUiState.cachedCount] 不能跟着位图走），
+     * 字节却一直在磁盘上。
+     */
     val rawFile: File? = null,
     /** 高/宽。没有图时用 [DEFAULT_ASPECT] 占位，保证长图占位稳定。 */
     val aspectRatio: Float = DEFAULT_ASPECT,
@@ -59,7 +67,12 @@ data class ReaderPage(
     /** 能不能**立刻画出来**（有成品文件或位图，二者之一）。 */
     val available: Boolean get() = displayFile != null || bitmap != null
 
-    /** 字节是否已在本地（有成品，或已经下好原图、只差解扰）。 */
+    /**
+     * 字节是否已在本地（有成品文件、有位图，或原图已落盘）。
+     *
+     * **不会因为位图被内存窗口回收而变 false**（[rawFile] 解扰后仍保留）：
+     * "再显示要不要联网"只取决于磁盘，不取决于内存。
+     */
     val hasBytes: Boolean get() = available || rawFile != null
 
     enum class PageState {
@@ -108,8 +121,17 @@ data class ReaderUiState(
     val hasNextChapter: Boolean get() = chapterIndex in 0 until chapters.lastIndex
     val totalPages: Int get() = pages.size
 
-    /** 还等着联网取的页数。 */
-    val pendingCount: Int get() = pages.count { it.state == ReaderPage.PageState.Pending || it.state == ReaderPage.PageState.Loading }
+    /**
+     * **还在等联网取回**的页数。
+     *
+     * 必须把"本地已有字节、只是位图被回收/还没解扰"的页排除掉（它们的状态也是
+     * [ReaderPage.PageState.Pending]）：那种页滚回来只解一次本地文件，不联网、也不该
+     * 算"加载中"。否则底栏的「加载中 N」会跟着窗口回收一起涨落（用户报的就是这个）。
+     */
+    val pendingCount: Int
+        get() = pages.count {
+            !it.hasBytes && (it.state == ReaderPage.PageState.Pending || it.state == ReaderPage.PageState.Loading)
+        }
 
     /** 取失败的页数（只有这种才需要用户点重试）。 */
     val failedCount: Int get() = pages.count { it.state == ReaderPage.PageState.Failed }
@@ -118,7 +140,8 @@ data class ReaderUiState(
      * 已经在本地有字节的页数（成品或原图）。
      *
      * 用 [ReaderPage.hasBytes] 而不是 [ReaderPage.available]：新管线的位图会被内存窗口回收，
-     * 但**字节还在磁盘上**（再显示时不用联网）。按"能不能不再联网"来数才符合用户的理解，
+     * 但**字节还在磁盘上**（再显示时不用联网，见 [ReaderPage.rawFile]，它在解扰成功后
+     * 依然保留）。按"能不能不再联网"来数才符合用户的理解，
      * 也避免顶栏的「已缓存 N 页」随着翻页来回跳。
      */
     val cachedCount: Int get() = pages.count { it.hasBytes }
@@ -445,7 +468,11 @@ class ReaderViewModel(
                     it.copy(
                         displayFile = loaded.file,
                         bitmap = loaded.bitmap,
-                        rawFile = null,
+                        // 解扰成功后**不清空** rawFile（以前这里写的是 null）：
+                        // 它表示"字节在磁盘上"，位图被窗口回收后这一页仍然是"已缓存"。
+                        // 清掉的话 hasBytes 会跟着位图一起变 false，顶栏「已缓存 N 页」
+                        // 就会随翻页涨落、底栏还会把纯本地的重解算成"加载中"。
+                        rawFile = loaded.raw ?: it.rawFile,
                         aspectRatio = loaded.aspect,
                         state = ReaderPage.PageState.Ready,
                         error = null,
@@ -470,8 +497,13 @@ class ReaderViewModel(
         }
     }
 
-    /** 一次取图的结果：成品文件或位图（二者之一），外加算好的宽高比。 */
-    private data class LoadedPage(val file: File?, val bitmap: Bitmap?, val aspect: Float)
+    /**
+     * 一次取图的结果：成品文件或位图（二者之一），外加算好的宽高比。
+     *
+     * [raw] 是原图管线取到的**原始字节**（已经落盘），要留在页面状态里当"已缓存"的证据；
+     * 成品管线为 null。
+     */
+    private data class LoadedPage(val file: File?, val bitmap: Bitmap?, val raw: File?, val aspect: Float)
 
     /**
      * 取一页并**准备好显示**。两条管线都在这里分派（见 [cacheMode]）。
@@ -493,6 +525,7 @@ class ReaderViewModel(
             return LoadedPage(
                 file = finished,
                 bitmap = null,
+                raw = null,
                 aspect = store.aspectRatioOf(finished, ReaderPage.DEFAULT_ASPECT),
             )
         }
@@ -503,6 +536,7 @@ class ReaderViewModel(
             return LoadedPage(
                 file = file,
                 bitmap = null,
+                raw = null,
                 aspect = store.aspectRatioOf(file, ReaderPage.DEFAULT_ASPECT),
             )
         }
@@ -525,7 +559,7 @@ class ReaderViewModel(
                 ReaderPage.DEFAULT_ASPECT
             }
         }
-        return LoadedPage(file = null, bitmap = bitmap, aspect = aspect)
+        return LoadedPage(file = null, bitmap = bitmap, raw = raw, aspect = aspect)
     }
 
     /**
