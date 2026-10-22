@@ -980,7 +980,10 @@ private fun CommentFooter(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            else -> TextButton(onClick = onLoadMore) { Text("加载更多评论") }
+            // 整行可点（不过评论是下滑自动加载更多，正常点不到这个按钮）
+            else -> TextButton(onClick = onLoadMore, modifier = Modifier.fillMaxWidth()) {
+                Text("加载更多评论")
+            }
         }
     }
 }
