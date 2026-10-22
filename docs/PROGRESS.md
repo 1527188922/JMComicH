@@ -2073,3 +2073,38 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
   视觉一致、RTL 下自动翻转；工程里多选条「移出书库」用的也是这个）。
 - 图标 18dp、颜色 `colorScheme.error`（与文字同色），文字与图标之间 6dp。
 - 整组（文字 + 图标）保持 `Arrangement.Center` 居中；退出中在**最右侧**再多一个小圈。
+
+### 16. 隐藏「接口缓存」设置项（用户要求 2026-10-22）
+
+用户双开实测：这个开关**关掉也不生效**，留着只会误导，所以把入口藏起来（代码全保留，放开注释即恢复）。
+
+四条观测（同一账号、两个 App 实例、两条不同线路）：
+
+| 观测 | 结论 |
+|---|---|
+| B 只读刷新（下拉 / 重进页面 / 杀进程重启 / **重新登录**） | 永远拿不到 A 的新收藏夹 / 新收藏 |
+| B 切到 A 的线路再读 | 立刻拿到 |
+| B 在**自己线路上**做任意收藏类写操作（新建/删除夹、加/移收藏） | 之后再读就能拿到 A 的更新 |
+| 线上抓包（未登录可读的公开接口） | `cache-control: no-store` + Cloudflare `cf-cache-status: DYNAMIC`；同一 URL 换 `ts` 密文不同、且只能用各自的 `ts` 解密 |
+
+→ 服务端缓存是「**线路 × 账号**」级的：**只有落在同一条线路上的写操作会让它失效**，
+读、重登、query 里的 `t` 都不影响。`t` 无效的原因：缓存位于"组装明文"那一层（HTTP 层本来也没有缓存可绕），
+其 key 只认它认识的参数。补充旁证：同一本公开漫画的 `total_views` / `likes` 在不同线路上能差几到十几，
+且 5 分钟不收敛——线路之间本来就是不同快照。
+
+官方 App 同样无解（逆向源码在 `.work/src`，只在本地分析用，不入库）：`t` 只给 `/setting` 用
+（`settingAction.ts:15,42`），`/favorite` 只传 `page/folder_id/o`（`memberAction.ts:207`），
+全工程没有条件请求 / 轮询 / 同步接口；它唯一的"刷新數據"是 `clearAuth()` + 重登
+（`Member.tsx:83-99`），本场景已实测无效。
+
+改动：
+
+- `SettingsScreen.kt` 的 `AdvancedSection`：`CardDivider()` + `SwitchRow("接口缓存")` **整段注释掉**，
+  注释里写明隐藏原因与恢复方法；`onSetAccountApiCache` 形参与调用链（`ModeRoot`）保留，只是暂时没人用。
+- 逻辑与默认值**一行没改**：`SettingKeys.Jm.ACCOUNT_API_CACHE`、`SettingDefaults.Jm.ACCOUNT_API_CACHE = true`、
+  `ApiClient.withAccountCacheBuster()`（关闭时才拼 `t`）、`SettingsViewModel.setAccountApiCache()` 全部保留；
+  已安装用户的这个 key 也没被动过，所以行为仍是「开启 = 复用服务端缓存」。
+- 恢复方式：放开 `AdvancedSection` 里那段注释即可。
+
+> 待办（下次改文案时一起处理）：`ApiClient.kt:65-73` 里"服务端按「线路 + URL」缓存这些 GET 的明文响应、
+> `t` 能改变缓存键"的断言与实测不符；`SettingsScreen` 原开关文案「关闭：每次越过缓存获取最新数据」也过强。

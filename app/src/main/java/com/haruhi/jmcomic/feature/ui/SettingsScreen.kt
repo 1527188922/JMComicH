@@ -789,7 +789,12 @@ fun SettingsScreen(
     onSetRequestRetry: (Int) -> Unit,
     /** 「图片加载/下载失败重试次数」：只管章节图片，且仅网络超时重试。 */
     onSetImageRetry: (Int) -> Unit,
-    /** 「账号接口缓存」：开启 = 不加防缓存参数；关闭 = 账号只读接口带 `t` 强制回源。 */
+    /**
+     * 「账号接口缓存」：开启 = 不加防缓存参数；关闭 = 账号只读接口带 `t` 强制回源。
+     *
+     * **当前 UI 已隐藏**（2026-10-22，实测关闭后无效果，见 `AdvancedSection` 里的注释与
+     * `docs/PROGRESS.md` §16）：形参与调用链保留，放开 `AdvancedSection` 那段注释即恢复。
+     */
     onSetAccountApiCache: (Boolean) -> Unit,
     // 恢复默认
     onResetSettings: () -> Unit,
@@ -1551,15 +1556,24 @@ private fun AdvancedSection(
             value = state.imageRetry,
             onCommit = onSetImageRetry,
         )
-        CardDivider()
-        SwitchRow(
-            title = "接口缓存",
-            hint = "JM官方GET类接口使用线路缓存",
-            help = "【开启】：可提升接口响应速度，但不同线路的缓存数据是隔离的，比如在A线路上新增了一个收藏夹，切换B线路可能不能马上看到刚才新增的收藏夹；" +
-                "\n【关闭】：每次越过缓存获取最新数据。" ,
-            checked = state.accountApiCache,
-            onCheckedChange = onSetAccountApiCache,
-        )
+        // 【暂时隐藏】2026-10-22：实测「关闭」并不生效（`t` 参数对账号接口无效），
+        // 留着这个开关只会误导用户（文案也写着"关闭＝每次越过缓存获取最新数据"，与实测不符）。
+        // 结论：服务端缓存是「线路 × 账号」级的，只有**同一线路上发生写操作**才会失效，
+        // 加 query 参数（`t`）和重登都无效，详见 `docs/PROGRESS.md` §16「隐藏『接口缓存』设置项」。
+        //
+        // 逻辑一行没删：设置项 key / 默认值（`SettingDefaults.Jm.ACCOUNT_API_CACHE = true`，
+        // 仍是"开启=复用服务端缓存"）、`ApiClient.withAccountCacheBuster()`、ViewModel 的
+        // `setAccountApiCache()` 与 `onSetAccountApiCache` 形参全部保留，放开下面这段注释即恢复。
+        //
+        // CardDivider()
+        // SwitchRow(
+        //     title = "接口缓存",
+        //     hint = "JM官方GET类接口使用线路缓存",
+        //     help = "【开启】：可提升接口响应速度，但不同线路的缓存数据是隔离的，比如在A线路上新增了一个收藏夹，切换B线路可能不能马上看到刚才新增的收藏夹；" +
+        //         "\n【关闭】：每次越过缓存获取最新数据。",
+        //     checked = state.accountApiCache,
+        //     onCheckedChange = onSetAccountApiCache,
+        // )
     }
 }
 
