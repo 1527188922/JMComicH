@@ -652,7 +652,7 @@ private fun FavoriteFolderCard(
     }
 }
 
-/** 夹封面：夹内第一本；没有就给同尺寸占位（与本机收藏页一致）。 */
+/** 夹封面：夹内第一本；没有就给同尺寸占位（与本机收藏页一致）。收藏夹封面不画 tag。 */
 @Composable
 private fun FolderCover(coverAlbumId: Long?, name: String) {
     val shape = RoundedCornerShape(8.dp)
@@ -733,6 +733,7 @@ private fun AccountAlbumCard(
             Cover(
                 albumId = album.id,
                 contentDescription = album.name,
+                tag = album.categoryTag,
                 modifier = Modifier.fillMaxSize(),
             )
         }

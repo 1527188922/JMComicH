@@ -2137,3 +2137,53 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 
 设备上核对：先在线把一话从头翻到尾（`reader-cache/<aid>/<cid>/` 里页数齐了），再上下快速翻 30 页——
 左上 / 右下两个数字**全程不变**；换一本没缓存过的，未取到的页仍然会让「已缓存」往上涨、「加载中」往下掉。
+
+## 封面主 tag + 列表模式封面放大（用户要求 2026-10-22）
+
+用户要求：
+
+1. 漫画封面**右上角展示主 tag**，卡片 / 列表都覆盖；tag 的底色 / 文字色与官方 App 一致；
+2. 列表模式的封面太小：去掉封面与卡片边缘之间的留白，封面右上 / 右下角不再要圆角。
+
+**用户随后明确口径（2026-10-22，最终版）**：
+
+- **主 tag 只认接口的 `category.title`**（用户说的 `category.name`，接口实际字段是 `title`）；
+  取不到就不画，**不**用 `category_sub.title` 或 `/album` 的 `tags` 去凑；
+- **收藏夹封面不画 tag**；
+- **详情页封面不画 tag**（详情接口没有分类字段）；
+- 下载任务页本来就不画。
+
+所以最终**只有**两处会显示：**在线列表（搜索 / 分类）的列表行与卡片**、
+**账号收藏夹内的漫画卡**（`/favorite` 列表项带 `category`）。书库 / 最近浏览 /
+继续阅读（本地数据没有分类）一律不画。
+
+### 主 tag
+
+- `OnlineSearchItem` 新增 `categoryTag`（`SearchItemDto.category?.title`），
+  `AccountAlbum` 新增 `categoryTag`（`FavoriteItemDto.category?.title`）；
+  两者都只取 `category.title`，取不到为 null。
+- `Cover(albumId, contentDescription, modifier, tag)` 新增可选 `tag`：非空时在封面右上角画徽标。
+  **底色 `#FF7B00`、白字、4dp 圆角**，抄自官方 2.1.11 WebView 包的
+  `.bg-og` / `.text-white`（`static/css/main.css`），色值放在
+  `ui/theme/Color.kt` 的 `CoverTagBackground` / `CoverTagText`，不跟随深浅主题变化。
+- 覆盖的调用点：`OnlineResultRow`、`OnlineGridCard`、`AccountAlbumCard`。
+  `AlbumGridCard`（书库 / 最近）、继续阅读卡、详情页、收藏夹封面、`TaskScreen` 都不传。
+
+| 文件 | 改动 |
+|---|---|
+| `feature/data/Repository.kt` | `OnlineSearchItem` 新增 `categoryTag`（只取 `category.title`） |
+| `feature/data/AccountRepository.kt` | `AccountAlbum` 新增 `categoryTag`（只取 `category.title`） |
+| `feature/ui/Screens.kt` | `Cover` 新增 `tag` + 徽标；在线列表行 / 网格卡传 `categoryTag` |
+| `feature/ui/AccountFavoritesScreen.kt` | 夹内漫画卡传 `categoryTag`；夹封面不传 |
+| `ui/theme/Color.kt` | 官方 tag 底色 / 文字色常量 |
+
+### 列表模式封面（`OnlineResultRow`）
+
+- 尺寸 72×100 → **96×134**（约 +33% 面积），去掉原来整块 8dp 内边距：
+  封面**贴住卡片的左 / 上 / 下边缘**；
+- 只有朝外的左上 / 左下保留 12dp 卡片圆角，朝里的**右上 / 右下改成直角**；
+- 文字列与右下角动作按钮各自保留内边距（按钮位置、`ONLINE_ACTION_BUTTON_ZONE`
+  的"留净空"逻辑不变）。
+
+验证：按用户要求**没有**跑测试用例。第一次实现时 `:app:compileDebugKotlin` 已通过；
+随后按补充口径回退了几处 tag 传递（只是删参数 / 字段，未再编译）。

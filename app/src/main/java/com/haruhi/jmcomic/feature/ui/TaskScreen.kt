@@ -227,6 +227,7 @@ private fun TaskCard(
                 // 封面（用户要求第 1 点）：与书库同一套加载方式——应用级 Coil 加载器 +
                 // files/covers 磁盘缓存，所以"看过的封面优先读本地"。点它进详情页。
                 row.albumId?.let { albumId ->
+                    // 任务页**不传 tag**：用户明确要求下载任务里不显示封面主 tag。
                     Cover(
                         albumId = albumId,
                         contentDescription = row.displayName,

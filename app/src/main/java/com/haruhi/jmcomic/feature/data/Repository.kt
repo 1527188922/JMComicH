@@ -1140,6 +1140,13 @@ data class OnlineSearchItem(
      */
     val addDate: String? = null,
     val raw: SearchItemDto,
+    /**
+     * 封面右上角的主 tag：**接口的 `category.title`**（用户 2026-10-22 明确）。
+     *
+     * 只认这一个字段：取不到就是 null，界面**不画** tag（不要回落到 `category_sub.title`
+     * 或 `/album` 的 tags）。精确匹配那条（由 `/album` 包装）没有分类，所以也是 null。
+     */
+    val categoryTag: String? = null,
 )
 
 /** 在线搜索的一页结果。 */
@@ -1228,6 +1235,8 @@ private fun SearchItemDto.toItem(localIds: Set<Long>): OnlineSearchItem? {
         existsLocal = jmId in localIds,
         addDate = addDate,
         raw = this,
+        // 主 tag 只认 category.title；category 缺失时宁可不画，也不拿子分类来凑
+        categoryTag = category?.title?.trim()?.takeIf { it.isNotBlank() },
     )
 }
 

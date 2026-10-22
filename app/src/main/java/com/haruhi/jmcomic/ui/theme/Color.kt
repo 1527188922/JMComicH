@@ -70,3 +70,20 @@ val CardWhiteDarkBackground = Color(0xFF121212)
  */
 val WarningOrangeLight = Color(0xFFB45309)
 val WarningOrangeDark = Color(0xFFFFB74D)
+
+// ---------------------------------------------------------------------------
+// 封面主 tag 徽标：与官方 App 完全一致
+// ---------------------------------------------------------------------------
+
+/**
+ * 封面右上角「主 tag」徽标的底色：**官方 App 的 `bg-og`**（`#FF7B00`）。
+ *
+ * 色值抄自官方 2.1.11 WebView 包（`static/css/main.css`：
+ * `.bg-og{background-color:#ff7b00}`），官方列表卡片上的 tag 就是
+ * `<div class="... bg-og text-white ...">` —— 橙色底 + 白字。
+ * 它是**固定品牌色**，不跟随本工程深浅主题变化，所以单独放在这里而不是色板槽位。
+ */
+val CoverTagBackground = Color(0xFFFF7B00)
+
+/** 封面主 tag 徽标的文字色：官方用 `text-white`，恒为纯白。 */
+val CoverTagText = Color(0xFFFFFFFF)

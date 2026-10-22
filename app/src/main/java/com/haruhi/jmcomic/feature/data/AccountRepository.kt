@@ -267,6 +267,12 @@ data class AccountAlbum(
     val id: Long,
     val name: String?,
     val author: String?,
+    /**
+     * 封面主 tag：接口的 `category.title`（用户 2026-10-22 明确只认这一个字段）。
+     *
+     * 取不到就是 null，界面不画 tag；**不要**用 `category_sub.title` 或别的字段来凑。
+     */
+    val categoryTag: String? = null,
 )
 
 /** 一页账号收藏。 */
@@ -296,7 +302,13 @@ private fun LoginDto.toProfile(): MemberProfile = MemberProfile(
 private fun FavoritePageDto.toPage(): FavoritePage = FavoritePage(
     albums = list.orEmpty().mapNotNull { item ->
         val id = item.id?.trim()?.toLongOrNull() ?: return@mapNotNull null
-        AccountAlbum(id = id, name = item.name, author = item.author)
+        AccountAlbum(
+            id = id,
+            name = item.name,
+            author = item.author,
+            // 主 tag 只取 `category.title`；没有就是 null（不回落到子分类）
+            categoryTag = item.category?.title?.trim()?.takeIf { it.isNotBlank() },
+        )
     },
     folders = folderList.orEmpty().mapNotNull { folder ->
         val fid = folder.fid?.trim().orEmpty()

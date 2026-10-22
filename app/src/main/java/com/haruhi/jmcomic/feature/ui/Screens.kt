@@ -116,6 +116,8 @@ import com.haruhi.jmcomic.feature.data.OnlineSearchItem
 import com.haruhi.jmcomic.feature.data.OnlineSearchResult
 import com.haruhi.jmcomic.feature.data.OnlineViewMode
 import com.haruhi.jmcomic.feature.data.updateLabel
+import com.haruhi.jmcomic.ui.theme.CoverTagBackground
+import com.haruhi.jmcomic.ui.theme.CoverTagText
 import com.haruhi.jmcomic.ui.theme.GridViewIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -1065,6 +1067,16 @@ private fun AlbumGridCard(
  * 切完线路，这里重建请求换成新域名的 URL，不需要重启应用。
  * 内存缓存 key 仍然只按本子号固定（见下），所以换线路时已解码的同一张封面照常直接复用。
  *
+ * ## 右上角的主 tag 徽标
+ *
+ * [tag] 非空时在封面右上角画一个橙色底白字的小徽标（样式与官方 App 一致，
+ * 色值见 `ui/theme/Color.kt` 的 [CoverTagBackground] / [CoverTagText]）。
+ * 主 tag **只认接口的 `category.title`**（用户 2026-10-22 明确）：拿不到这个字段就不画，
+ * 不要用 `/album` 的 tags 或 `category_sub.title` 去凑。
+ * 因此只有在线列表（搜索 / 分类）与账号收藏里的漫画卡会传；
+ * 书库 / 最近 / 继续阅读没有分类字段、详情页与收藏夹封面用户明确不要，都不传。
+ * 下载任务页也不传（用户要求：任务列表里不显示）。
+ *
  * ## 为什么固定解码尺寸 + 固定内存缓存 key（用户反馈第 1 点）
  *
  * 默认情况下 Coil 会**按每个调用点的尺寸各解码一份**：搜索结果是缩略图、
@@ -1082,6 +1094,8 @@ fun Cover(
     albumId: Long,
     contentDescription: String?,
     modifier: Modifier = Modifier,
+    /** 右上角主 tag；null / 空白时不画。 */
+    tag: String? = null,
 ) {
     val imageLoader = currentImageLoader()
     val context = LocalContext.current
@@ -1096,24 +1110,46 @@ fun Cover(
             .size(COVER_MIN_WIDTH_PX, COVER_MIN_HEIGHT_PX)
             .build()
     }
-    // imageLoader 为 null（Preview / 测试未安装）时交给 Coil 的单例加载器
-    if (imageLoader != null) {
-        AsyncImage(
-            model = model,
-            contentDescription = contentDescription,
-            contentScale = ContentScale.Crop,
-            imageLoader = imageLoader,
-            modifier = modifier,
-        )
-    } else {
-        AsyncImage(
-            model = model,
-            contentDescription = contentDescription,
-            contentScale = ContentScale.Crop,
-            modifier = modifier,
-        )
+    // 外层 Box 只是为了能把 tag 叠在封面右上角；尺寸/裁切仍由调用点传进来的 modifier 决定。
+    // 所有调用点都会给一个确定尺寸（size / fillMaxSize），所以 matchParentSize 有约束可用。
+    Box(modifier = modifier) {
+        // imageLoader 为 null（Preview / 测试未安装）时交给 Coil 的单例加载器
+        if (imageLoader != null) {
+            AsyncImage(
+                model = model,
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                imageLoader = imageLoader,
+                modifier = Modifier.matchParentSize(),
+            )
+        } else {
+            AsyncImage(
+                model = model,
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize(),
+            )
+        }
+        if (!tag.isNullOrBlank()) {
+            Text(
+                text = tag,
+                color = CoverTagText,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    // 与官方一致：`right-2 top-2`（8px）、4px 圆角、左右 3.2px 内边距
+                    .padding(start = COVER_TAG_INSET, top = COVER_TAG_INSET, end = COVER_TAG_INSET)
+                    .background(CoverTagBackground, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 3.dp, vertical = 1.dp),
+            )
+        }
     }
 }
+
+/** 封面主 tag 徽标距封面右 / 上边缘的留白（官方 `right-2 top-2` = 8px）。 */
+private val COVER_TAG_INSET = 8.dp
 
 /** 同一本漫画的封面在哪一页都是同一个内存缓存 key（与调用点的尺寸无关）。 */
 internal fun coverMemoryCacheKey(albumId: Long): String = "jm-cover-$albumId"
@@ -1814,6 +1850,13 @@ private val ONLINE_ACTION_BUTTON_ZONE = 36.dp
  * 默认的 40dp 高 + 16dp 内边距放在卡片右下角太占地方，会抢封面的视觉重量。
  *
  * 原来那行「已入库」小字被删掉了：状态已经写在按钮上，同一件事不摆两遍。
+ *
+ * ## 列表模式的封面（用户 2026-10-22 要求）
+ *
+ * 封面**贴住卡片的左 / 上 / 下边缘**，不再有 8dp 内边距；尺寸也从 72×100 放大到
+ * 96×134（约 +33% 面积）。朝外的两个角（左上 / 左下）仍跟着卡片做 12dp 圆角，
+ * 朝里的两个角（右上 / 右下）改成**直角**，与文字区自然接上。
+ * 因此整块内容不再有统一的 `padding`：只有文字列和右下角按钮各留自己的内边距。
  */
 @Composable
 internal fun OnlineResultRow(
@@ -1850,30 +1893,42 @@ internal fun OnlineResultRow(
         // 封面 + 文字在里层 Row 里，动作按钮**浮在同一个 Box 上、贴 BottomEnd**。
         //
         // 为什么不是"把按钮放在文字那一列的底部"（原来就是这么写的，用户报了问题）：
-        // 文字列的高度是它自己的内容高度，标题只有一行时那一列比封面（100dp）矮，
+        // 文字列的高度是它自己的内容高度，标题只有一行时那一列比封面矮，
         // 于是按钮悬在半空、离卡片底边还差一截。Box + `align(BottomEnd)` 让按钮的位置
         // **只由卡片高度决定**，与标题占一行还是两行无关：卡片多高，它就贴在哪。
-        Box(modifier = Modifier.padding(8.dp)) {
+        Box {
             Row(modifier = Modifier.fillMaxWidth()) {
                 // 必须跟书库/收藏/详情/任务一样走 Cover：直接用 AsyncImage(item.coverUrl)
                 // 会落到 Coil 的**进程单例**加载器上（AsyncImage 不传 imageLoader 时的默认值），
                 // 它的内存/磁盘缓存与应用级加载器完全不共享，所以这里刚加载过的封面，
                 // 点进详情页会再联网请求一次。
+                //
+                // 封面贴边：外层没有任何 padding；只有朝外的左上 / 左下保留卡片圆角，
+                // 朝里的右上 / 右下是直角（用户要求）。
                 Cover(
                     albumId = item.id,
                     contentDescription = item.name,
+                    // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
+                    tag = item.categoryTag,
                     modifier = Modifier
-                        .size(width = 72.dp, height = 100.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .size(width = 96.dp, height = 134.dp)
+                        .clip(
+                            RoundedCornerShape(
+                                topStart = 12.dp,
+                                bottomStart = 12.dp,
+                                topEnd = 0.dp,
+                                bottomEnd = 0.dp,
+                            ),
+                        )
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                 )
-                Spacer(Modifier.width(10.dp))
                 Column(
                     modifier = Modifier
                         .weight(1f)
+                        .padding(start = 12.dp, top = 8.dp, end = 8.dp)
                         // 给右下角那颗按钮留净空：它是浮上来的，下面不留白的话
-                        // 标题 / 作者会被它压住（没有按钮时不留空，文字自然贴底）
-                        .padding(bottom = if (showAction) ONLINE_ACTION_BUTTON_ZONE else 0.dp),
+                        // 标题 / 作者会被它压住（没有按钮时只留普通的 8dp 底边距）
+                        .padding(bottom = if (showAction) ONLINE_ACTION_BUTTON_ZONE else 8.dp),
                 ) {
                     Text(
                         text = item.name.orEmpty().ifBlank { "JM${item.id}" },
@@ -1905,7 +1960,10 @@ internal fun OnlineResultRow(
             // 没有动作（分类页）时整块不画，文字列也就不会留出净空。
             if (showAction) {
                 Row(
-                    modifier = Modifier.align(Alignment.BottomEnd),
+                    // 卡片本身不再有统一内边距（封面要贴边），按钮自己贴右下角留 8dp / 6dp
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 8.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // 用户输入纯数字时由 /album 详情包装出来的那一条，标出来与普通搜索区分
@@ -2075,6 +2133,8 @@ internal fun OnlineGridCard(
             Cover(
                 albumId = item.id,
                 contentDescription = item.name,
+                // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
+                tag = item.categoryTag,
                 modifier = Modifier.fillMaxSize(),
             )
         }

@@ -7,7 +7,7 @@
 
 ### 规则（必须遵守）
 
-1. **显示 JM 封面的唯一入口是 `Cover(albumId, contentDescription, modifier)`**
+1. **显示 JM 封面的唯一入口是 `Cover(albumId, contentDescription, modifier, tag)`**
    （`feature/ui/Screens.kt`）。书库网格、继续阅读卡片、最近浏览、
    发现页搜索结果、详情页头图、任务页、收藏夹封面——全部用它。
 2. **禁止**自己写 `AsyncImage(model = <封面 URL>)`（或自己造 `ImageRequest`、自己造
@@ -38,14 +38,25 @@ Coil 的 `AsyncImage` **不传 `imageLoader` 时取的是进程单例**（`Singl
 
 ```kotlin
 Cover(
-    albumId = albumId,                  // 只传本子号
+    albumId = albumId,              // 只传本子号
     contentDescription = title,
+    tag = item.categoryTag,          // 右上角主 tag；没有分类就传 null（不画）
     modifier = Modifier.size(width = 72.dp, height = 100.dp).clip(RoundedCornerShape(8.dp)),
 )
 ```
 
 尺寸、裁切、点击、占位背景都由调用点决定；**不要**改 `Cover` 里的 `size` /
 `memoryCacheKey`，也不要为了"更清晰"再建第二个 ImageLoader。
+
+`tag` 传的是**接口的 `category.title`**（用户 2026-10-22 明确：主 tag 就是这个字段）。
+取不到就传 `null`，**不要**用 `category_sub.title` 或 `/album` 的 `tags` 去凑。
+因此只有**在线列表（搜索 / 分类）**与**账号收藏里的漫画卡**会传；
+书库 / 最近浏览 / 继续阅读（本地数据没有分类）、**详情页封面**、**收藏夹封面**
+以及**下载任务页**都**不传**（后三者是用户明确要求不显示）。
+
+tag 徽标的底色 / 文字色**必须与官方 App 一致**：`#FF7B00` + 纯白，
+色值在 `ui/theme/Color.kt` 的 `CoverTagBackground` / `CoverTagText`，
+改封面样式时不要去改这两个值。
 
 ### 明确不算违规的例外
 
