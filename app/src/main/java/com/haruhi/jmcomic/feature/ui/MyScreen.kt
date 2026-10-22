@@ -28,7 +28,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -204,7 +203,8 @@ private fun AccountSummaryCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 4.dp)
-            .clickable(enabled = profile != null, onClick = onOpenProfile),
+            // 未登录时整张卡就是登录入口（用户要求 2026-10-22）；已登录点卡片进个人资料
+            .clickable(onClick = if (profile == null) onLogin else onOpenProfile),
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
@@ -257,7 +257,7 @@ private fun AccountSummaryCard(
 
             if (profile == null) {
                 // 本版只接了登录（注册/验证码在官方网页版，见登录页底部说明）
-                OutlinedButton(onClick = onLogin) { Text("登录") }
+//                OutlinedButton(onClick = onLogin) { Text("登录") }
             } else {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
