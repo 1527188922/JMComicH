@@ -1,9 +1,11 @@
 package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +48,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -510,7 +513,17 @@ fun AccountFavoriteSheet(
                         ) { Text("创建并加入") }
                     }
                 } else {
-                    TextButton(onClick = { showCreate = true }, enabled = !busy) { Text("新建收藏夹") }
+                    // 与上面的收藏夹行同一套样式：整行可点、右侧箭头；
+                    // 文字/箭头保持主色，波纹也用主色（用户要求 2026-10-22）
+                    FolderChoiceRow(
+                        label = "新建收藏夹",
+                        trailingText = null,
+                        enabled = !busy,
+                        onClick = { showCreate = true },
+                        labelColor = MaterialTheme.colorScheme.primary,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                        rippleColor = MaterialTheme.colorScheme.primary,
+                    )
                 }
             } else {
                 Row(
@@ -682,7 +695,10 @@ private fun AccountGridFooter(
     ) {
         when {
             loadingMore -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            hasMore -> TextButton(onClick = onLoadMore) { Text("加载更多") }
+            // 整行可点（与分类页卡片模式底部的「加载更多」一致，用户要求 2026-10-22）
+            hasMore -> TextButton(onClick = onLoadMore, modifier = Modifier.fillMaxWidth()) {
+                Text("加载更多")
+            }
             else -> Text(
                 text = "没有更多了",
                 style = MaterialTheme.typography.labelSmall,
@@ -757,11 +773,24 @@ private fun FolderChoiceRow(
     labelColor: Color = Color.Unspecified,
     iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     trailingColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    /** 非空时用这个颜色画波纹（「新建收藏夹」行用主色）；null = 沿用主题默认波纹。 */
+    rippleColor: Color? = null,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(
+                if (enabled) {
+                    Modifier.clickable(
+                        interactionSource = interaction,
+                        indication = rippleColor?.let { ripple(color = it) } ?: LocalIndication.current,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
