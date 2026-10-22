@@ -11,8 +11,11 @@ import com.haruhi.jmcomic.feature.data.AccountCache
 import com.haruhi.jmcomic.feature.data.AccountFolder
 import com.haruhi.jmcomic.feature.data.AccountRepository
 import com.haruhi.jmcomic.feature.data.AlbumsSnapshot
+import com.haruhi.jmcomic.feature.data.CommentCache
+import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
 import com.haruhi.jmcomic.feature.data.Repository
+import com.haruhi.jmcomic.feature.data.mergeComments
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -761,6 +764,180 @@ class AccountAlbumsViewModel(
                 nextPage = nextPage,
             ),
         )
+    }
+
+    fun consumeMessage() = _state.update { it.copy(message = null) }
+}
+
+// ======================================================================
+// 留言记录（我的留言）
+// ======================================================================
+
+data class AccountCommentsUiState(
+    val signedIn: Boolean = true,
+    /** 首屏（还没有内容）正在拉第一页。 */
+    val loading: Boolean = true,
+    /** 用户下拉刷新中（顶部下拉圈）。 */
+    val refreshing: Boolean = false,
+    /** 正在追加下一页（列表底部一行）。 */
+    val loadingMore: Boolean = false,
+    val comments: List<CommentRow> = emptyList(),
+    /** `/forum` 的 `total`（上限 5000）。 */
+    val total: Int = 0,
+    /** 已经到底（服务端没有更多）。 */
+    val reachedEnd: Boolean = false,
+    /** 首屏失败的原因（有内容时失败只弹提示，不清列表）。 */
+    val error: String? = null,
+    val message: String? = null,
+    /** 正在删的那条 `cid`（删除按钮转圈 + 防重复点击）。 */
+    val deletingCid: String? = null,
+) {
+    val isEmpty: Boolean get() = !loading && error == null && comments.isEmpty()
+
+    /** 还能不能翻下一页（`total` 被截断到 5000，所以同时看"给没给满一页"）。 */
+    val hasMore: Boolean get() = !reachedEnd && comments.size < total
+}
+
+/**
+ * 「我的 → 留言记录」：我发过的留言（`GET /forum?uid={自己}`，10/页）。
+ *
+ * 与详情页评论的关系：
+ * - **读**走 [AccountRepository.myComments]（要登录；官方 `Member/CommentList.tsx` 也是登录后才拉）；
+ * - **删**走官方的 `POST /comment_delete`，成功后**就地**从列表里去掉那一行（不整页重拉，
+ *   用户的滚动位置与已翻的页都不会丢）；
+ * - 详情页的评论内存缓存（[CommentCache]）在被删留言所属的本子上**清掉**，
+ *   否则从留言记录点进那本漫画还能看到已经删掉的留言。
+ *
+ * 不做跨页面缓存：这是"我发过什么"的列表，服务端真相，删一条必须立刻消失；
+ * 进页面拉一次、用户下拉再拉一次就够了（10 条/页，一次请求很轻）。
+ */
+class AccountCommentsViewModel(
+    private val account: AccountRepository,
+    private val commentCache: CommentCache,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(AccountCommentsUiState())
+    val state: StateFlow<AccountCommentsUiState> = _state.asStateFlow()
+
+    /** 下一次要请求的页码（从 1 开始）。 */
+    private var nextPage = 1
+
+    /** 一次只飞一个请求：连续下拉 / 下拉时又点重试都只发一次。 */
+    private var inFlight = false
+
+    init {
+        load(reset = true)
+    }
+
+    /** 用户下拉刷新 / 报错后的「重试」。 */
+    fun refresh() = load(reset = true)
+
+    /** 重试：列表空着就重拉第一页，否则接着拉没拿到的下一页。 */
+    fun retry() = load(reset = _state.value.comments.isEmpty())
+
+    /** 列表滑到底：追加下一页。 */
+    fun loadMore() {
+        val current = _state.value
+        if (current.loading || current.loadingMore || current.refreshing || !current.hasMore) return
+        load(reset = false)
+    }
+
+    private fun load(reset: Boolean) {
+        if (inFlight) return
+        if (!account.isSignedIn) {
+            _state.update { it.copy(signedIn = false, loading = false) }
+            return
+        }
+        inFlight = true
+        val page = if (reset) 1 else nextPage
+        val hasContent = _state.value.comments.isNotEmpty()
+        _state.update {
+            it.copy(
+                signedIn = true,
+                // 首屏才转整页 loading；有内容时只转下拉圈 / 底部一行，不闪
+                loading = reset && !hasContent,
+                refreshing = reset && hasContent,
+                loadingMore = !reset,
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching { account.myComments(page = page) }
+                .onSuccess { result ->
+                    // 翻页期间有人发了新留言，后面的条目会整体后移 → 按 cid 去重（与详情页同一套）
+                    val merged = if (reset) {
+                        mergeComments(emptyList(), result.comments)
+                    } else {
+                        mergeComments(_state.value.comments, result.comments)
+                    }
+                    nextPage = result.page + 1
+                    val reachedEnd = result.comments.isEmpty() ||
+                        result.comments.size < AlbumDetailViewModel.COMMENT_PAGE_SIZE ||
+                        merged.size >= result.total
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            loadingMore = false,
+                            comments = merged,
+                            total = result.total,
+                            reachedEnd = reachedEnd,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    Timber.tag("jm").w(e, "拉我的留言失败：page=%d", page)
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            loadingMore = false,
+                            // 已有内容时不清空列表，只弹一句；首屏失败才显示整页错误
+                            error = if (hasContent) null else e.toUserMessage(),
+                            message = if (hasContent) e.toUserMessage() else it.message,
+                        )
+                    }
+                }
+            inFlight = false
+        }
+    }
+
+    /**
+     * 删除一条留言。
+     *
+     * 成功后**就地**去掉这一行并把 `total` 减一（不重拉：重拉会把用户翻到的页与滚动位置打回原处）。
+     * 失败（别人的 / 已经被删 / 网络）原样弹服务端文案，列表不动。
+     */
+    fun delete(comment: CommentRow) {
+        val cid = comment.cid.trim()
+        if (cid.isEmpty() || _state.value.deletingCid != null) return
+        _state.update { it.copy(deletingCid = cid) }
+        viewModelScope.launch {
+            runCatching { account.deleteComment(commentId = cid, albumId = comment.albumId) }
+                .onSuccess { result ->
+                    _state.update { current ->
+                        current.copy(
+                            deletingCid = null,
+                            comments = current.comments.filterNot { it.cid == cid },
+                            total = (current.total - 1).coerceAtLeast(0),
+                            message = result.message,
+                        )
+                    }
+                    // 详情页的评论缓存里还留着这条：不清的话点进那本还能看到它
+                    comment.albumId?.let { commentCache.clear(it) }
+                    // 极端情况：删掉的是这一页最后一条、而后面还有留言 —— 列表会空成
+                    // "还没有留言记录"的假象，所以补一次第一页（`total` 已经减过，用 >0 判定）
+                    val now = _state.value
+                    if (now.comments.isEmpty() && now.total > 0 && !now.reachedEnd) refresh()
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    Timber.tag("jm").w(e, "删除留言失败：cid=%s", cid)
+                    _state.update { it.copy(deletingCid = null, message = e.toUserMessage()) }
+                }
+        }
     }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }

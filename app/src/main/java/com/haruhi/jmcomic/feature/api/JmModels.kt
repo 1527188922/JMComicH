@@ -308,7 +308,16 @@ data class CategoryFilterRespDto(
  */
 @Serializable
 data class ForumRespDto(
-    @SerialName("total") val total: String? = null,
+    /**
+     * 服务端给的条数（上限 5000）。
+     *
+     * 实测**类型不稳定**：`aid=114514` 那次是字符串 `"851"`，官方文档 §6.3 的样本是数字
+     * `5000`，2026-10-22 用账号拉「我的留言」又是字符串。所以用宽松标量读，
+     * 免得数字那一种把整页解析搞崩（[LooseStringSerializer] 的注释里有同样一条历史）。
+     */
+    @SerialName("total")
+    @Serializable(with = LooseStringSerializer::class)
+    val total: String? = null,
     @SerialName("list") val list: List<ForumItemDto>? = null,
 )
 
@@ -322,6 +331,17 @@ data class ForumRespDto(
 data class ForumItemDto(
     @SerialName("CID") val cid: String? = null,
     @SerialName("UID") val uid: String? = null,
+    /**
+     * 留言所在的漫画 id（`/forum?uid=` 的「我的留言」列表里**必须有**：
+     * 点一行要能跳到那本漫画，「删除」也要把它当 `aid` 传回去）。
+     *
+     * 详情页的 `/forum?aid=` 响应里也有这个字段（官方 `ForumList` 删留言就直接用 `d.AID`）。
+     */
+    @SerialName("AID")
+    @Serializable(with = LooseStringSerializer::class)
+    val aid: String? = null,
+    /** 漫画展示名，实测就是 `JM{aid}`（例如 `JM1484920`）；「我的留言」用它当来源标注。 */
+    @SerialName("name") val albumName: String? = null,
     @SerialName("username") val username: String? = null,
     @SerialName("nickname") val nickname: String? = null,
     /** 正文是 HTML 片段（`<div>` 包裹，可能含 `<img>` 表情），展示前必须清洗。 */
@@ -337,6 +357,38 @@ data class ForumItemDto(
     @SerialName("expinfo") val expInfo: ForumExpDto? = null,
     @SerialName("replys") val replies: List<ForumItemDto>? = null,
 )
+
+/**
+ * `POST /comment`（发留言 / 回复）与 `POST /comment_delete`（删除）的 `data`。
+ *
+ * 2026-10-22 用真实账号实测（`docs/official-api-2.1.11.md` §6.5 只写了入参，没写响应）：
+ *
+ * ```json
+ * // 发成功
+ * {"msg":"評論成功發布！您已完成每日發表評論，獲得「5」經驗值<br>…","status":"ok","aid":1484920,"cid":11191109,"spoiler":"1"}
+ * // 业务失败（HTTP 200 + 信封 code 200）
+ * {"msg":"無法刪除評論！ ？","status":"fail","cid":11187248,"aid":114514,"bid":0,"nid":0,"gid":0}
+ * ```
+ *
+ * 三个要点：
+ * 1. **成功与否看 `status == "ok"`**，不能看 HTTP 状态（失败也是 200）；
+ * 2. `cid` / `aid` 是**数字**（不是字符串），所以用宽松标量读；发成功时 `cid` 就是新留言的 id；
+ * 3. `msg` 里可能带 `<br>`，展示前要按评论正文那样清一遍（见 `cleanCommentHtml`）。
+ */
+@Serializable
+data class CommentEditResultDto(
+    @SerialName("status") val status: String? = null,
+    @SerialName("msg") val msg: String? = null,
+    @SerialName("cid")
+    @Serializable(with = LooseStringSerializer::class)
+    val cid: String? = null,
+    @SerialName("aid")
+    @Serializable(with = LooseStringSerializer::class)
+    val aid: String? = null,
+    @SerialName("spoiler") val spoiler: String? = null,
+) {
+    val isOk: Boolean get() = status == "ok"
+}
 
 /** 评论者的等级 / 徽章信息（只取展示用得上的两项）。 */
 @Serializable

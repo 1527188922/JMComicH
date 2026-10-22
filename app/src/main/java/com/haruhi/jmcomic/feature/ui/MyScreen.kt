@@ -63,6 +63,8 @@ fun MyScreen(
     state: MyUiState,
     taskState: TaskUiState,
     onOpenFavorites: () -> Unit,
+    /** 留言记录（我发过的留言）；未登录时由导航层先带去登录页。 */
+    onOpenComments: () -> Unit,
     onOpenRecent: () -> Unit,
     onOpenTasks: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -120,6 +122,17 @@ fun MyScreen(
                                 "登录后可用"
                             },
                             onClick = onOpenFavorites,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        // 留言记录（用户要求 2026-10-22）：我发过的留言，进去可以删
+                        MyEntryRow(
+                            title = "留言记录",
+                            subtitle = if (state.signedIn) {
+                                "查看我发过的留言"
+                            } else {
+                                "登录后可用"
+                            },
+                            onClick = onOpenComments,
                         )
                     }
 

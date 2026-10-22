@@ -209,6 +209,73 @@ class AccountRepository(
     }
 
     // ------------------------------------------------------------------
+    // 留言（我的留言 / 详情页发留言与回复）
+    // ------------------------------------------------------------------
+
+    /**
+     * 「我的 → 留言记录」的一页留言（`GET /forum?uid={自己}&page=n`）。
+     *
+     * 走 [guarded]：未登录直接抛「请先登录」，401 统一翻译成「登录状态已失效」
+     * （`docs/CONVENTIONS.md` §3 第 5 条：账号请求的前置检查只有这一处）。
+     *
+     * 每页 10 条、`page` 从 1 开始；`total` 上限 5000。每条都带 `AID` / `name`，
+     * 所以列表能显示「来自 JMxxxx」并直接跳详情页。
+     */
+    suspend fun myComments(page: Int = 1): CommentPage {
+        val uid = session.profile?.uid?.trim().orEmpty()
+        if (uid.isEmpty()) throw NetworkError.Business("账号信息不完整，请重新登录")
+        val resp = guarded { api().forumByUser(uid = uid, page = page) }
+        val comments = resp.list.orEmpty()
+            .map { it.toCommentRow() }
+            .filter { it.cid.isNotEmpty() }
+        val total = resp.total?.trim()?.toIntOrNull() ?: comments.size
+        return CommentPage(page = page, total = total.coerceAtLeast(0), comments = comments)
+    }
+
+    /**
+     * 发留言（[parentCid] 非空时是**回复**那条留言）。
+     *
+     * 服务端的成功/失败都在 `data.status` 里（HTTP 永远是 200），所以这里：
+     * - `status == "ok"` → 返回服务端 `msg`（官方也是原样弹它，里面常带"获得 N 经验值"）；
+     * - 否则抛 [NetworkError.Business]，`message` 是服务端 `msg` 原文
+     *   （例如 `抱歉，暂时不可输入英文和数字，请确认后重新送出。`）。
+     *
+     * 例外的两种不发请求：正文为空（本地拦）、未登录（[guarded] 拦）。
+     */
+    suspend fun sendComment(
+        aid: Long,
+        content: String,
+        parentCid: String? = null,
+    ): CommentAction {
+        val text = content.trim()
+        commentDraftError(text)?.let { throw NetworkError.Business(it) }
+        val dto = guarded { api().sendComment(aid = aid, content = text, parentCid = parentCid) }
+        val message = commentMessage(dto.msg)
+        if (!dto.isOk) throw NetworkError.Business(message ?: "留言发送失败，请稍后重试")
+        return CommentAction(
+            message = message ?: "留言已发布",
+            cid = dto.cid?.trim()?.takeIf { it.isNotEmpty() && it != "0" },
+        )
+    }
+
+    /**
+     * 删除自己发的一条留言（`POST /comment_delete{comment_id, aid}`）。
+     *
+     * 删别人的/已经被删的会回 `status=fail` + `msg`（实测 `無法刪除評論！ ？`），
+     * 走 [NetworkError.Business] 交给界面弹出来——与发留言同一套判定。
+     *
+     * **不会**动详情页的评论内存缓存（`CommentCache`）：那是界面层的缓存，
+     * 由调用方在成功后按本子号清掉（见 `AccountCommentsViewModel.delete`）。
+     */
+    suspend fun deleteComment(commentId: String, albumId: Long? = null): CommentAction {
+        if (commentId.isBlank()) throw NetworkError.Business("找不到要删除的留言")
+        val dto = guarded { api().deleteComment(commentId = commentId, aid = albumId) }
+        val message = commentMessage(dto.msg)
+        if (!dto.isOk) throw NetworkError.Business(message ?: "删除留言失败，请稍后重试")
+        return CommentAction(message = message ?: "留言已删除", cid = dto.cid?.trim())
+    }
+
+    // ------------------------------------------------------------------
     // 个人资料
     // ------------------------------------------------------------------
 

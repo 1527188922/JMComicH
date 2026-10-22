@@ -2187,3 +2187,64 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
 
 验证：按用户要求**没有**跑测试用例。第一次实现时 `:app:compileDebugKotlin` 已通过；
 随后按补充口径回退了几处 tag 传递（只是删参数 / 字段，未再编译）。
+
+## 留言记录 + 详情页发评论 / 回复（2026-10-22）
+
+用户要求：按逆向出来的评论接口，实现**留言记录**（我的留言）与**详情页发评论 / 回复**，
+留言记录还要能删除。账号实测用 `1527188922`（uid `6404735`）。
+
+### 接口实测（补上官方文档里"未实测"的两节）
+
+| 接口 | 结论 |
+|---|---|
+| `GET /forum?uid={自己}&page=n` | 200；**不用传 `mode` / `aid`**（与官方 `Member/CommentList.tsx` 一致）；10 条/页，`total` 是**字符串**；每条带 `AID` / `name`（`JM{aid}`） |
+| `POST /comment{comment, aid, comment_id?}` | 成功 `{status:"ok", msg:"評論成功發布！…<br>…", cid, aid, spoiler}`；带 `comment_id` 即**回复** |
+| `POST /comment_delete{comment_id, aid}` | 成功 `{status:"ok", msg:"評論成功刪除！", cid, aid, bid, nid, gid}`；删别人的 `{status:"fail", msg:"無法刪除評論！ ？"}`（**HTTP 仍是 200**） |
+
+三条容易踩的实测结论：
+
+1. **成败只看 `data.status`**（`ok` / `fail`），HTTP 与信封 `code` 都是 200；`cid`/`aid` 是**数字**；
+2. 服务端会拒**含英文字母 / 数字**的正文（`抱歉，暂时不可输入英文和数字…`）——本地**不预判**这条策略，
+   原样把服务端 `msg` 弹给用户；
+3. 回复**不会**作为独立行出现在 `/forum?uid=` 里（只挂在主楼的 `replys` 里），
+   所以留言记录页展示的是"我发过的主留言"，删的也是它们。
+
+### 改动
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/JmModels.kt` | `ForumItemDto` 补 `AID` / `name`；`ForumRespDto.total` 改宽松标量（数字/字符串都收）；新增 `CommentEditResultDto` |
+| `feature/api/ApiClient.kt` | 新增 `forumByUser`、`sendComment`、`deleteComment`（都走既有的 POST 路径，**不自动重试**） |
+| `feature/data/Comments.kt` | `CommentRow` 补 `uid`/`albumId`/`albumName`/`parentCid` + `isAuthoredBy`/`sourceLabel`/`isReply`；DTO→行的映射从 `Repository` 搬来共用；新增 `limitCommentDraft`（按码位截 200）、`commentDraftError`、`CommentReplyTarget`、`CommentAction`、`commentMessage` |
+| `feature/data/AccountRepository.kt` | 新增 `myComments` / `sendComment` / `deleteComment`，全部走 `guarded()` |
+| `feature/ui/ViewModels.kt` | 详情页状态加 `commentInput`/`commentSending`/`commentReplyTo`；发送成功后重拉第一页，并把**服务端列表还没出现的那条**本地补一次（实测列表有延迟）；详情页支持 `initialTab` |
+| `feature/ui/AlbumDetailScreen.kt` | 评论 tab 底部吸底输入条（未登录显示「去登录」/ 回复中显示「回复 @昵称 ✕」）；每条评论 / 回复都有「回复」；`imePadding` 跟键盘 |
+| `feature/ui/AccountCommentsScreen.kt`（新增） | 留言记录：分页 + 下拉刷新 + 滑到底追加；每行「来自 JMxxxx ›」（跳该本评论 tab）与「删除」（二次确认后就地消失） |
+| `feature/ui/AccountViewModels.kt` | 新增 `AccountCommentsViewModel`（删一条就地摘掉并清对应本子的评论缓存） |
+| `feature/ui/MyScreen.kt` / `ModeRoot.kt` | 「我的」新增「留言记录」入口；新路由 `jm/account/comments`；详情页路由加可选 `?tab=comments` |
+| `test/.../CommentLogicTest.kt` | 新增用例：200 码位截断（emoji 不劈半）、本地校验、`msg` 清洗、`uid` 判定、`AID`/`parent_CID` 映射、`total` 两种类型、删/发响应两种形态、tab code 往返 |
+
+### 验证
+
+- `:app:compileDebugKotlin` 通过；`:app:testDebugUnitTest --tests …CommentLogicTest` 全绿；
+- 真实账号端到端（临时探针脚本，用完即弃、测试留言已删干净）：
+  发主留言 → 拉到新 `cid` → 回复它 → 详情页主楼 `replys` 里能看到 → 删回复 → 删主留言 → 我的留言回到 1 条；
+- 按用户要求**未跑全量测试用例**（只跑了上面那一个测试类）。
+
+### 首轮反馈修复（用户 2026-10-22）
+
+1. **留言记录的 loading 没居中**：`ScrollableFullScreenBox` 里那层 `Box` 只约束高度，
+   宽度会收缩到内容宽度并靠左——`CircularProgressIndicator` 只有 48dp 宽，于是就贴在左边。
+   新增 `CommentsMessageBox`（本地小外壳），内部 `Column` 补 `fillMaxWidth()`，
+   四个整页态（加载 / 空 / 失败 / 未登录）都改走它。
+2. **卡片「删除」停在大约 2/3 宽**：头部那行给时间 `Text` 与 `Spacer` **各** `weight(1f)`，
+   两份权重把剩余宽度对半劈。改成只让时间占 `weight(1f)`（没有时间才用 `Spacer(weight(1f))`），
+   「删除」就落到卡片的**右上角**。
+3. **卡片点击的波纹是直角**：整卡 `clickable` 挂在没有裁切的修饰符链上，ripple 画成矩形，
+   在 12dp 圆角卡上露出四个直角。现在 `padding → clip(shape) → clickable`，波纹跟着圆角裁。
+4. **发送结果不再用底部 Snackbar**：它贴在窗口底部，正好盖住评论输入条。
+   改成 `commentNotice` / `commentNoticeError` 两个状态，显示在输入条**内部**、输入框上方一行，
+   6 秒自动收走、也能点 ✕ 立刻关；只有它走这条通道，其它详情页提示（收藏、导出等）仍是 Snackbar。
+5. **"勿短时间重复留言"与验证码无关**：官方数学题只是前端门槛，验证码不进请求
+   （见 `docs/official-api-manga.md` §6.2 的备注）；那条是服务端按账号的冷却，隔几分钟重发即可。
+

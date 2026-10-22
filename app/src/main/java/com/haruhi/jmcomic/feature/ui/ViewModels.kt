@@ -29,7 +29,10 @@ import com.haruhi.jmcomic.feature.data.AccountFolder
 import com.haruhi.jmcomic.feature.data.AccountRepository
 import com.haruhi.jmcomic.feature.data.AlbumCleaner
 import com.haruhi.jmcomic.feature.data.CommentCache
+import com.haruhi.jmcomic.feature.data.CommentReplyTarget
 import com.haruhi.jmcomic.feature.data.CommentRow
+import com.haruhi.jmcomic.feature.data.commentDraftError
+import com.haruhi.jmcomic.feature.data.limitCommentDraft
 import com.haruhi.jmcomic.feature.data.DownloadManager
 import com.haruhi.jmcomic.feature.data.ExportFormat
 import com.haruhi.jmcomic.feature.data.ExportManager
@@ -59,6 +62,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
+import java.time.LocalDate
 
 // ======================================================================
 // 书库
@@ -1678,13 +1682,21 @@ data class ChapterRow(
  * 章节相关的所有内容（导出文件、章节进度、分组列表）都在 [CHAPTERS] 里，
  * 评论单独一页；**默认停在章节**：进详情页的第一诉求还是"从这一话开始读"。
  */
-enum class AlbumDetailTab(val label: String) {
-    CHAPTERS("章节"),
-    COMMENTS("评论"),
+enum class AlbumDetailTab(val code: String, val label: String) {
+    CHAPTERS("chapters", "章节"),
+    COMMENTS("comments", "评论"),
     ;
 
     companion object {
         val DEFAULT = CHAPTERS
+
+        /**
+         * 路由参数 → tab（`Routes.detail(albumId, tab="comments")`）。
+         *
+         * 认不出的一律回 [DEFAULT]：路由是内部拼的，出现陌生值时"停在章节"比报错友好。
+         */
+        fun fromCode(code: String?): AlbumDetailTab =
+            entries.firstOrNull { it.code == code?.trim() } ?: DEFAULT
     }
 }
 
@@ -1786,6 +1798,37 @@ data class AlbumDetailUiState(
     val commentsLoaded: Boolean = false,
     /** 已经到底了（服务端没有更多，或条数已经够 total）。 */
     val commentsReachedEnd: Boolean = false,
+
+    // ---------------- 发留言 / 回复（用户要求，2026-10-22） ----------------
+
+    /**
+     * 底部输入条里的正文。
+     *
+     * 放在 VM 里而不是 `remember`：转屏、或者未登录点「去登录」去登录页再回来，
+     * 已经敲了一半的内容不能丢。长度上限在 [setCommentInput] 里按码位截断。
+     */
+    val commentInput: String = "",
+    /** 正在发留言（发送按钮转圈，防重复提交）。 */
+    val commentSending: Boolean = false,
+    /** 正在回复哪一条（null = 发新留言）。 */
+    val commentReplyTo: CommentReplyTarget? = null,
+    /**
+     * 每次发留言/回复成功后 +1。
+     *
+     * 界面拿它当"把列表滚回评论 tab 开头"的信号：新留言在列表最上面，用户刚发完就该看见它，
+     * 而不是还停在刚才翻到的位置（官方 App 发完也是 `scrollToTop`）。
+     */
+    val commentsRefreshToken: Int = 0,
+    /**
+     * 发留言/回复的结果提示（成功与失败都放这里）。
+     *
+     * **故意不走根部的 Snackbar**：那条提示贴在窗口底部，正好盖住评论输入条
+     * （用户 2026-10-22 反馈）。这条文案显示在输入条**内部**、输入框上方一行，
+     * 既不挡输入框，也不会因为页面滚动而跑掉。
+     */
+    val commentNotice: String? = null,
+    /** [commentNotice] 是不是失败（决定用错误色画）。 */
+    val commentNoticeError: Boolean = false,
 
     // ---------------- 账号收藏（官方在线收藏，见 docs/account-design.md §4.4） ----------------
 
@@ -1917,6 +1960,13 @@ class AlbumDetailViewModel(
     /** 账号（官方在线收藏）：详情页的收藏按钮/面板都走它。 */
     private val account: AccountRepository,
     private val albumId: Long,
+    /**
+     * 进来时停在哪个 tab。
+     *
+     * 「留言记录」点一行进来时是 [AlbumDetailTab.COMMENTS]（`Routes.detail(…, tab="comments")`），
+     * 其余入口（书库、搜索、收藏、任务页）一律默认章节——用户点一本本子的第一诉求是读它。
+     */
+    private val initialTab: AlbumDetailTab = AlbumDetailTab.CHAPTERS,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AlbumDetailUiState())
@@ -1936,6 +1986,20 @@ class AlbumDetailViewModel(
      * 「重试」按它决定重走哪条路，见 [retryComments]。
      */
     private var commentRetryReset = false
+
+    /**
+     * 刚发出去、但服务端列表里还没出现的那条留言 / 回复（**本地乐观插入**）。
+     *
+     * 为什么要它：2026-10-22 实测"发留言成功 → 立刻拉列表"时，新留言不一定马上出现在
+     * `page=1` 里（服务端列表有延迟）。如果只靠重拉，用户会看到自己刚发的留言 disappear，
+     * 以为发失败了、再发一次。
+     *
+     * 一次重拉后就把它们清掉：服务端一旦给了真数据，以真数据为准（正文可能被服务端改写，
+     * 例如实测会被统一成繁体），本地那条只负责"先让用户看到"。
+     */
+    private var pendingNewComment: CommentRow? = null
+    private var pendingNewReply: CommentRow? = null
+    private var pendingNewReplyParent: String? = null
 
     init {
         // 1) 记一次浏览（三种入口共用这一条路径）
@@ -2102,6 +2166,11 @@ class AlbumDetailViewModel(
                 )
             }
         }
+
+        // 8) 从「留言记录」点进来时直接停在评论 tab（`Routes.detail(albumId, tab="comments")`）。
+        //    走 selectTab 而不是自己改 state：它顺带负责"第一次切到评论才去拉第一页"，
+        //    于是这一条路径和用户自己点 tab 的行为完全一致。
+        if (initialTab == AlbumDetailTab.COMMENTS) selectTab(AlbumDetailTab.COMMENTS)
     }
 
     /**
@@ -2398,21 +2467,47 @@ class AlbumDetailViewModel(
                     commentRetryReset = false
                     // 走 mergeComments 而不是直接用 result.comments：它顺手做了**按 cid 去重**，
                     // 万一服务端同一页里给了重复的评论，也不会让列表出现重复 key（会白屏崩）
-                    val merged = if (reset) {
+                    var merged = if (reset) {
                         mergeComments(emptyList(), result.comments)
                     } else {
                         mergeComments(_state.value.comments, result.comments)
                     }
+                    // 本地乐观插入（见 pendingNewComment 的注释）：只在"重拉第一页"时补一次。
+                    // 服务端已经给了（cid 命中）就用服务端的，别多画一条。
+                    var extra = 0
+                    if (reset) {
+                        pendingNewComment?.let { local ->
+                            pendingNewComment = null
+                            if (merged.none { it.cid == local.cid }) {
+                                merged = listOf(local) + merged
+                                extra = 1
+                            }
+                        }
+                        pendingNewReply?.let { local ->
+                            val parent = pendingNewReplyParent
+                            pendingNewReply = null
+                            pendingNewReplyParent = null
+                            val index = merged.indexOfFirst { it.cid == parent }
+                            if (index >= 0 && merged[index].replies.none { it.cid == local.cid }) {
+                                merged = merged.toMutableList().also { list ->
+                                    list[index] = list[index].copy(
+                                        replies = list[index].replies + local,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    val total = result.total + extra
                     commentNextPage = result.page + 1
                     // 三种"到底"的判定：空页 / 这一页没给满 / 总条数已经够了。
                     // 空页那条不能省：`total` 有被截断（5000）的历史，出现空页就是真的没了。
                     val reachedEnd = result.comments.isEmpty() ||
                         result.comments.size < COMMENT_PAGE_SIZE ||
-                        merged.size >= result.total
+                        merged.size >= total
                     _state.update {
                         it.copy(
                             comments = merged,
-                            commentTotal = result.total,
+                            commentTotal = total,
                             commentsLoaded = true,
                             commentsLoading = false,
                             commentsLoadingMore = false,
@@ -2424,7 +2519,7 @@ class AlbumDetailViewModel(
                         albumId,
                         CommentCache.Snapshot(
                             comments = merged,
-                            total = result.total,
+                            total = total,
                             nextPage = commentNextPage,
                             reachedEnd = reachedEnd,
                         ),
@@ -2444,6 +2539,124 @@ class AlbumDetailViewModel(
                         )
                     }
                 }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 发留言 / 回复（用户要求，2026-10-22）
+    // ------------------------------------------------------------------
+
+    /**
+     * 输入框内容变化：**就地按码位截到 200 字**（官方输入框写死 `maxLength={200}`）。
+     *
+     * 截断放在这里而不是只在界面上：粘贴一长段时界面不会"先显示超长再被服务端拒"，
+     * 用户看到的始终是最终会发出去的那段文字。
+     */
+    fun setCommentInput(value: String) = _state.update {
+        it.copy(commentInput = limitCommentDraft(value))
+    }
+
+    /** 点某条留言的「回复」：输入条变成「回复 @昵称」，发送时带上它的 `cid`。 */
+    fun replyToComment(comment: CommentRow) {
+        if (comment.cid.isBlank()) return
+        _state.update {
+            it.copy(commentReplyTo = CommentReplyTarget(cid = comment.cid, author = comment.author))
+        }
+    }
+
+    /** 取消回复（输入条上的 ✕），回到"发新留言"。 */
+    fun cancelCommentReply() = _state.update { it.copy(commentReplyTo = null) }
+
+    /** 关掉输入条里的那条发送提示（✕ 或自动消失时调用）。 */
+    fun consumeCommentNotice() = _state.update { it.copy(commentNotice = null) }
+
+    /**
+     * 发送输入条里的内容（有回复目标就是回复）。
+     *
+     * 三种"不发请求"的情况都在本地拦掉：正在发、正文为空、未登录。
+     * 成功/失败都走服务端的 `msg`（失败由 `AccountRepository` 抛成 `NetworkError.Business`，
+     * 这里统一 `toUserMessage()`）。
+     *
+     * 成功之后**重拉第一页**（官方也是 `loadList(false, true)`），同时把刚发的这条记成
+     * "待补的本地留言"（见 [pendingNewComment]）：服务端列表有延迟时，用户也能立刻看到
+     * 自己刚发的那条，而不是以为发失败又发一遍。
+     */
+    fun sendComment() {
+        val current = _state.value
+        if (current.commentSending) return
+        val error = commentDraftError(current.commentInput)
+        if (error != null) {
+            _state.update { it.copy(commentNotice = error, commentNoticeError = true) }
+            return
+        }
+        if (!account.isSignedIn) {
+            _state.update { it.copy(commentNotice = "请先登录后再留言", commentNoticeError = true) }
+            return
+        }
+        val text = current.commentInput.trim()
+        val parentCid = current.commentReplyTo?.cid
+        _state.update { it.copy(commentSending = true, commentNotice = null) }
+        viewModelScope.launch {
+            runCatching { account.sendComment(aid = albumId, content = text, parentCid = parentCid) }
+                .onSuccess { result ->
+                    _state.update {
+                        it.copy(
+                            commentSending = false,
+                            commentInput = "",
+                            commentReplyTo = null,
+                            // 服务端的成功文案比"已发布"信息量大（常带"获得 N 经验值"），
+                            // 拿不到时才用兜底文案。放 commentNotice 而不是 message：
+                            // 后者走底部 Snackbar，会盖住输入条。
+                            commentNotice = result.message,
+                            commentNoticeError = false,
+                            // 让界面把列表滚回评论 tab 开头：新留言就在最上面
+                            commentsRefreshToken = it.commentsRefreshToken + 1,
+                        )
+                    }
+                    // 记住这条"还没出现在列表里"的新留言 / 回复，重拉回来后补进列表
+                    result.cid?.let { cid -> rememberPendingComment(cid, text, parentCid) }
+                    // 重新拉第一页：缓存里的那份已经过期（少一条新留言 / 回复），先清掉再拉
+                    commentCache.clear(albumId)
+                    fetchComments(page = 1, reset = true)
+                }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Timber.tag("jm").w(e, "发留言失败：albumId=%d", albumId)
+                    _state.update {
+                        it.copy(
+                            commentSending = false,
+                            commentNotice = e.toUserMessage(),
+                            commentNoticeError = true,
+                        )
+                    }
+                }
+        }
+    }
+
+    /**
+     * 把刚发成功的留言/回复记成"待补的本地条目"（[pendingNewComment] / [pendingNewReply]）。
+     *
+     * 作者信息用**自己的**账号资料（接口不会立刻返回这条，拿不到就回落成"我"），
+     * 时间用今天——与 [commentTimeLabel] 归一化出来的格式一致，不会有第二种样子。
+     */
+    private fun rememberPendingComment(cid: String, text: String, parentCid: String?) {
+        val profile = account.profile
+        val row = CommentRow(
+            cid = cid,
+            author = profile?.username?.takeIf { it.isNotBlank() } ?: "我",
+            avatar = profile?.photo,
+            text = text,
+            timeLabel = LocalDate.now().toString(),
+            uid = profile?.uid,
+            albumId = albumId,
+            albumName = "JM$albumId",
+            parentCid = parentCid,
+        )
+        if (parentCid == null) {
+            pendingNewComment = row
+        } else {
+            pendingNewReply = row
+            pendingNewReplyParent = parentCid
         }
     }
 

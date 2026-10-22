@@ -24,7 +24,6 @@ import com.haruhi.jmcomic.feature.api.AlbumDto
 import com.haruhi.jmcomic.feature.api.ApiClient
 import com.haruhi.jmcomic.feature.api.ChapterDto
 import com.haruhi.jmcomic.feature.api.ApiJson
-import com.haruhi.jmcomic.feature.api.ForumItemDto
 import com.haruhi.jmcomic.feature.api.SearchItemDto
 import com.haruhi.jmcomic.feature.api.SeriesDto
 import kotlinx.coroutines.flow.Flow
@@ -565,30 +564,16 @@ class Repository(
     suspend fun comments(albumId: Long, page: Int = 1): CommentPage {
         val resp = api.forum(aid = albumId, page = page)
         val comments = resp.list.orEmpty()
-            .map { it.toCommentRow() }
+            // 详情页知道自己在看哪一本：接口偶尔不给 `AID` 时用它补上，
+            // 发/删留言都要靠这个 id（与官方 `d.AID` 等价）
+            .map { item ->
+                val row = item.toCommentRow()
+                if (row.albumId == null) row.copy(albumId = albumId) else row
+            }
             .filter { it.cid.isNotEmpty() }
         val total = resp.total?.trim()?.toIntOrNull() ?: comments.size
         return CommentPage(page = page, total = total.coerceAtLeast(0), comments = comments)
     }
-
-    /** 接口 DTO → 可直接渲染的评论（回复列表同样递归归一化）。 */
-    private fun ForumItemDto.toCommentRow(): CommentRow = CommentRow(
-        cid = cid?.trim().orEmpty(),
-        author = listOf(nickname, username)
-            .firstOrNull { !it.isNullOrBlank() && !it.equals("null", ignoreCase = true) }
-            ?.trim()
-            .orEmpty()
-            .ifEmpty { ANONYMOUS_COMMENT_AUTHOR },
-        avatar = photo?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
-        text = cleanCommentHtml(content),
-        likes = commentLikeCount(likes),
-        timeLabel = commentTimeLabel(addTime),
-        levelName = expInfo?.levelName?.trim()
-            ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
-        replies = replies.orEmpty()
-            .map { it.toCommentRow() }
-            .filter { it.cid.isNotEmpty() },
-    )
 
     /** 从本子已存的 `series` JSON 里找出某一章对应的条目。 */
     fun seriesOf(album: AlbumEntity, chapterId: Long): SeriesDto? =

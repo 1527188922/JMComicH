@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +31,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
@@ -56,6 +58,7 @@ import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -96,6 +99,7 @@ import com.haruhi.jmcomic.core.database.entity.FavoriteEntity
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.storage.FileNaming
 import com.haruhi.jmcomic.feature.data.albumAddTimeLabel
+import com.haruhi.jmcomic.feature.data.CommentReplyTarget
 import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.ExportedFormat
 import com.haruhi.jmcomic.feature.data.ExportFormat
@@ -105,6 +109,7 @@ import com.haruhi.jmcomic.ui.theme.EyeIcon
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import com.haruhi.jmcomic.ui.theme.WarningOrangeDark
 import com.haruhi.jmcomic.ui.theme.WarningOrangeLight
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** 简介收起时显示的行数。 */
@@ -204,6 +209,16 @@ fun AlbumDetailScreen(
     onLoadMoreComments: () -> Unit,
     /** 评论加载失败后的「重试」。 */
     onRetryComments: () -> Unit,
+    /** 底部输入条内容变化（上层已按 200 字截断）。 */
+    onCommentInputChange: (String) -> Unit,
+    /** 点输入条的「发送」（有回复目标时发的是回复）。 */
+    onSendComment: () -> Unit,
+    /** 点某条留言的「回复」：输入条变成「回复 @昵称」。 */
+    onReplyComment: (CommentRow) -> Unit,
+    /** 取消息输入条上的回复目标（回到"发新留言"）。 */
+    onCancelCommentReply: () -> Unit,
+    /** 关掉输入条里的发送提示（✕ 或被界面自动消失时调用）。 */
+    onConsumeCommentNotice: () -> Unit,
     /** 下载面板提交（选中的章节 id）。 */
     onDownloadChapters: (List<Long>) -> Unit,
     onDeleteChapterFiles: (Long) -> Unit,
@@ -285,6 +300,23 @@ fun AlbumDetailScreen(
         }
     }
 
+    // 发留言 / 回复成功后把列表滚回评论 tab 开头：新留言就在最上面，
+    // 用户刚发完就能看见（官方 App 发完也是 `scrollToTop`）。
+    // token 只在成功时递增，进来/刷新/翻页都不会触发，所以不会打断正常的滚动。
+    LaunchedEffect(state.commentsRefreshToken) {
+        if (state.commentsRefreshToken <= 0 || state.album == null) return@LaunchedEffect
+        val tabsIndex = if (state.refreshing) 2 else 1
+        listState.scrollToItem(tabsIndex)
+    }
+
+    // 输入条里的发送提示过几秒自动收走：它占了输入条的一行高度，
+    // 老赖着不走会把输入框往下挤；用户也能点那一行的 ✕ 立刻关掉。
+    LaunchedEffect(state.commentNotice) {
+        if (state.commentNotice == null) return@LaunchedEffect
+        delay(COMMENT_NOTICE_HOLD_MS)
+        onConsumeCommentNotice()
+    }
+
     // 评论「下滑追加」：最后几条进入可视区就请求下一页。
     //
     // 两个坑（都踩过，见 Screens.kt 的搜索结果页）：
@@ -321,6 +353,30 @@ fun AlbumDetailScreen(
         // TopAppBar 各加一次 windowInsets，标题上方就会空出约两倍状态栏的高度
         // （用户反馈第 5 点）。所以内层全部声明成 0。
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        // 评论 tab 的底部输入条（用户要求 2026-10-22）：只在评论 tab 出现，
+        // 章节 tab 不需要它——那一页的动作是"读/下载"，多出一条输入框只会挡章节。
+        //
+        // 放在 Scaffold 的 bottomBar 槽而不是 LazyColumn 里：输入条要**吸底**、
+        // 要跟着键盘上浮，放进列表里就会跟着内容一起滚走。
+        bottomBar = {
+            if (state.tab == AlbumDetailTab.COMMENTS && state.album != null) {
+                CommentInputBar(
+                    signedIn = state.accountSignedIn,
+                    input = state.commentInput,
+                    replyTo = state.commentReplyTo,
+                    sending = state.commentSending,
+                    // 发送结果（成功/失败）显示在输入条内部：走根部的 Snackbar 会贴在窗口底部，
+                    // 正好把输入框盖住（用户 2026-10-22 反馈）
+                    notice = state.commentNotice,
+                    noticeError = state.commentNoticeError,
+                    onInputChange = onCommentInputChange,
+                    onSend = onSendComment,
+                    onCancelReply = onCancelCommentReply,
+                    onDismissNotice = onConsumeCommentNotice,
+                    onRequireLogin = onRequireLogin,
+                )
+            }
+        },
         topBar = {
             TopAppBar(
                 windowInsets = WindowInsets(0, 0, 0, 0),
@@ -578,6 +634,7 @@ fun AlbumDetailScreen(
                             state = state,
                             onLoadMore = onLoadMoreComments,
                             onRetry = onRetryComments,
+                            onReply = onReplyComment,
                         )
                     }
                 }
@@ -742,6 +799,9 @@ private const val DETAIL_KEY_CHAPTER_EMPTY = "detail_chapter_empty"
 /** 评论列表距离底部还剩几条时就追加下一页（留几条做缓冲，滚到底之前就开始拉）。 */
 private const val COMMENT_LOAD_AHEAD = 3
 
+/** 输入条里的发送提示停留多久（毫秒）；够读完"获得 N 经验值"这类文案，又不至于挤着输入框。 */
+private const val COMMENT_NOTICE_HOLD_MS = 6_000L
+
 /** 一条评论默认最多显示几条内嵌回复，多出来的折起来。 */
 private const val COMMENT_REPLY_PREVIEW = 3
 
@@ -848,6 +908,7 @@ private fun LazyListScope.commentTabItems(
     state: AlbumDetailUiState,
     onLoadMore: () -> Unit,
     onRetry: () -> Unit,
+    onReply: (CommentRow) -> Unit,
 ) {
     if (state.comments.isEmpty()) {
         item(key = "comments_placeholder") {
@@ -879,7 +940,7 @@ private fun LazyListScope.commentTabItems(
     }
 
     items(state.comments, key = { "comment_${it.cid}" }) { comment ->
-        CommentItem(comment)
+        CommentItem(comment = comment, onReply = onReply)
     }
 
     item(key = "comments_footer") {
@@ -991,14 +1052,16 @@ private fun CommentFooter(
 /**
  * 一条评论。
  *
- * 布局是"头像 + 右侧一列"：昵称（+ 等级徽标）→ 时间 → 正文 → 内嵌回复 → 点赞数。
+ * 布局是"头像 + 右侧一列"：昵称（+ 等级徽标）→ 时间 → 正文 → 内嵌回复 → 「回复 / 点赞数」。
  * 信息密度按"先看人、再看说了什么、最后看有多少人认同"排，与常见的评论区一致。
  *
  * 用**普通行 + 内缩分割线**而不是卡片：几百条评论铺成几百张卡片会非常吵，
  * 而这一屏本来就是"一条接一条往下读"的列表（章节列表用卡片是因为每一话都是独立动作）。
+ *
+ * @param onReply 点「回复」：上层把这一条设成回复目标，底部输入条变成「回复 @昵称」。
  */
 @Composable
-private fun CommentItem(comment: CommentRow) {
+private fun CommentItem(comment: CommentRow, onReply: (CommentRow) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1042,11 +1105,23 @@ private fun CommentItem(comment: CommentRow) {
                 }
                 if (comment.replies.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
-                    CommentReplies(comment.replies)
+                    CommentReplies(comment.replies, onReply = onReply)
                 }
-                comment.likes?.let { likes ->
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                // 「回复」与点赞数同一行：回复是**动作**，点赞数只是信息，
+                // 但两者都放在正文/回复之后，不抢"读那条评论"的第一眼。
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "回复",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable(onClickLabel = "回复 ${comment.author}") { onReply(comment) }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    comment.likes?.let { likes ->
                         Icon(
                             imageVector = Icons.Default.Favorite,
                             contentDescription = "点赞数",
@@ -1144,7 +1219,7 @@ private fun CommentAvatar(comment: CommentRow, modifier: Modifier = Modifier) {
  * 默认只铺 [COMMENT_REPLY_PREVIEW] 条：有些楼能有十几条回复，全铺出来会把下一条评论顶走。
  */
 @Composable
-private fun CommentReplies(replies: List<CommentRow>) {
+private fun CommentReplies(replies: List<CommentRow>, onReply: (CommentRow) -> Unit) {
     var expanded by remember(replies) { mutableStateOf(false) }
     val folded = !expanded && replies.size > COMMENT_REPLY_PREVIEW
     val visible = if (folded) replies.take(COMMENT_REPLY_PREVIEW) else replies
@@ -1188,6 +1263,16 @@ private fun CommentReplies(replies: List<CommentRow>) {
                         )
                     }
                 }
+                // 回复也能被回复（服务端同样用 `comment_id` 指向它的 CID）
+                Text(
+                    text = "回复",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable(onClickLabel = "回复 ${reply.author}") { onReply(reply) }
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                )
             }
         }
         if (hidden > 0) {
@@ -1200,6 +1285,165 @@ private fun CommentReplies(replies: List<CommentRow>) {
                     .clickable(onClickLabel = "展开回复") { expanded = true },
             )
         }
+    }
+}
+
+/**
+ * 评论 tab 底部吸底的留言输入条（用户要求 2026-10-22）。
+ *
+ * 三种形态：
+ * - **未登录**：只有一行「登录后可以留言 [去登录]」——官方 App 同样是在点了输入框时才拦
+ *   登录，这里把拦截提前到"看得见"的地方，少一次白点；
+ * - **回复中**：上面多一行「回复 @昵称 ✕」，发出去的请求带 `comment_id`；
+ * - **写留言**：输入框 + 「发送」。发送中按钮转圈并禁点（防重复提交一条发两次）。
+ *
+ * 两个必须由这里负责的细节：
+ * 1. `imePadding()`：键盘弹出时整条跟着上浮，否则输入框会被键盘盖住；
+ * 2. 200 字上限**不在这里做**：`onInputChange` 拿到的已经是截好的文本（见
+ *    `AlbumDetailViewModel.setCommentInput`），界面不重复实现同一条规则。
+ */
+@Composable
+private fun CommentInputBar(
+    signedIn: Boolean,
+    input: String,
+    replyTo: CommentReplyTarget?,
+    sending: Boolean,
+    notice: String?,
+    noticeError: Boolean,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onCancelReply: () -> Unit,
+    onDismissNotice: () -> Unit,
+    onRequireLogin: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        // 一条阴影把它和下面的列表分开：列表滚到底时不会看起来和输入条糊在一起
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            // 发送结果（成功/失败）贴着输入条顶部显示：位置固定、不挡输入框。
+            // 未登录时也先画这一行——"登录已失效"这种失败原因必须能看到。
+            notice?.let { text ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (noticeError) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        // 成功文案会带两句"获得经验/金币"，最多两行，别把输入框顶下去
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallCloseButton(
+                        contentDescription = "关闭提示",
+                        onClick = onDismissNotice,
+                    )
+                }
+            }
+            if (!signedIn) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "登录后可以留言",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onRequireLogin) { Text("去登录") }
+                }
+                return@Column
+            }
+            replyTo?.let { target ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "回复 @${target.author}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallCloseButton(
+                        contentDescription = "取消回复",
+                        onClick = onCancelReply,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    placeholder = { Text("写留言…") },
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    // 最多三行：再长就内部滚动，输入条不会把评论区挤没
+                    maxLines = 3,
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = onSend,
+                    enabled = input.isNotBlank() && !sending,
+                ) {
+                    if (sending) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("发送")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 输入条里那种"小 ✕"：28dp 的可点区域 + 16dp 图标。
+ *
+ * 不用 `IconButton`：它的最小触控尺寸是 48dp，会把输入条那一行顶高一截
+ * （回复行 / 提示行本来只有一行小字，凭空多出 20dp 很不值）。
+ */
+@Composable
+private fun SmallCloseButton(contentDescription: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .clickable(onClickLabel = contentDescription, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Default.Close,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(16.dp),
+        )
     }
 }
 

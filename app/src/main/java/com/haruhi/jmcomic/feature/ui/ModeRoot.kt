@@ -114,6 +114,13 @@ object Routes {
     const val ACCOUNT_PROFILE = "jm/account/profile"
 
     /**
+     * 「我的 → 留言记录」：我发过的留言（`GET /forum?uid={自己}`）。
+     *
+     * 与收藏一样只在登录后可用：未登录时入口会先跳登录页（`next` 带回本页）。
+     */
+    const val ACCOUNT_COMMENTS = "jm/account/comments"
+
+    /**
      * 应用设置页（「更多」→ 应用设置）。
      *
      * **设置入口只有这一处**：模式首页不再单独挂顶栏齿轮（底栏已经能到设置，
@@ -122,7 +129,14 @@ object Routes {
      */
     const val SETTINGS = "jm/settings"
     const val FAVORITE_ALBUMS = "jm/favorites/{favoriteId}?name={name}"
-    const val DETAIL = "jm/album/{albumId}"
+    /**
+     * 详情页。
+     *
+     * `tab` 是可选参数（默认空串 = 章节）：从「留言记录」点一行进来时传 `comments`，
+     * 直接停在评论 tab 并开始拉评论（见 `Routes.detail(albumId, tab)`）。
+     * 可选查询参数带默认值，所以旧的 `jm/album/{id}` 地址照样匹配。
+     */
+    const val DETAIL = "jm/album/{albumId}?tab={tab}"
     const val READER = "jm/read/{albumId}?chapterId={chapterId}"
 
     /**
@@ -168,6 +182,17 @@ object Routes {
         "&sort=${sort.code}&historyId=$historyId"
 
     fun detail(albumId: Long) = "jm/album/$albumId"
+
+    /**
+     * 详情页地址（带要停靠的 tab）。
+     *
+     * 目前只有「留言记录」用它：点一行留言 → 打开那本漫画并**直接落在评论 tab**，
+     * 不然用户还得自己再点一次「评论」才能确认自己刚才发的那条还在。
+     *
+     * 章节入口不传（路由里就是 `jm/album/{id}`），行为与以前完全一致。
+     */
+    fun detail(albumId: Long, tab: AlbumDetailTab) =
+        "jm/album/$albumId?tab=${tab.code}"
 
     /**
      * 阅读器。
@@ -396,6 +421,13 @@ fun ModeRoot(
                             }
                         },
                         onOpenRecent = { navController.navigate(Routes.RECENT) },
+                        onOpenComments = {
+                            if (accountState.isSignedIn) {
+                                navController.navigate(Routes.ACCOUNT_COMMENTS)
+                            } else {
+                                navController.navigate(Routes.login(Routes.ACCOUNT_COMMENTS))
+                            }
+                        },
                         onOpenTasks = { navController.navigate(Routes.TASKS) },
                         onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                         onOpenProfile = {
@@ -507,6 +539,27 @@ fun ModeRoot(
                         state = state,
                         onBack = { navController.popBackStack() },
                         onRefresh = vm::refresh,
+                    )
+                }
+
+                // 留言记录：我发过的留言（10/页）。删一条就地消失，点一行跳那本的评论 tab。
+                composable(Routes.ACCOUNT_COMMENTS) { entry ->
+                    val vm: AccountCommentsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountCommentsScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onOpenAlbum = { albumId ->
+                            navController.navigate(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
+                        },
+                        onRefresh = vm::refresh,
+                        onLoadMore = vm::loadMore,
+                        onRetry = vm::retry,
+                        onDelete = vm::delete,
+                        onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_COMMENTS)) },
+                        // 本页自己没有 Snackbar 宿主，提示统一交给根部弹
+                        onMessage = showMessage,
+                        onConsumeMessage = vm::consumeMessage,
                     )
                 }
 
@@ -778,12 +831,18 @@ fun ModeRoot(
 
                 composable(
                     route = Routes.DETAIL,
-                    arguments = listOf(navArgument("albumId") { type = NavType.LongType }),
+                    arguments = listOf(
+                        navArgument("albumId") { type = NavType.LongType },
+                        // 可选：空串 = 章节（默认），`comments` = 进来就停在评论 tab。
+                        // 带默认值的查询参数不写也能匹配 `jm/album/{id}`，旧入口不用改。
+                        navArgument("tab") { type = NavType.StringType; defaultValue = "" },
+                    ),
                 ) { entry ->
                     val albumId = entry.arguments?.getLong("albumId") ?: return@composable
+                    val initialTab = AlbumDetailTab.fromCode(entry.arguments?.getString("tab"))
                     val vm: AlbumDetailViewModel = viewModel(
                         viewModelStoreOwner = entry,
-                        factory = ViewModelFactory(container, albumId),
+                        factory = ViewModelFactory(container, albumId, initialTab = initialTab),
                     )
                     val state by vm.state.collectAsStateWithLifecycle()
                     // 从任务页/阅读器回来时重算章节状态（刚下完的章节要立刻显示"已下载"）
@@ -850,6 +909,12 @@ fun ModeRoot(
                         onRefreshComments = vm::refreshComments,
                         onLoadMoreComments = vm::loadMoreComments,
                         onRetryComments = vm::retryComments,
+                        // 评论 tab 底部输入条：发留言 / 回复（未登录时那条「去登录」）
+                        onCommentInputChange = vm::setCommentInput,
+                        onSendComment = vm::sendComment,
+                        onReplyComment = vm::replyToComment,
+                        onCancelCommentReply = vm::cancelCommentReply,
+                        onConsumeCommentNotice = vm::consumeCommentNotice,
                         onExport = vm::startExport,
                         onDownloadMissing = vm::downloadMissingChapters,
                         onDismissExportPrecheck = vm::dismissExportPrecheck,
@@ -1047,6 +1112,8 @@ class ViewModelFactory(
     /** 账号收藏夹内页用：null = 全部收藏。 */
     private val accountFolderId: String? = null,
     private val accountFolderName: String = "",
+    /** 详情页进来时停在哪一个 tab（「留言记录」点进来是评论）。 */
+    private val initialTab: AlbumDetailTab = AlbumDetailTab.DEFAULT,
 ) : ViewModelProvider.Factory {
 
     @Suppress("UNCHECKED_CAST")
@@ -1113,6 +1180,13 @@ class ViewModelFactory(
                 cache = container.accountCache,
             ) as T
 
+        // 留言记录：读/删都走账号接口；评论缓存传进去是为了删完把对应本子的详情页缓存清掉
+        modelClass.isAssignableFrom(AccountCommentsViewModel::class.java) ->
+            AccountCommentsViewModel(
+                account = container.accountRepository,
+                commentCache = container.jmCommentCache,
+            ) as T
+
         modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
             SettingsViewModel(
                 container.settings,
@@ -1155,6 +1229,7 @@ class ViewModelFactory(
                 appScope = container.appScope,
                 account = container.accountRepository,
                 albumId = albumId ?: error("详情页必须传 albumId"),
+                initialTab = initialTab,
             ) as T
 
         else -> error("未知的 ViewModel：${modelClass.name}")

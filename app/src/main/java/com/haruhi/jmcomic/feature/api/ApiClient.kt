@@ -29,6 +29,10 @@ import java.net.URLEncoder
  * 详情页「评论」tab 用的 `/forum`，以及分类页用的 `/categories` + `/categories/filter`
  * 也在这里。
  *
+ * 2026-10-22 补上**评论的写接口**：`/comment`（发留言 / 回复）与 `/comment_delete`（删留言），
+ * 以及「我的留言」用的 `/forum?uid=`（见 [sendComment] / [deleteComment] / [forumByUser]）。
+ * 它们的成功/失败都写在 `data.status` 里（HTTP 永远 200），由 `AccountRepository` 判定。
+ *
  * **账号接口**（`/login`、`/favorite`、`/favorite_folder`、`/useredit`）在 2026-10 加入：
  * 它们都是 `multipart/form-data` 的 **POST**，响应仍是同一个 `{code,data(密文)}` 信封，
  * 解密密钥同样由 `ts` 派生（见 [postRaw] / [postDecrypted]）。
@@ -219,6 +223,72 @@ class ApiClient(
         retry = retryProvider(),
         decode = { json -> ApiJson.decodeFromString(ForumRespDto.serializer(), json) },
     )
+
+    /**
+     * `/forum?uid=`：某个用户发过的留言（「我的 → 留言记录」）。
+     *
+     * 与 [forum] 的差别（逐字对齐官方 `FETCH_FORUM_THUNK`）：
+     * - **不传 `aid`**：这是"这个人发过的所有留言"，跨本子；
+     * - **不传 `mode`**：官方 `Member/CommentList.tsx` 只发 `{uid, page}`
+     *   （2026-10-22 实测带 `mode=all` 结果一样，但少一个参数少一处歧义）；
+     * - 每条都带 `AID` / `name`，界面靠它们显示「来自 JMxxxx」并跳详情页。
+     *
+     * 每页同样是 10 条、`page` 从 1 开始、`total` 上限 5000。**匿名也能读**。
+     */
+    suspend fun forumByUser(uid: String, page: Int = 1): ForumRespDto = getDecrypted(
+        path = "/forum",
+        params = listOf(
+            "page" to (if (page < 1) 1 else page).toString(),
+            "uid" to uid,
+        ),
+        retry = retryProvider(),
+        decode = { json -> ApiJson.decodeFromString(ForumRespDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /comment`：发留言；带 [parentCid] 就是**回复**那条留言。
+     *
+     * 官方 `FETCH_FORUM_SEND_THUNK` 的字段就是 `comment` / `aid` / `comment_id`
+     * （`spoilers` 那个勾选只存在前端，**不往上传**）。
+     *
+     * 成败**不在 HTTP 状态里**：实测业务失败仍是 `HTTP 200 + 信封 code 200`，
+     * `data` 里是 `{status:"fail", msg:"…"}`。所以这里原样把 DTO 交回去，
+     * 由 `AccountRepository` 按 `status` 判定（[CommentEditResultDto.isOk]）。
+     *
+     * 走 [postDecrypted]：**不自动重试**——发留言不是幂等操作（重发会多一条）。
+     */
+    suspend fun sendComment(
+        aid: Long,
+        content: String,
+        parentCid: String? = null,
+    ): CommentEditResultDto = postDecrypted(
+        path = "/comment",
+        fields = buildList {
+            add("comment" to content)
+            add("aid" to aid.toString())
+            if (!parentCid.isNullOrBlank()) add("comment_id" to parentCid)
+        },
+        decode = { json -> ApiJson.decodeFromString(CommentEditResultDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /comment_delete`：删除一条留言（只有自己的能删）。
+     *
+     * 实测响应与发留言同构：成功 `{status:"ok", msg:"評論成功刪除！", cid, aid, …}`，
+     * 删别人的/不存在的是 `{status:"fail", msg:"無法刪除評論！ ？"}`（HTTP 200）。
+     *
+     * `aid` 官方会一起传（`ForumList.tsx` 的 `handleDeteleComment` 传了 aid/bid/nid），
+     * 所以知道是哪本时就带上；拿不到（理论上不会有）也能只传 `comment_id`。
+     */
+    suspend fun deleteComment(commentId: String, aid: Long? = null): CommentEditResultDto =
+        postDecrypted(
+            path = "/comment_delete",
+            fields = buildList {
+                add("comment_id" to commentId)
+                if (aid != null && aid > 0L) add("aid" to aid.toString())
+            },
+            decode = { json -> ApiJson.decodeFromString(CommentEditResultDto.serializer(), json) },
+        )
 
     /**
      * 章节详情（图片文件名清单）——按 [ChapterSource] 分派到两代接口之一，

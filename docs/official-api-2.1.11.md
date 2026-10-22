@@ -772,7 +772,7 @@ related_list, liked, is_favorite, is_aids, price, purchased
 > + `adddate`。所以本工程详情页把它当**上架时间**展示：`JM350234 · 上架 2022-06-15`
 > （与 JM 号同一行，分隔方式照抄搜索结果列表），见 `albumAddTimeLabel`。
 
-### 6.5 评论相关的其它接口（本次不需要，仅列出）
+### 6.5 评论相关的其它接口（2026-10-22 已实测）
 
 | 接口 | 方法 | 入参 | 说明 |
 |---|---|---|---|
@@ -780,6 +780,16 @@ related_list, liked, is_favorite, is_aids, price, purchased
 | `comment_delete` | POST | `comment_id`, `aid?`/`bid?`/`nid?`/`gid?` | 删评论 |
 | `comment_vote` | — | — | **声明但 2.1.11 未使用** |
 | `novel` 的 `comment` | POST | `nid`, `comment`, `comment_id?`, `ncid?` | 小说评论（同一路径 `comment`） |
+
+`POST /comment`、`POST /comment_delete` 与 `/forum?uid=` 的**真实响应**现在补在
+`docs/official-api-manga.md` §6.1～§6.3（2026-10-22 用真实账号跑通"发 → 回复 → 删"，测试内容已删）。
+这里只记四条最容易写错的：
+
+1. 两个 POST 的成败**只看 `data.status == "ok"`**：业务失败同样是 `HTTP 200 + 信封 code 200`；
+2. 成功响应里 `cid` / `aid` 是**数字**，`msg` 可能带 `<br>`；
+3. 未登录发评论是 **HTTP 401** + `errorMsg:"請先登入會員"`；
+4. 「我的留言」用 `GET /forum?uid={自己}&page=n`，**不传 `mode` / `aid`**；回复不会单独成行。
+
 
 ---
 

@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.data
 
+import com.haruhi.jmcomic.feature.api.ForumItemDto
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
@@ -35,10 +36,42 @@ data class CommentRow(
     val timeLabel: String? = null,
     val levelName: String? = null,
     val replies: List<CommentRow> = emptyList(),
+    /** 作者的用户 id（`UID`）；「是不是我发的」只能靠它判断（官方 `ForumList` 同样比 `UID`）。 */
+    val uid: String? = null,
+    /**
+     * 这条留言挂在哪个本子上（`AID`）。
+     *
+     * 「我的留言」列表里页面上就只显示「来自 JMxxxx」并靠它跳详情页 / 删留言，所以不能为空；
+     * 详情页的列表也带这个字段（官方删留言直接用 `d.AID`）。
+     * 接口没给时由调用方补上（详情页知道自己在看哪一本）。
+     */
+    val albumId: Long? = null,
+    /** 接口给的漫画展示名（实测 `JM{aid}`）；没有时界面用 `albumId` 拼。 */
+    val albumName: String? = null,
+    /** 父留言 id；主楼为 null（接口给 `"0"` / 空）。「我的留言」里据此标出"回复"。 */
+    val parentCid: String? = null,
 ) {
     /** 头像占位圈里显示的那个字（优先昵称首字）。 */
     val initial: String
         get() = author.firstOrNull { !it.isWhitespace() }?.toString() ?: "?"
+
+    /** 是不是某个用户发的（`uid` 为空时一律 false：判断不了就不当成自己的）。 */
+    fun isAuthoredBy(uid: String?): Boolean {
+        val mine = uid?.trim().orEmpty()
+        return mine.isNotEmpty() && this.uid?.trim() == mine
+    }
+
+    /** 是不是一条回复（主楼 `parent_CID` 实测是 `"0"`）。 */
+    val isReply: Boolean get() = parentCid != null
+
+    /**
+     * 「来自 JMxxxx」里的那个名字。
+     *
+     * 优先用接口的 `name`（实测就是 `JM{aid}`），没有就按 `albumId` 拼，两者都没有才返回 null
+     * （界面据此不画来源行）。
+     */
+    val sourceLabel: String?
+        get() = albumName?.takeIf { it.isNotBlank() } ?: albumId?.let { "JM$it" }
 }
 
 /**
@@ -122,6 +155,106 @@ fun commentTimeLabel(raw: String?): String? {
 /** 评论喜欢数的展示值：`"0"` / 空 / `"null"` 都不显示。 */
 fun commentLikeCount(raw: String?): String? =
     raw?.trim()?.takeIf { it.isNotEmpty() && it != "0" && !it.equals("null", ignoreCase = true) }
+
+// ----------------------------------------------------------------------
+// 接口 DTO → 界面模型
+// ----------------------------------------------------------------------
+
+/**
+ * 把 `/forum` 的一条响应转成能直接画的 [CommentRow]（回复列表同样递归归一化）。
+ *
+ * 放在这里而不是 `Repository` 里：详情页（读）与「我的留言」（读 + 删）都要用同一套规则，
+ * 复制一份迟早会分叉（比如 `parent_CID` 的 `"0"` 只在一边折成 null）。
+ */
+internal fun ForumItemDto.toCommentRow(): CommentRow = CommentRow(
+    cid = cid?.trim().orEmpty(),
+    author = listOf(nickname, username)
+        .firstOrNull { !it.isNullOrBlank() && !it.equals("null", ignoreCase = true) }
+        ?.trim()
+        .orEmpty()
+        .ifEmpty { Repository.ANONYMOUS_COMMENT_AUTHOR },
+    avatar = photo?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+    text = cleanCommentHtml(content),
+    likes = commentLikeCount(likes),
+    timeLabel = commentTimeLabel(addTime),
+    levelName = expInfo?.levelName?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+    replies = replies.orEmpty()
+        .map { it.toCommentRow() }
+        .filter { it.cid.isNotEmpty() },
+    uid = uid?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+    albumId = aid?.trim()?.toLongOrNull(),
+    albumName = albumName?.trim()?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) },
+    // `"0"` / 空 / null 都是主楼；只有真的给了别的 id 才算回复
+    parentCid = parentCid?.trim()?.takeIf { it.isNotEmpty() && it != "0" && !it.equals("null", ignoreCase = true) },
+)
+
+// ----------------------------------------------------------------------
+// 发留言 / 回复
+// ----------------------------------------------------------------------
+
+/**
+ * 留言正文长度上限。
+ *
+ * 官方输入框写死 `maxLength={200}`（`NewTopicModal.tsx`），本工程在 VM 里按码位截断，
+ * 所以剪切板粘进来一长段也不会被服务端拒掉。
+ */
+const val COMMENT_MAX_LENGTH = 200
+
+/**
+ * 把输入框里的内容截到 [COMMENT_MAX_LENGTH] 个**码位**。
+ *
+ * 不能直接用 `take()`：它按 UTF-16 char 截，正好切在 emoji 的代理对中间会得到半个字符
+ * （界面上是一个 `?`，发出去还可能被服务端判成非法内容）。所以按码位算再取子串。
+ */
+fun limitCommentDraft(raw: String): String {
+    if (raw.codePointCount(0, raw.length) <= COMMENT_MAX_LENGTH) return raw
+    return raw.substring(0, raw.offsetByCodePoints(0, COMMENT_MAX_LENGTH))
+}
+
+/**
+ * 发送前的本地校验：通过返回 null，否则返回要提示给用户的文案。
+ *
+ * **只拦"空"和"超长"**，不做更聪明的判断：2026-10-22 实测服务端会拒绝含英文字母/数字的
+ * 正文（`抱歉，暂时不可输入英文和数字…`），但那是服务端策略（自带"暂时"字样、会变），
+ * 而且报错文案比本地猜的准，所以交给服务端回话、原样显示。
+ */
+fun commentDraftError(raw: String): String? {
+    val text = raw.trim()
+    return when {
+        text.isEmpty() -> "请输入留言内容"
+        text.codePointCount(0, text.length) > COMMENT_MAX_LENGTH -> "留言最多 $COMMENT_MAX_LENGTH 字"
+        else -> null
+    }
+}
+
+/**
+ * 正在回复谁（输入条上显示「回复 @昵称」）。
+ *
+ * @property cid 父留言 id，发请求时作为 `comment_id` 传回去（官方 `FETCH_FORUM_SEND_THUNK`）。
+ */
+data class CommentReplyTarget(val cid: String, val author: String)
+
+/**
+ * 一次发留言 / 删留言的结果。
+ *
+ * @property message 服务端 `msg` 清洗后的文案（成功与失败都直接展示它——官方 App 也是
+ *   `showSnackbar(msg)`，里面常带"获得 5 经验值"这类信息）。
+ * @property cid 发成功时服务端回的新留言 id；删除时是被删的那条（失败时也可能带）。
+ */
+data class CommentAction(
+    val message: String,
+    val cid: String? = null,
+)
+
+/**
+ * 接口 `msg` → 一行可展示的文案。
+ *
+ * 实测成功文案里带 `<br>`（`評論成功發布！…<br>您已完成每日發表評論，獲得「3」金幣`），
+ * 原样摆进 Snackbar 会露出一截标签，所以按评论正文同一套规则清洗，再把换行压成空格。
+ */
+fun commentMessage(raw: String?): String? =
+    cleanCommentHtml(raw).replace('\n', ' ').trim().takeIf { it.isNotEmpty() }
 
 // ----------------------------------------------------------------------
 // 内存缓存

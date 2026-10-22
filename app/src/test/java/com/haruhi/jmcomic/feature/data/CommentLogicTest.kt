@@ -3,6 +3,10 @@ package com.haruhi.jmcomic.feature.data
 import com.google.common.truth.Truth.assertThat
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.protocol.Defaults
+import com.haruhi.jmcomic.feature.api.ApiJson
+import com.haruhi.jmcomic.feature.api.CommentEditResultDto
+import com.haruhi.jmcomic.feature.api.ForumItemDto
+import com.haruhi.jmcomic.feature.api.ForumRespDto
 import com.haruhi.jmcomic.feature.ui.AlbumDetailTab
 import com.haruhi.jmcomic.feature.ui.AlbumDetailUiState
 import org.junit.Test
@@ -206,6 +210,146 @@ class CommentLogicTest {
         // 进详情页的第一诉求还是"从这一话开始读"，默认停在章节
         assertThat(AlbumDetailUiState().tab).isEqualTo(AlbumDetailTab.CHAPTERS)
         assertThat(AlbumDetailTab.entries.map { it.label }).containsExactly("章节", "评论").inOrder()
+    }
+
+    // ---------------- 发留言 / 回复的本地逻辑（2026-10-22） ----------------
+
+    @Test
+    fun `draft is truncated to 200 code points and never splits an emoji`() {
+        val plain = "留".repeat(200)
+        assertThat(limitCommentDraft(plain)).isEqualTo(plain)
+        assertThat(limitCommentDraft("留".repeat(201))).hasLength(200)
+
+        // 表情是代理对（2 个 char）：按 char 截会留下半个字符，发出去就是乱码
+        val emoji = "\uD83D\uDE00"
+        val full = emoji.repeat(COMMENT_MAX_LENGTH)
+        assertThat(limitCommentDraft(full)).isEqualTo(full)
+        val over = emoji.repeat(COMMENT_MAX_LENGTH) + "留"
+        val cut = limitCommentDraft(over)
+        assertThat(cut).isEqualTo(full)
+        assertThat(cut.length % 2).isEqualTo(0)
+    }
+
+    @Test
+    fun `draft error only rejects blank and oversized input`() {
+        assertThat(commentDraftError("")).isEqualTo("请输入留言内容")
+        assertThat(commentDraftError("   \n ")).isEqualTo("请输入留言内容")
+        assertThat(commentDraftError("你好")).isNull()
+        // 英文与数字服务端会拒，但那是服务端策略（"暂时"），本地不拦——原样让它发出去
+        assertThat(commentDraftError("abc 123")).isNull()
+        assertThat(commentDraftError("留".repeat(COMMENT_MAX_LENGTH))).isNull()
+        assertThat(commentDraftError("留".repeat(COMMENT_MAX_LENGTH + 1)))
+            .isEqualTo("留言最多 $COMMENT_MAX_LENGTH 字")
+    }
+
+    @Test
+    fun `success message loses the html line breaks`() {
+        // 实测成功文案：`評論成功發布！…<br>您已完成每日發表評論，獲得「3」金幣`
+        assertThat(commentMessage("評論成功發布！<br>您已完成每日發表評論，獲得「3」金幣"))
+            .isEqualTo("評論成功發布！ 您已完成每日發表評論，獲得「3」金幣")
+        assertThat(commentMessage("")).isNull()
+        assertThat(commentMessage(null)).isNull()
+    }
+
+    @Test
+    fun `own comment is detected by uid only`() {
+        val mine = comment("1").copy(uid = "6404735")
+        assertThat(mine.isAuthoredBy("6404735")).isTrue()
+        assertThat(mine.isAuthoredBy(" 6404735 ")).isTrue()
+        assertThat(mine.isAuthoredBy("12964198")).isFalse()
+        // 任何一边缺失都判断不了，一律"不是我的"（否则界面上会冒出删不掉的删除按钮）
+        assertThat(mine.isAuthoredBy(null)).isFalse()
+        assertThat(comment("2").isAuthoredBy("6404735")).isFalse()
+    }
+
+    @Test
+    fun `source label falls back from name to album id`() {
+        assertThat(comment("1").copy(albumId = 1484920, albumName = "JM1484920").sourceLabel)
+            .isEqualTo("JM1484920")
+        assertThat(comment("1").copy(albumId = 1484920).sourceLabel).isEqualTo("JM1484920")
+        assertThat(comment("1").sourceLabel).isNull()
+    }
+
+    @Test
+    fun `reply rows are flagged and main floors are not`() {
+        assertThat(comment("1").isReply).isFalse()
+        assertThat(comment("1").copy(parentCid = "9").isReply).isTrue()
+    }
+
+    // ---------------- DTO 解析（真实响应形态） ----------------
+
+    @Test
+    fun `forum item maps album id parent uid and html content`() {
+        // 实测「我的留言」响应（2026-10-22，账号 6404735）
+        val json = """
+            {
+              "AID": "1484920",
+              "BID": null,
+              "CID": "11190972",
+              "NID": null,
+              "NCID": null,
+              "UID": "6404735",
+              "username": "1527188922",
+              "nickname": "1527188922",
+              "likes": "0",
+              "addtime": "Oct 22, 2026",
+              "parent_CID": "0",
+              "name": "JM1484920",
+              "content": "<div style='flex-direction:row;flex-wrap:wrap;'>還有涼宮春日的本子</div>",
+              "photo": "nopic-Male.gif",
+              "spoiler": "1"
+            }
+        """.trimIndent()
+        val row = ApiJson.decodeFromString(ForumItemDto.serializer(), json).toCommentRow()
+        assertThat(row.cid).isEqualTo("11190972")
+        assertThat(row.uid).isEqualTo("6404735")
+        assertThat(row.albumId).isEqualTo(1484920L)
+        assertThat(row.albumName).isEqualTo("JM1484920")
+        assertThat(row.sourceLabel).isEqualTo("JM1484920")
+        assertThat(row.parentCid).isNull()
+        assertThat(row.isReply).isFalse()
+        assertThat(row.text).isEqualTo("還有涼宮春日的本子")
+        assertThat(row.author).isEqualTo("1527188922")
+        assertThat(row.likes).isNull()
+        assertThat(row.timeLabel).isEqualTo("2026-10-22")
+    }
+
+    @Test
+    fun `forum total tolerates both string and number`() {
+        // 同一接口实测过两种形态（`"851"` 与 `5000`），两种都不能把整页解析搞崩
+        val asString = ApiJson.decodeFromString(ForumRespDto.serializer(), """{"total":"851"}""")
+        assertThat(asString.total).isEqualTo("851")
+        val asNumber = ApiJson.decodeFromString(ForumRespDto.serializer(), """{"total":5000}""")
+        assertThat(asNumber.total).isEqualTo("5000")
+    }
+
+    @Test
+    fun `comment edit result reads ok and fail shapes`() {
+        // 发成功：cid 是数字，msg 带 <br>
+        val ok = ApiJson.decodeFromString(
+            CommentEditResultDto.serializer(),
+            """{"msg":"評論成功發布！<br>獲得「5」經驗值","status":"ok","aid":1484920,"cid":11191109,"spoiler":"1"}""",
+        )
+        assertThat(ok.isOk).isTrue()
+        assertThat(ok.cid).isEqualTo("11191109")
+        assertThat(commentMessage(ok.msg)).isEqualTo("評論成功發布！ 獲得「5」經驗值")
+
+        // 删除别人的：HTTP 200 但 status=fail
+        val fail = ApiJson.decodeFromString(
+            CommentEditResultDto.serializer(),
+            """{"msg":"無法刪除評論！ ？","status":"fail","cid":11187248,"aid":114514,"bid":0,"nid":0,"gid":0}""",
+        )
+        assertThat(fail.isOk).isFalse()
+        assertThat(commentMessage(fail.msg)).isEqualTo("無法刪除評論！ ？")
+    }
+
+    @Test
+    fun `detail tab codes round trip`() {
+        assertThat(AlbumDetailTab.fromCode("comments")).isEqualTo(AlbumDetailTab.COMMENTS)
+        assertThat(AlbumDetailTab.fromCode("chapters")).isEqualTo(AlbumDetailTab.CHAPTERS)
+        // 陌生值（旧路由的空串 / 手写深链）一律回默认，不抛异常
+        assertThat(AlbumDetailTab.fromCode("")).isEqualTo(AlbumDetailTab.CHAPTERS)
+        assertThat(AlbumDetailTab.fromCode(null)).isEqualTo(AlbumDetailTab.CHAPTERS)
     }
 
     // ------------------------------------------------------------------
