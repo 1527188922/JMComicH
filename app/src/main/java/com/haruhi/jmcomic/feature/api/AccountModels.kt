@@ -2,6 +2,13 @@ package com.haruhi.jmcomic.feature.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
 
 /**
  * JM 账号（会员）相关接口的响应模型。
@@ -83,10 +90,49 @@ data class FavoritePageDto(
 )
 
 /**
- * 收藏 / 收藏夹操作的统一返回（`docs/official-api-manga.md` §8.2 / §8.3）。
+ * `errors` 的**宽容解析**。
+ *
+ * 2026-10-23 真机实测（用户截图）：`POST /register` **成功**时服务端返回的是
+ *
+ * ```json
+ * {"status":"ok","msg":"您已注册。检查您的电子邮件中的确认链接!","errors":""}
+ * ```
+ *
+ * 也就是 `errors` 从数组变成了**空字符串**；而失败时它确实是字符串数组
+ * （`["邮箱格式…","用户名已经存在!"]`）。把它写死成 `List<String>` 会让**成功的注册**
+ * 在反序列化阶段抛 `Unexpected JSON token ... Expected start of the array '['`，
+ * 结果"邮件已经发了、界面却报解析错误"。
+ *
+ * 这里把四种形态都收口成列表：
+ * - JSON 数组 → 逐项取字符串；
+ * - 单个字符串（含空串）→ 非空就是一条，空串给空列表；
+ * - `null` / 其它类型 → 空列表。
+ */
+object LooseStringListSerializer :
+    JsonTransformingSerializer<List<String>>(ListSerializer(String.serializer())) {
+
+    override fun transformDeserialize(element: JsonElement): JsonElement = when {
+        // JsonNull 是 JsonPrimitive 的子类，必须先判；否则 `""` / `null` 会走错分支
+        element is JsonNull -> JsonArray(emptyList())
+        element is JsonArray -> element
+        element is JsonPrimitive -> {
+            val text = element.content
+            if (text.isBlank()) JsonArray(emptyList()) else JsonArray(listOf(JsonPrimitive(text)))
+        }
+
+        else -> JsonArray(emptyList())
+    }
+}
+
+/**
+ * 收藏 / 收藏夹 / 注册相关操作的统一返回（`docs/official-api-manga.md` §7.3 / §8.2 / §8.3）。
  *
  * 成功：`{status:"ok", msg, type?}`；业务失败仍是 **HTTP 200 + 信封 200**，
  * 但 `data` 里带 `{status:"fail", msg, code:400}` —— 所以 [code] 必须一起读。
+ *
+ * [errors] 是注册/验证码接口实测出来的字段：`msg` 只给**第一条**错误，
+ * 全部问题在 `errors` 里（例如邮箱格式 + 用户名已存在 + 两次密码不一致）。
+ * 界面会优先把它拼起来展示，否则用户永远只能看到第一条。
  */
 @Serializable
 data class EditResultDto(
@@ -94,6 +140,10 @@ data class EditResultDto(
     @SerialName("msg") val msg: String? = null,
     @SerialName("type") val type: String? = null,
     @SerialName("code") val code: Int? = null,
+    /** 数组 / 字符串 / 空串 / null 都能读，见 [LooseStringListSerializer]。 */
+    @SerialName("errors")
+    @Serializable(with = LooseStringListSerializer::class)
+    val errors: List<String> = emptyList(),
 ) {
     val isOk: Boolean get() = status == "ok"
 }
@@ -125,6 +175,14 @@ data class UserEditDto(
     @SerialName("favorite") val favorite: String? = null,
     @SerialName("hate") val hate: String? = null,
     @SerialName("status") val status: String? = null,
+    /**
+     * 业务失败时可能出现的 `msg`。
+     *
+     * 成功时服务端返回的是**整条资料**（没有 `msg`）；万一某天写成
+     * `{status:"fail",msg:"…"}`，没有这个字段就会被当成"保存成功"，
+     * 所以显式读它，由 `AccountRepository.saveUserEdit` 判失败。
+     */
+    @SerialName("msg") val msg: String? = null,
 )
 
 /** 账号请求需要的两个 header（`Authorization: Bearer …` + `Cookie: AVS=…`）。 */

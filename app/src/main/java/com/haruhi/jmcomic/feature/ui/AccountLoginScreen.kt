@@ -42,8 +42,8 @@ import androidx.compose.ui.unit.dp
 /**
  * 登录页（`docs/account-design.md` §8）。
  *
- * 只做**登录**：注册 / 邮箱验证码 / 找回密码本版未接入（都要走官方网页版），
- * 页面底部有一行说明——不摆"点了没反应"的假入口。
+ * 注册走独立的 [AccountSignUpScreen]（注册 → 邮箱验证码 → 自动登录）；
+ * 「找回密码」仍然提示去官方网页版——本 App 没有自己的邮件系统，重置密码只能在网页侧完成。
  *
  * 独立页面而不是底部面板：表单要键盘、要滚动、要能放长错误文案。
  */
@@ -56,6 +56,10 @@ fun AccountLoginScreen(
     onTogglePasswordVisible: () -> Unit,
     onSubmit: () -> Unit,
     onConsumeError: () -> Unit,
+    /** 底部「注册新账号」：进注册页（`next` 由导航层带过去）。 */
+    onOpenSignUp: () -> Unit,
+    /** 底部「已有验证码」：账号已创建但没验证完时，回来补验证码。 */
+    onOpenVerify: () -> Unit,
     /** 登录成功（由调用方决定关页面 / 回跳）。 */
     onLoggedIn: () -> Unit,
     modifier: Modifier = Modifier,
@@ -63,6 +67,11 @@ fun AccountLoginScreen(
     // 登录成功 → 交给导航层处理（关页面 + 有 next 就走 next）
     LaunchedEffect(state.done) {
         if (state.done) onLoggedIn()
+    }
+
+    // 服务端 / 网络 / 本地校验错误统一用弹窗展示：页内错误条会把输入框和登录按钮整体顶下去。
+    state.error?.let { message ->
+        MessageDialog(title = state.errorTitle, message = message, onDismiss = onConsumeError)
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -148,16 +157,6 @@ fun AccountLoginScreen(
                 )
 
                 Spacer(Modifier.height(12.dp))
-                if (state.error != null) {
-                    ErrorBanner(message = state.error, onRetry = null)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = onConsumeError) { Text("知道了") }
-                    }
-                }
-
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = onSubmit,
@@ -177,9 +176,39 @@ fun AccountLoginScreen(
                     }
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "还没有账号？",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = onOpenSignUp, enabled = !state.submitting) {
+                        Text("注册新账号")
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "注册了但没验证？",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = onOpenVerify, enabled = !state.submitting) {
+                        Text("输入验证码")
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "注册、邮箱验证与找回密码暂未接入本 App，请到官方网页版（18comic.vip）操作。",
+                    text = "忘记密码请到官方网页版（18comic.vip）重置。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Start,

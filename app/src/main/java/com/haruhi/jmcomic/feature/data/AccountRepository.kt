@@ -5,6 +5,7 @@ import com.haruhi.jmcomic.core.account.AccountState
 import com.haruhi.jmcomic.core.account.MemberProfile
 import com.haruhi.jmcomic.core.network.NetworkError
 import com.haruhi.jmcomic.feature.api.ApiClient
+import com.haruhi.jmcomic.feature.api.EditResultDto
 import com.haruhi.jmcomic.feature.api.FavoritePageDto
 import com.haruhi.jmcomic.feature.api.LoginDto
 import com.haruhi.jmcomic.feature.api.UserEditDto
@@ -33,8 +34,10 @@ class AccountRepository(
     /**
      * 应用级作用域（`AppContainer.appScope`）。
      *
-     * 只给 [logoutInBackground] 用：在「个人资料」页点退出登录会立刻弹回上一页，
-     * 页面级 `viewModelScope` 会跟着被取消，挂在它上面的 `/logout` 就打不完了。
+     * 两处用：
+     * - [logoutInBackground]：在「个人资料」页点退出登录会立刻弹回上一页，
+     *   页面级 `viewModelScope` 会跟着被取消，挂在它上面的 `/logout` 就打不完了；
+     * - [login] 之后**后台补一次昵称**（登录响应里没有 `nickName`）。
      */
     private val scope: CoroutineScope,
     /** 账号数据的进程内缓存（进页面先渲染上次的快照，避免每次进来都闪一下）。 */
@@ -65,6 +68,16 @@ class AccountRepository(
         // 换账号：上一份收藏/资料快照必须作废
         cache.clear()
         session.signIn(profile, jwt, avs)
+        // 昵称（nickName）不在登录响应里，只能从资料接口补。这里**后台补一次**：
+        // 补上之后「我的」摘要卡就能优先显示昵称（用户 2026-10-23 要求），
+        // 失败不影响登录（只是继续显示登录名）。
+        scope.launch {
+            runCatching { userEdit(profile.uid) }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    Timber.tag("jm").d(e, "登录后补取昵称失败（已忽略）")
+                }
+        }
         return profile
     }
 
@@ -79,6 +92,61 @@ class AccountRepository(
     /** 退出登录（应用级作用域）：页面被关掉也能走完。 */
     fun logoutInBackground() {
         scope.launch { logout() }
+    }
+
+    // ------------------------------------------------------------------
+    // 注册 / 邮箱验证
+    // ------------------------------------------------------------------
+
+    /**
+     * 注册账号（`POST /register`）。
+     *
+     * 不需要登录态，所以**不走 [guarded]**；也不自动重试（注册不是幂等操作）。
+     * 返回可展示的服务端文案（注册成功 / 失败原因）。
+     *
+     * 失败时抛 [NetworkError.Business]，`message` 是服务端 `errors` 拼起来的完整清单
+     * （实测会一次返回"邮箱格式 + 用户名已存在 + 两次密码不一致"这样的多条）。
+     */
+    suspend fun register(
+        username: String,
+        password: String,
+        passwordConfirm: String,
+        email: String,
+        gender: String,
+    ): String {
+        val dto: EditResultDto = api().register(
+            username = username,
+            password = password,
+            passwordConfirm = passwordConfirm,
+            email = email,
+            gender = gender,
+        )
+        return dto.requireSuccess(
+            fallback = "注册失败，请稍后重试",
+            successFallback = "注册成功，请到邮箱查收验证码",
+        )
+    }
+
+    /**
+     * 提交邮箱验证码（`POST /confirm` 的 `username + numcode`）。
+     *
+     * 成功后账号才真正可用；界面随后会用注册时填的密码**自动登录**一次。
+     */
+    suspend fun confirmSignUp(username: String, numCode: String): String {
+        val dto = api().confirmSignUp(username = username, numCode = numCode)
+        return dto.requireSuccess(
+            fallback = "验证失败，请稍后重试",
+            successFallback = "邮箱验证成功",
+        )
+    }
+
+    /** 重新发送邮箱验证码（`POST /confirm` 的 `username + password`）。 */
+    suspend fun resendSignUpCode(username: String, password: String): String {
+        val dto = api().resendSignUpCode(username = username, password = password)
+        return dto.requireSuccess(
+            fallback = "验证码发送失败，请稍后重试",
+            successFallback = "验证码已重新发送",
+        )
     }
 
     // ------------------------------------------------------------------
@@ -279,7 +347,62 @@ class AccountRepository(
     // 个人资料
     // ------------------------------------------------------------------
 
-    suspend fun userEdit(uid: String): UserEditDto = guarded { api().userEditGet(uid) }
+    /**
+     * 读个人资料（`GET /useredit/{uid}`）。
+     *
+     * 每次调用都**真的联网**（读页面能不能先用缓存是 UI 的事，不是这里的事）：
+     * 资料编辑是"整条覆盖"，用一个过期快照去提交会把别处刚改的值冲掉。
+     *
+     * 顺手把结果记进缓存，并把昵称补进会话快照（「我的」页优先显示昵称）。
+     */
+    suspend fun userEdit(uid: String): UserEditDto {
+        val dto = guarded { api().userEditGet(uid) }
+        // 防御：资料接口正常返回的是整条资料（status="0"），万一回的是业务失败对象，
+        // 不能把它当成"所有字段都是空"的资料塞进编辑表单。
+        if (dto.status == "fail" || !dto.msg.isNullOrBlank()) {
+            throw NetworkError.Business(cleanServerMessage(dto.msg) ?: "读取资料失败")
+        }
+        rememberProfileDetail(dto)
+        return dto
+    }
+
+    /**
+     * 保存个人资料（`POST /useredit/{uid}`，**整条覆盖**）。
+     *
+     * 调用方必须基于**刚刚 `GET` 到的表单**修改，再由 [UserProfileForm.toSubmitFields]
+     * 把 24 个字段全量回传（少传一个就会被写成默认值）。
+     *
+     * 返回服务端回写的整条资料；同时更新资料缓存与会话里的昵称，
+     * 这样返回资料页 / 「我的」页立刻就是新值，不用再联网。
+     */
+    suspend fun saveUserEdit(uid: String, form: UserProfileForm): UserEditDto {
+        // 改密码的三条本地规则先拦一遍：只填一个 / 两次不一致，都不该发请求
+        validatePasswordChange(form)?.let { throw NetworkError.Business(it) }
+        val dto = guarded { api().userEditPost(uid, form.toSubmitFields()) }
+        // 正常返回是"更新后的整条资料"（含 status="0"）；万一服务端回业务失败
+        // （`{status:"fail", msg:"…"}`），DTO 里会带上 msg，不能当成保存成功。
+        if (dto.status == "fail" || !dto.msg.isNullOrBlank()) {
+            throw NetworkError.Business(cleanServerMessage(dto.msg) ?: "保存失败，请稍后重试")
+        }
+        rememberProfileDetail(dto)
+        return dto
+    }
+
+    /**
+     * 把一份资料结果收口：写缓存 + 把昵称补进会话快照。
+     *
+     * 昵称不在登录响应里，只能从资料接口拿到；所以任何一次成功的资料读取/保存
+     * 都顺手更新快照，让「我的」摘要卡显示用户自己设的昵称（用户 2026-10-23 要求）。
+     */
+    suspend fun rememberProfileDetail(dto: UserEditDto) {
+        // 请求在飞的时候用户可能已经退出登录：此时不能再把上一个账号的资料写回缓存
+        if (!session.isSignedIn) return
+        cache.putProfileDetail(dto)
+        val nick = dto.nickName?.trim()?.takeIf { it.isNotEmpty() }
+        val profile = session.profile ?: return
+        if (profile.nickName == nick) return
+        session.updateProfile(profile.copy(nickName = nick))
+    }
 
     // ------------------------------------------------------------------
     // 内部

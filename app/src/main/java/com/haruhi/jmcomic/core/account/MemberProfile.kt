@@ -15,6 +15,14 @@ import kotlinx.serialization.Serializable
 data class MemberProfile(
     val uid: String,
     val username: String,
+    /**
+     * 昵称（`GET/POST /useredit` 的 `nickName`）。
+     *
+     * 登录响应里**没有**这个字段，所以它是后来从资料接口补进来的（见
+     * `AccountRepository.rememberProfileDetail`）；为空时界面回落到 [username]。
+     * 加默认值是为了兼容升级前存的资料快照 JSON（缺字段时按 null 读）。
+     */
+    val nickName: String? = null,
     val email: String? = null,
     /** 头像文件名（拼 `{img_host}/media/users/{photo}`），例如 `nopic-.gif?v=0`。 */
     val photo: String? = null,
@@ -31,6 +39,15 @@ data class MemberProfile(
     /** `ad_free_before`：会员到期时间；未开通时是 `0000-00-00 00:00:00`。 */
     val adFreeBefore: String? = null,
 ) {
+    /**
+     * 界面上显示的名字：**优先昵称，没有才用登录名**（用户 2026-10-23 要求）。
+     *
+     * 昵称是用户自己在资料页设的展示名，改完应该立刻在「我的」摘要卡上看到；
+     * 登录名（`username`）仍然只读展示在资料页 / 编辑页。
+     */
+    val displayName: String
+        get() = nickName?.trim()?.takeIf { it.isNotEmpty() } ?: username.ifBlank { "JM 用户" }
+
     /**
      * 会员到期日（`2026-11-01`）。
      *

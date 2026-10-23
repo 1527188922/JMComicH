@@ -101,8 +101,24 @@ object Routes {
 
     // ---------------- 账号（JM 会员，见 docs/account-design.md） ----------------
 
-    /** 登录页。`next` 是登录成功后要落到的页面（空 = 回「我的」）。 */
-    const val LOGIN = "jm/account/login?next={next}"
+    /**
+     * 登录页。
+     *
+     * `next` 是登录成功后要落到的页面（空 = 回「我的」）。
+     * `username` 用于"注册验证成功但自动登录失败"时预填用户名（用户要求：回登录页预填）。
+     */
+    const val LOGIN = "jm/account/login?next={next}&username={username}"
+
+    /**
+     * 注册页（注册 → 邮箱验证码 → 自动登录）。
+     *
+     * 与登录页共用同一个 `next`：从「收藏」引导进来的用户注册完直接落在收藏页，
+     * 不用再回「我的」重新点一次。
+     *
+     * `verify=true` 是「已有验证码」入口：不显示注册表单，直接填用户名 / 密码 / 验证码
+     * （账号已经创建、只是没验证完的情况，见 [signup]）。
+     */
+    const val SIGNUP = "jm/account/signup?next={next}&verify={verify}"
 
     /** 账号收藏夹列表。 */
     const val ACCOUNT_FAVORITES = "jm/account/favorites"
@@ -110,8 +126,11 @@ object Routes {
     /** 某个收藏夹内的漫画网格；`folderId <= 0` 表示「全部收藏」。 */
     const val ACCOUNT_FAVORITE_ALBUMS = "jm/account/favorites/{folderId}?name={name}"
 
-    /** 个人资料（只读）。 */
+    /** 个人资料（只读，右上角「编辑」进编辑页）。 */
     const val ACCOUNT_PROFILE = "jm/account/profile"
+
+    /** 个人资料编辑（`GET` 最新资料 → 全量 `POST /useredit`）。 */
+    const val ACCOUNT_PROFILE_EDIT = "jm/account/profile/edit"
 
     /**
      * 「我的 → 留言记录」：我发过的留言（`GET /forum?uid={自己}`）。
@@ -155,8 +174,19 @@ object Routes {
      *
      * @param next 登录成功后要落到的页面路由；空串 = 回「我的」。
      *        必须走 [encodeRouteArg]（它本身是带 `?` 与中文的任意路由串）。
+     * @param username 预填的用户名（注册验证成功但自动登录失败时带过来），空串 = 不预填。
      */
-    fun login(next: String = "") = "jm/account/login?next=${encodeRouteArg(next)}"
+    fun login(next: String = "", username: String = "") =
+        "jm/account/login?next=${encodeRouteArg(next)}&username=${encodeRouteArg(username)}"
+
+    /**
+     * 注册页地址。
+     *
+     * @param next 注册 + 验证 + 自动登录成功后要落到的页面；空串 = 回「我的」。
+     * @param verifyOnly true = 「已有验证码」入口（账号已创建，只补验证码）。
+     */
+    fun signup(next: String = "", verifyOnly: Boolean = false) =
+        "jm/account/signup?next=${encodeRouteArg(next)}&verify=$verifyOnly"
 
     /**
      * 账号收藏夹内页。
@@ -467,13 +497,24 @@ fun ModeRoot(
                 // 登录页：成功后关掉自己，有 next 就去 next（否则留在「我的」）
                 composable(
                     route = Routes.LOGIN,
-                    arguments = listOf(navArgument("next") { type = NavType.StringType; defaultValue = "" }),
+                    arguments = listOf(
+                        navArgument("next") { type = NavType.StringType; defaultValue = "" },
+                        // 注册验证成功但自动登录失败时，带用户名回登录页预填
+                        navArgument("username") { type = NavType.StringType; defaultValue = "" },
+                    ),
                 ) { entry ->
                     val next = remember(entry.arguments?.getString("next")) {
                         decodeRouteArg(entry.arguments?.getString("next").orEmpty())
                     }
+                    val prefilledUsername = remember(entry.arguments?.getString("username")) {
+                        decodeRouteArg(entry.arguments?.getString("username").orEmpty())
+                    }
                     val vm: AccountAuthViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
+                    // 预填只做一次（转屏/重组会重放 LaunchedEffect，但 setUsername 是幂等的）
+                    LaunchedEffect(prefilledUsername) {
+                        if (prefilledUsername.isNotBlank()) vm.setUsername(prefilledUsername)
+                    }
                     AccountLoginScreen(
                         state = state,
                         onBack = { navController.popBackStack() },
@@ -482,6 +523,8 @@ fun ModeRoot(
                         onTogglePasswordVisible = vm::togglePasswordVisible,
                         onSubmit = vm::submit,
                         onConsumeError = vm::consumeError,
+                        onOpenSignUp = { navController.navigate(Routes.signup(next)) },
+                        onOpenVerify = { navController.navigate(Routes.signup(next, verifyOnly = true)) },
                         onLoggedIn = {
                             // 一次性把登录页从栈里摘掉，再落到 next（没有 next 就留在「我的」）。
                             // 不用"先 pop 再 navigate"：两次导航挨着调用时，第二次可能基于旧栈。
@@ -492,6 +535,65 @@ fun ModeRoot(
                                     popUpTo(Routes.LOGIN) { inclusive = true }
                                     launchSingleTop = true
                                 }
+                            }
+                        },
+                    )
+                }
+
+                // 注册页：注册 → 邮箱验证码 → 自动登录。返回键三级语义（验证码 → 表单 → 上一页）
+                // 由 `AccountSignUpScreen` 自己接管；这里只负责成功后的落点。
+                composable(
+                    route = Routes.SIGNUP,
+                    arguments = listOf(
+                        navArgument("next") { type = NavType.StringType; defaultValue = "" },
+                        // 「已有验证码」入口：跳过注册表单，直接填用户名 / 密码 / 验证码
+                        navArgument("verify") { type = NavType.BoolType; defaultValue = false },
+                    ),
+                ) { entry ->
+                    val next = remember(entry.arguments?.getString("next")) {
+                        decodeRouteArg(entry.arguments?.getString("next").orEmpty())
+                    }
+                    val verifyOnly = entry.arguments?.getBoolean("verify") ?: false
+                    val vm: AccountSignUpViewModel = viewModel(
+                        viewModelStoreOwner = entry,
+                        factory = ViewModelFactory(container, signUpVerifyOnly = verifyOnly),
+                    )
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountSignUpScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onBackToForm = vm::backToForm,
+                        onUsernameChange = vm::setUsername,
+                        onPasswordChange = vm::setPassword,
+                        onPasswordConfirmChange = vm::setPasswordConfirm,
+                        onEmailChange = vm::setEmail,
+                        onGenderChange = vm::setGender,
+                        onAdultConfirmedChange = vm::setAdultConfirmed,
+                        onTermsAcceptedChange = vm::setTermsAccepted,
+                        onTogglePasswordVisible = vm::togglePasswordVisible,
+                        onSubmit = vm::submit,
+                        onCodeChange = vm::setCode,
+                        onSubmitCode = vm::submitCode,
+                        onResendCode = vm::resendCode,
+                        onConsumeError = vm::consumeError,
+                        onResumeVerification = vm::resumeVerification,
+                        onSignedUp = {
+                            // 注册页与登录页一起摘掉：注册成功即已登录，回到登录页没有意义
+                            if (next.isBlank()) {
+                                navController.popBackStack(Routes.LOGIN, inclusive = true)
+                            } else {
+                                navController.navigate(next) {
+                                    popUpTo(Routes.LOGIN) { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                            }
+                        },
+                        onGoLogin = { username ->
+                            // 账号已创建但自动登录失败：去登录页，预填用户名（密码让用户自己输）。
+                            // `popUpTo(LOGIN)` 把"旧的登录页 + 注册页"一起摘掉，
+                            // 否则栈里会叠出两个登录页、返回键会回到没预填的那个。
+                            navController.navigate(Routes.login(next, username)) {
+                                popUpTo(Routes.LOGIN) { inclusive = true }
                             }
                         },
                     )
@@ -557,10 +659,36 @@ fun ModeRoot(
                 composable(Routes.ACCOUNT_PROFILE) { entry ->
                     val vm: AccountProfileViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                     val state by vm.state.collectAsStateWithLifecycle()
+                    // 从编辑页返回：保存成功后新资料已写进账号缓存，这里把它同步到界面上
+                    // （否则返回资料页看到的还是编辑前的内容，用户会以为没保存）。
+                    OnResumeEffect { vm.onScreenResumed() }
                     AccountProfileScreen(
                         state = state,
                         onBack = { navController.popBackStack() },
                         onRefresh = vm::refresh,
+                        onEdit = {
+                            // 连点两下不要压两个编辑页（这条路由没有参数，复用同一个 entry 是安全的）
+                            navController.navigate(Routes.ACCOUNT_PROFILE_EDIT) {
+                                launchSingleTop = true
+                            }
+                        },
+                    )
+                }
+
+                // 个人资料编辑：进页面先 GET 最新资料，加载完再渲染表单（避免官方 App 的回显 bug）
+                composable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
+                    val vm: AccountProfileEditViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    AccountProfileEditScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onFormChange = vm::updateForm,
+                        onSave = vm::save,
+                        onRetry = vm::retry,
+                        onMessage = showMessage,
+                        onConsumeMessage = vm::consumeMessage,
+                        onConsumeSaveError = vm::consumeSaveError,
+                        onSaved = { navController.popBackStack() },
                     )
                 }
 
@@ -1157,6 +1285,8 @@ class ViewModelFactory(
     /** 账号收藏夹内页用：null = 全部收藏。 */
     private val accountFolderId: String? = null,
     private val accountFolderName: String = "",
+    /** 注册页用：true = 从「已有验证码」进来，直接停在验证码步骤。 */
+    private val signUpVerifyOnly: Boolean = false,
     /** 详情页进来时停在哪一个 tab（「留言记录」点进来是评论）。 */
     private val initialTab: AlbumDetailTab = AlbumDetailTab.DEFAULT,
 ) : ViewModelProvider.Factory {
@@ -1205,6 +1335,12 @@ class ViewModelFactory(
         modelClass.isAssignableFrom(AccountAuthViewModel::class.java) ->
             AccountAuthViewModel(container.accountRepository) as T
 
+        modelClass.isAssignableFrom(AccountSignUpViewModel::class.java) ->
+            AccountSignUpViewModel(
+                account = container.accountRepository,
+                verifyOnly = signUpVerifyOnly,
+            ) as T
+
         modelClass.isAssignableFrom(AccountFavoritesViewModel::class.java) ->
             AccountFavoritesViewModel(
                 account = container.accountRepository,
@@ -1224,6 +1360,9 @@ class ViewModelFactory(
                 account = container.accountRepository,
                 cache = container.accountCache,
             ) as T
+
+        modelClass.isAssignableFrom(AccountProfileEditViewModel::class.java) ->
+            AccountProfileEditViewModel(container.accountRepository) as T
 
         // 留言记录：读/删都走账号接口；评论缓存传进去是为了删完把对应本子的详情页缓存清掉
         modelClass.isAssignableFrom(AccountCommentsViewModel::class.java) ->
