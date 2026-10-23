@@ -72,3 +72,12 @@ fun AvatarImage(
  * 用 `compositionLocalOf` 而不是 `staticCompositionLocalOf`：设置变化时要触发重组。
  */
 val LocalImageDomain = compositionLocalOf { Defaults.IMAGE_DOMAIN }
+
+/**
+ * 隐私模式：所有漫画封面模糊/遮蔽。
+ *
+ * 目前只有 `Cover` 读取它。用 `compositionLocalOf` 而不是 static 版本：
+ * 开关切换时需要触发封面重组，static 会让 Provider 下面的整棵子树一起重组。
+ * 默认 `false`，Preview / UI 测试不需要额外配置。
+ */
+val LocalPrivacyMode = compositionLocalOf { false }

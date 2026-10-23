@@ -282,15 +282,31 @@ fun ModeRoot(
     // （用户要求第 8 点：加载过的封面优先读本地）
     // 图片线路同时下发：封面 URL 跟着设置页选中的那条走，切线路后已显示的封面立即换源。
     val imageDomain by container.imageDomain.collectAsStateWithLifecycle()
+    // 隐私模式：设置页 Switch 与全局双指手势共用同一份存储，封面只订阅这一个值。
+    val privacyMode by container.privacyMode.collectAsStateWithLifecycle()
+    // 稳定回调：pointerInput 的 lambda 不会因为页面重组被换成新实例。
+    val setPrivacyMode: (Boolean) -> Unit = remember(container) {
+        { enabled -> container.setPrivacyMode(enabled) }
+    }
     CompositionLocalProvider(
         LocalImageLoader provides container.imageLoader,
         LocalImageDomain provides imageDomain,
+        LocalPrivacyMode provides privacyMode,
     ) {
         Scaffold(
             // 「点输入框以外的地方就失焦、收起软键盘」挂在**根节点**上，一处覆盖所有页面
             // （实现与两条踩坑约束见 `FocusOnTap.kt`）。挂根节点而不是喂给每个输入框，
             // 是为了让以后新增的页面/输入框自动具备这个行为，不用每处再挂一次。
-            modifier = modifier.fillMaxSize().clearFocusOnTap(),
+            modifier = modifier
+                .fillMaxSize()
+                .clearFocusOnTap()
+                // 双指聚拢开启、张开关闭隐私模式。
+                // 阅读器内禁用：它的双指缩小/还原会跨过同样的阈值，造成误触发。
+                .privacyPinchGesture(
+                    enabled = currentRoute != Routes.READER,
+                    onPinchIn = { setPrivacyMode(true) },
+                    onPinchOut = { setPrivacyMode(false) },
+                ),
             // Scaffold 默认容器色是 `colorScheme.background`（本主题下是 #F5F5F5 灰）。
             // 但状态栏那条（topBar 槽为空、由 contentWindowInsets 让出来）画的正是这个颜色，
             // 必须是纯白才能和底栏 NavigationBar（surfaceContainer = #FFFFFF）一致。
@@ -752,6 +768,9 @@ fun ModeRoot(
                         onSetKeepScreenOn = vm::setKeepScreenOn,
                         // 取图管线：原图缓存（默认，快）/ 解扰后落盘（旧，可随时切回）
                         onSetReaderCacheMode = vm::setReaderCacheMode,
+                        // 隐私模式：与全局双指手势共用同一个存储值
+                        privacyMode = privacyMode,
+                        onSetPrivacyMode = setPrivacyMode,
                         // 下载
                         onSetDownloadThreads = vm::setDownloadThreads,
                         onSetDownloadNetwork = vm::setDownloadNetwork,

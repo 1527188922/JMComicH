@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.ui
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -87,6 +88,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -1101,6 +1104,16 @@ fun Cover(
     val context = LocalContext.current
     // 设置页选中的图片线路：变化时重建请求，封面改用新域名
     val imageDomain = LocalImageDomain.current
+    // 隐私模式：**所有**显示封面的地方都经过 Cover，所以只在这里做一次模糊。
+    val privacyMode = LocalPrivacyMode.current
+    // Android 12 起才有 RenderEffect 可用；更低版本没有原生高斯模糊
+    // （用户明确不要求旧系统真模糊），退化成「低透明度 + 近不透明遮罩」。
+    val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val privacyImageModifier = when {
+        !privacyMode -> Modifier
+        canBlur -> Modifier.blur(PRIVACY_COVER_BLUR_RADIUS)
+        else -> Modifier.alpha(PRIVACY_COVER_FALLBACK_ALPHA)
+    }
     val model = remember(albumId, context, imageDomain) {
         ImageRequest.Builder(context)
             .data(Defaults.buildCoverUrl(albumId, imageDomain))
@@ -1113,6 +1126,7 @@ fun Cover(
     // 外层 Box 只是为了能把 tag 叠在封面右上角；尺寸/裁切仍由调用点传进来的 modifier 决定。
     // 所有调用点都会给一个确定尺寸（size / fillMaxSize），所以 matchParentSize 有约束可用。
     Box(modifier = modifier) {
+        val imageModifier = Modifier.matchParentSize().then(privacyImageModifier)
         // imageLoader 为 null（Preview / 测试未安装）时交给 Coil 的单例加载器
         if (imageLoader != null) {
             AsyncImage(
@@ -1120,14 +1134,26 @@ fun Cover(
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
                 imageLoader = imageLoader,
-                modifier = Modifier.matchParentSize(),
+                modifier = imageModifier,
             )
         } else {
             AsyncImage(
                 model = model,
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize(),
+                modifier = imageModifier,
+            )
+        }
+        // Android 12 以下没有真模糊：压暗封面，只留一点色块，保证看不出版面。
+        if (privacyMode && !canBlur) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(
+                            alpha = PRIVACY_COVER_FALLBACK_SCRIM_ALPHA,
+                        ),
+                    ),
             )
         }
         if (!tag.isNullOrBlank()) {
@@ -1163,6 +1189,13 @@ internal fun coverMemoryCacheKey(albumId: Long): String = "jm-cover-$albumId"
  */
 private const val COVER_MIN_WIDTH_PX = 400
 private const val COVER_MIN_HEIGHT_PX = 540
+
+/** 隐私模式下封面的模糊半径（仅 Android 12+ 生效）。 */
+private val PRIVACY_COVER_BLUR_RADIUS = 18.dp
+
+/** Android 12 以下：封面压到很低的不透明度，再叠一层近不透明遮罩。 */
+private const val PRIVACY_COVER_FALLBACK_ALPHA = 0.2f
+private const val PRIVACY_COVER_FALLBACK_SCRIM_ALPHA = 0.86f
 
 /**
  * 书库卡片的状态文案。

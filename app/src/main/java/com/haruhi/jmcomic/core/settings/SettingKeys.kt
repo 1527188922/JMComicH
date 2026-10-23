@@ -38,6 +38,14 @@ internal object SettingKeys {
         const val KEEP_SCREEN_ON = "keep_screen_on"
 
         /**
+         * 隐私模式：所有漫画封面模糊显示。
+         *
+         * 设置页的 Switch 与全应用的双指手势写的是**同一个 key**：
+         * 手势只是这个设置的另一个入口，所以状态会跨重启保留。
+         */
+        const val PRIVACY_MODE = "privacy_mode"
+
+        /**
          * 阅读器取图管线：0=解扰后落盘（旧） 1=原图缓存（默认）。
          *
          * 两套管线都保留，用户可随时切回来（见 [ReaderCacheMode]）。
