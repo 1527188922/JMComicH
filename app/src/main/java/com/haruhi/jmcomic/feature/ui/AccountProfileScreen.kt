@@ -20,7 +20,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -69,9 +68,6 @@ fun AccountProfileScreen(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
             Text("个人资料", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            if (state.loading) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-            }
         }
 
         Box(
@@ -88,79 +84,83 @@ fun AccountProfileScreen(
                 },
                 modifier = Modifier.fillMaxSize(),
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val profile = state.profile
-                    if (!state.signedIn || profile == null) {
+                val profile = state.profile
+                when {
+                    !state.signedIn || profile == null ->
                         EmptyBox("还没有登录", "登录后才能查看个人资料")
-                        return@Column
-                    }
 
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    // 本地没有资料快照、正在联网拉 `/useredit`（首次进入或失败后重试）：
+                    // 整页转圈，避免资料卡先出来、生日/昵称等字段再一条条出现（用户要求 2026-10-23）。
+                    state.loading && state.detail == null -> LoadingBox()
+
+                    else -> Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        ProfileAvatar(profile)
-                        Spacer(Modifier.size(14.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = profile.username.ifBlank { "JM 用户" },
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = buildString {
-                                    append("Lv.").append(profile.level)
-                                    if (profile.levelName.isNotBlank()) append(" · ").append(profile.levelName)
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            state.memberLine?.let { line ->
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = line,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                ProfileAvatar(profile)
+                                Spacer(Modifier.size(14.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = profile.username.ifBlank { "JM 用户" },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = buildString {
+                                            append("Lv.").append(profile.level)
+                                            if (profile.levelName.isNotBlank()) append(" · ").append(profile.levelName)
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    state.memberLine?.let { line ->
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            text = line,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                             }
                         }
-                    }
-                }
 
-                InfoCard {
-                    InfoRow("经验", expText(profile))
-                    InfoRow("J Coin", profile.coin)
-                    InfoRow("收藏", "${profile.albumFavorites} / ${profile.albumFavoritesMax}")
-                    state.detail?.nickName?.takeIf { it.isNotBlank() }?.let { InfoRow("昵称", it) }
-                    state.detail?.gender?.takeIf { it.isNotBlank() }?.let { InfoRow("性别", genderText(it)) }
-                    state.detail?.birthday?.takeIf { it.isNotBlank() && !it.startsWith("0000") }?.let {
-                        InfoRow("生日", it)
-                    }
-                    state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { InfoRow("关于我", it) }
-                }
+                        InfoCard {
+                            InfoRow("经验", expText(profile))
+                            InfoRow("J Coin", profile.coin)
+                            InfoRow("收藏", "${profile.albumFavorites} / ${profile.albumFavoritesMax}")
+                            state.detail?.nickName?.takeIf { it.isNotBlank() }?.let { InfoRow("昵称", it) }
+                            state.detail?.gender?.takeIf { it.isNotBlank() }?.let { InfoRow("性别", genderText(it)) }
+                            state.detail?.birthday?.takeIf { it.isNotBlank() && !it.startsWith("0000") }?.let {
+                                InfoRow("生日", it)
+                            }
+                            state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { InfoRow("关于我", it) }
+                        }
 
-                    state.error?.let { error ->
-                        Text(
-                            text = "部分资料未能加载：$error",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        TextButton(onClick = onRefresh) { Text("重试") }
-                    }
+                        state.error?.let { error ->
+                            Text(
+                                text = "部分资料未能加载：$error",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = onRefresh) { Text("重试") }
+                        }
 
-                    Spacer(Modifier.height(24.dp))
+                        Spacer(Modifier.height(24.dp))
+                    }
                 }
             }
         }
