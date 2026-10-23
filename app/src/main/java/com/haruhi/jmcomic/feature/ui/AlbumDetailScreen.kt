@@ -249,6 +249,13 @@ fun AlbumDetailScreen(
      */
     onSearchAuthor: (String) -> Unit = {},
     /**
+     * 评论里的「我推荐这本书 <jmid>」：点它打开**那本漫画的详情页**（用户 2026-10-22 要求）。
+     *
+     * 参数是目标本子号。与 [onSearchAuthor] 一样是普通入栈：返回就回到正在看的这本；
+     * "点的是不是当前这本"由上层判断（官方的 `handleGetId` 也是同一个本子就不动）。
+     */
+    onOpenAlbum: (Long) -> Unit = {},
+    /**
      * 提示文案的**上层**回调。
      *
      * 为什么不在这里自己弹 Snackbar：收藏夹是 `ModalBottomSheet`，
@@ -387,9 +394,7 @@ fun AlbumDetailScreen(
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Text(
-                        text = state.album?.name?.takeIf { it.isNotBlank() }
-                            ?: state.album?.id?.let { "JM$it" }
-                            ?: "漫画详情",
+                        text = state.album?.let { privacyAlbumTitle(it.id, it.name) } ?: "漫画详情",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -551,6 +556,7 @@ fun AlbumDetailScreen(
                                     ExportSection(
                                         exports = state.exports,
                                         active = state.activeExports,
+                                        albumId = state.album?.id,
                                         canOpenFolder = state.canOpenFolder,
                                         onOpen = onOpenOutput,
                                         onSend = onSendOutput,
@@ -641,6 +647,7 @@ fun AlbumDetailScreen(
                             onRetry = onRetryComments,
                             onReply = onReplyComment,
                             onDelete = { pendingDeleteComment = it },
+                            onOpenAlbum = onOpenAlbum,
                         )
                     }
                 }
@@ -711,7 +718,8 @@ fun AlbumDetailScreen(
     pendingDeleteExport?.let { name ->
         ConfirmDialog(
             title = "删除这个导出文件？",
-            text = "会从下载目录里删掉「$name」。",
+            // 文字隐私：成品文件名里带书名，显示时换成 JM 号（删除仍用真实文件名）
+            text = "会从下载目录里删掉「${privacyExportName(name, state.album?.id)}」。",
             confirmText = "删除",
             onConfirm = {
                 pendingDeleteExport = null
@@ -933,6 +941,7 @@ private fun LazyListScope.commentTabItems(
     onRetry: () -> Unit,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     if (state.comments.isEmpty()) {
         item(key = "comments_placeholder") {
@@ -970,6 +979,7 @@ private fun LazyListScope.commentTabItems(
             deletingCid = state.commentDeletingCid,
             onReply = onReply,
             onDelete = onDelete,
+            onOpenAlbum = onOpenAlbum,
         )
     }
 
@@ -1115,6 +1125,7 @@ private fun CommentActionText(
  *
  * @param onReply 点「回复」：上层把这一条设成回复目标，底部输入条变成「回复 @昵称」。
  * @param onDelete 点「删除」：只有自己发的留言（`UID` 与当前账号一致）才会出现这个动作。
+ * @param onOpenAlbum 点正文里的「我推荐这本书 <jmid>」：打开那本漫画的详情页。
  */
 @Composable
 private fun CommentItem(
@@ -1123,6 +1134,7 @@ private fun CommentItem(
     deletingCid: String?,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1156,14 +1168,14 @@ private fun CommentItem(
                 }
                 if (comment.text.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    // 正文可长按选中复制（评论里常有"求车牌"之类的文字，用户会想复制）
-                    SelectionContainer {
-                        Text(
-                            text = comment.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            lineHeight = 20.sp,
-                        )
-                    }
+                    // 正文可长按选中复制（评论里常有"求车牌"之类的文字，用户会想复制）；
+                    // 里面的「我推荐这本书 <jmid>」是链接，点了跳那本（见 CommentBody）
+                    CommentBody(
+                        text = comment.text,
+                        onOpenAlbum = onOpenAlbum,
+                        style = MaterialTheme.typography.bodyMedium,
+                        lineHeight = 20.sp,
+                    )
                 }
                 if (comment.replies.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -1173,6 +1185,7 @@ private fun CommentItem(
                         deletingCid = deletingCid,
                         onReply = onReply,
                         onDelete = onDelete,
+                        onOpenAlbum = onOpenAlbum,
                     )
                 }
                 // 「回复」与点赞数同一行：回复是**动作**，点赞数只是信息，
@@ -1307,6 +1320,7 @@ private fun CommentReplies(
     deletingCid: String?,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     var expanded by remember(replies) { mutableStateOf(false) }
     val folded = !expanded && replies.size > COMMENT_REPLY_PREVIEW
@@ -1344,12 +1358,12 @@ private fun CommentReplies(
                 }
                 if (reply.text.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
-                    SelectionContainer {
-                        Text(
-                            text = reply.text,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                    // 回复里的推荐书籍同样是链接（官方回复正文也允许带这条标记）
+                    CommentBody(
+                        text = reply.text,
+                        onOpenAlbum = onOpenAlbum,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 // 回复也能被回复（服务端同样用 `comment_id` 指向它的 CID）。
                 // 自己发的回复同样给「删除」，与主楼一致。
@@ -1582,6 +1596,8 @@ private fun SmallCloseButton(contentDescription: String, onClick: () -> Unit) {
 private fun ExportSection(
     exports: List<ExportedFormat>,
     active: List<ActiveExport>,
+    /** 文字隐私下显示成品文件名要用的 JM 号（文件名本身仍用真实值）。 */
+    albumId: Long?,
     canOpenFolder: Boolean,
     onOpen: (String) -> Unit,
     onSend: (String) -> Unit,
@@ -1650,6 +1666,7 @@ private fun ExportSection(
                     if (index > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                     ExportedFileRow(
                         exported = exported,
+                        albumId = albumId,
                         onOpen = { onOpen(exported.file.displayName) },
                         onSend = { onSend(exported.file.displayName) },
                         onDelete = { onDelete(exported.file.displayName) },
@@ -1721,10 +1738,13 @@ private fun ActiveExportRow(row: ActiveExport) {
 @Composable
 private fun ExportedFileRow(
     exported: ExportedFormat,
+    albumId: Long?,
     onOpen: () -> Unit,
     onSend: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    // 文字隐私：文件名会露书名，显示层换成 JM 号
+    val displayName = privacyExportName(exported.file.displayName, albumId)
     Row(verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.height(IntrinsicSize.Min),) {
         // 格式徽标：一眼分清哪个是 zip 哪个是 pdf，不用去读扩展名
@@ -1746,7 +1766,7 @@ private fun ExportedFileRow(
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = exported.file.displayName,
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -1930,11 +1950,13 @@ private fun AlbumHeader(
     onSearchAuthor: (String) -> Unit = {},
 ) {
     val album = state.album ?: return
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val albumTitle = privacyAlbumTitle(album.id, album.name)
     Column(modifier = Modifier.padding(12.dp)) {
         Row {
             Cover(
                 albumId = album.id,
-                contentDescription = album.name,
+                contentDescription = albumTitle,
                 modifier = Modifier
                     .size(width = 110.dp, height = 150.dp)
                     .clip(RoundedCornerShape(10.dp))
@@ -1951,7 +1973,7 @@ private fun AlbumHeader(
                 // 所以每处都用默认 state，各管各的。
                 SelectionContainer {
                     Text(
-                        text = album.name?.takeIf { it.isNotBlank() } ?: "JM${album.id}",
+                        text = albumTitle,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
@@ -2080,16 +2102,19 @@ private fun AlbumHeader(
             )
         }
 
-        parseStringArray(album.tags).takeIf { it.isNotEmpty() }?.let { tags ->
-            Spacer(Modifier.height(8.dp))
-            // **不限行数**（用户 2026-10-20 要求）：有多少 tag 就展示多少。
-            // 以前这里写的是 maxLines = 2 + 省略号，第三个以后的标签直接被截掉、还看不出被截了。
-            // 现在按宽度自然换行，整块跟着上面的 LazyColumn 一起滚，不会把内容顶出屏幕。
-            Text(
-                text = tags.filter { it.isNotBlank() }.joinToString(" · ") { "#${it.trim()}" },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        // 文字隐私：详情页标签整块隐藏（用户要求）
+        if (!LocalTextPrivacy.current) {
+            parseStringArray(album.tags).takeIf { it.isNotEmpty() }?.let { tags ->
+                Spacer(Modifier.height(8.dp))
+                // **不限行数**（用户 2026-10-20 要求）：有多少 tag 就展示多少。
+                // 以前这里写的是 maxLines = 2 + 省略号，第三个以后的标签直接被截掉、还看不出被截了。
+                // 现在按宽度自然换行，整块跟着上面的 LazyColumn 一起滚，不会把内容顶出屏幕。
+                Text(
+                    text = tags.filter { it.isNotBlank() }.joinToString(" · ") { "#${it.trim()}" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         album.description?.takeIf { it.isNotBlank() }?.let { description ->
@@ -2171,6 +2196,8 @@ private fun FavoritePickerSheet(
                 LazyColumn(state = favoritesState, modifier = Modifier.fillMaxWidth()) {
                     items(allFavorites, key = { it.id }) { favorite ->
                         val joined = favorite.id in currentFavoriteIds
+                        // 文字隐私：收藏夹名称只保留首字符
+                        val folderName = privacyFolderName(favorite.name)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2182,7 +2209,7 @@ private fun FavoritePickerSheet(
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Text(
-                                    text = if (joined) "✓ ${favorite.name}" else favorite.name,
+                                    text = if (joined) "✓ $folderName" else folderName,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }

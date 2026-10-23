@@ -759,6 +759,13 @@ fun SettingsScreen(
     onSetKeepScreenOn: (Boolean) -> Unit,
     /** 阅读器取图管线：原图缓存 / 解扰后落盘（旧行为，随时可切回）。 */
     onSetReaderCacheMode: (ReaderCacheMode) -> Unit,
+    // 隐私
+    /** 隐私模式：所有漫画封面模糊显示；与全局双指手势共用同一个存储值。 */
+    privacyMode: Boolean,
+    onSetPrivacyMode: (Boolean) -> Unit,
+    /** 文字隐私：隐私模式开启时才显示并生效；默认开启。 */
+    textPrivacy: Boolean,
+    onSetTextPrivacy: (Boolean) -> Unit,
     // 下载
     onSetDownloadThreads: (Int) -> Unit,
     /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
@@ -842,6 +849,12 @@ fun SettingsScreen(
                     onSetReadingDirection = onSetReadingDirection,
                     onSetKeepScreenOn = onSetKeepScreenOn,
                     onSetReaderCacheMode = onSetReaderCacheMode,
+                )
+                PrivacySection(
+                    privacyMode = privacyMode,
+                    onSetPrivacyMode = onSetPrivacyMode,
+                    textPrivacy = textPrivacy,
+                    onSetTextPrivacy = onSetTextPrivacy,
                 )
                 DownloadSection(
                     state = state,
@@ -952,6 +965,41 @@ private fun ReadingSection(
             selectedIndex = ReaderCacheMode.entries.indexOf(state.readerCacheMode),
             onSelect = { onSetReaderCacheMode(ReaderCacheMode.entries[it]) },
         )
+    }
+}
+
+/**
+ * 「隐私」分组：隐私模式下所有漫画封面模糊显示。
+ *
+ * 开关值与全局双指手势共用同一个 DataStore key，所以这里不做本页草稿态：
+ * 点击即写，根节点下发的 StateFlow 再回推给 Switch。
+ *
+ * 「文字隐私」只在隐私模式开启时出现：值一直保留在存储里（默认开启），
+ * 关掉隐私模式只是让它暂时不生效，再打开时按上次的选择继续。
+ */
+@Composable
+private fun PrivacySection(
+    privacyMode: Boolean,
+    onSetPrivacyMode: (Boolean) -> Unit,
+    textPrivacy: Boolean,
+    onSetTextPrivacy: (Boolean) -> Unit,
+) {
+    SettingsSection("隐私") {
+        SwitchRow(
+            title = "隐私模式",
+            hint = "模糊所有漫画封面；双指聚拢开启、张开取消（阅读器内不生效）",
+            checked = privacyMode,
+            onCheckedChange = onSetPrivacyMode,
+        )
+        if (privacyMode) {
+            CardDivider()
+            SwitchRow(
+                title = "文字隐私",
+                hint = "漫画名称显示为 JM 号；详情页标签隐藏；收藏夹名称只显示首字",
+                checked = textPrivacy,
+                onCheckedChange = onSetTextPrivacy,
+            )
+        }
     }
 }
 

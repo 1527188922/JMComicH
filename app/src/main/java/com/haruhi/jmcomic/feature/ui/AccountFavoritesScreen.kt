@@ -205,7 +205,7 @@ fun AccountFavoritesScreen(
     }
     deleteTarget?.let { target ->
         ConfirmDialog(
-            title = "删除「${target.name}」？",
+            title = "删除「${privacyFolderName(target.name)}」？",
             text = "只删除这个空收藏夹；夹里有漫画时官方不允许删除。",
             confirmText = "删除",
             confirmButtonColors = ButtonDefaults.textButtonColors(
@@ -243,10 +243,12 @@ fun AccountAlbumsScreen(
     var removing by remember { mutableStateOf<AccountAlbum?>(null) }
 
     // 数量并进标题（用户要求：`← 收藏夹1（178本）`），不再单独占一行
+    // 文字隐私：收藏夹名称只保留首字符
+    val folderTitle = privacyFolderName(state.title)
     val titleText = if (state.loading && state.total == 0) {
-        state.title
+        folderTitle
     } else {
-        "${state.title}（${state.total}本）"
+        "$folderTitle（${state.total}本）"
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -351,7 +353,7 @@ fun AccountAlbumsScreen(
     removing?.let { album ->
         ConfirmDialog(
             title = "从收藏里移出？",
-            text = "取消收藏：「${album.name ?: "JM${album.id}"}」",
+            text = "取消收藏：「${privacyAlbumTitle(album.id, album.name)}」",
             confirmText = "移出",
             confirmButtonColors = ButtonDefaults.textButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,
@@ -465,7 +467,7 @@ fun AccountFavoriteSheet(
                             }
                             items(folders, key = { it.fid }) { folder ->
                                 FolderChoiceRow(
-                                    label = folder.name,
+                                    label = privacyFolderName(folder.name),
                                     // 已收藏时这些行的语义是"移动至该夹"，右侧直接写出来
                                     trailingText = if (inFavorites) {
                                         "移动至"
@@ -612,6 +614,8 @@ private fun FavoriteFolderCard(
     onDelete: (() -> Unit)?,
     busy: Boolean = false,
 ) {
+    // 文字隐私：收藏夹名称只保留首字符
+    val displayName = privacyFolderName(name)
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(12.dp),
@@ -621,10 +625,10 @@ private fun FavoriteFolderCard(
             modifier = Modifier.padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FolderCover(coverAlbumId = coverAlbumId, name = name)
+            FolderCover(coverAlbumId = coverAlbumId, name = displayName)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(name, style = MaterialTheme.typography.bodyLarge)
+                Text(displayName, style = MaterialTheme.typography.bodyLarge)
                 Text(
                     text = buildString {
                         append(count?.toString() ?: "…")
@@ -716,6 +720,8 @@ private fun AccountAlbumCard(
     onOpen: () -> Unit,
     onLongPress: () -> Unit,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(album.id, album.name)
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -732,14 +738,14 @@ private fun AccountAlbumCard(
         ) {
             Cover(
                 albumId = album.id,
-                contentDescription = album.name,
+                contentDescription = displayName,
                 tag = album.categoryTag,
                 modifier = Modifier.fillMaxSize(),
             )
         }
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                text = album.name.orEmpty().ifBlank { "JM${album.id}" },
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

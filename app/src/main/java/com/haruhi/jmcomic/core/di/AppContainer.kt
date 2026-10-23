@@ -450,6 +450,60 @@ class AppContainer(private val appContext: Context) {
     }
 
     /**
+     * 隐私模式（所有漫画封面模糊显示）的**热流**。
+     *
+     * 设置页的 Switch 与全应用双指手势写的是同一个 key，所以做成热流：
+     * 任意一个入口改完，已经在界面上的封面立刻跟着变。
+     *
+     * 初始值**同步**读一次（与 [imageDomain] 同样的理由）：如果上次退出时是开启状态，
+     * 异步读会让第一帧先画出清晰封面，隐私模式下这是不可接受的。
+     */
+    val privacyMode: StateFlow<Boolean> by lazy {
+        val flow = settings.jmBoolean(SettingKeys.Jm.PRIVACY_MODE, SettingDefaults.Jm.PRIVACY_MODE)
+        flow.stateIn(
+            scope = appScope,
+            started = SharingStarted.Eagerly,
+            initialValue = runBlocking { flow.first() },
+        )
+    }
+
+    /**
+     * 写入隐私模式：设置页 Switch 与全局双指手势共用这一个入口。
+     *
+     * 写盘挂在 [appScope]：手势可能发生在任何页面，不能跟着某个页面的作用域被取消。
+     */
+    fun setPrivacyMode(enabled: Boolean) {
+        // 手势会在任何页面反复触发：状态没变就不写盘，避免无意义的 DataStore 写入。
+        if (privacyMode.value == enabled) return
+        appScope.launch {
+            settings.putJmBoolean(SettingKeys.Jm.PRIVACY_MODE, enabled)
+        }
+    }
+
+    /**
+     * 文字隐私（隐藏书名）的**热流**。
+     *
+     * 独立于 [privacyMode] 存储：设置页里只有隐私模式开启时才显示这一项，
+     * 但值本身要跨重启保留。实际是否生效由根节点按 `privacyMode && textPrivacy` 计算。
+     */
+    val textPrivacy: StateFlow<Boolean> by lazy {
+        val flow = settings.jmBoolean(SettingKeys.Jm.TEXT_PRIVACY, SettingDefaults.Jm.TEXT_PRIVACY)
+        flow.stateIn(
+            scope = appScope,
+            started = SharingStarted.Eagerly,
+            initialValue = runBlocking { flow.first() },
+        )
+    }
+
+    /** 写入文字隐私；默认开启，与「隐私模式」分开保存。 */
+    fun setTextPrivacy(enabled: Boolean) {
+        if (textPrivacy.value == enabled) return
+        appScope.launch {
+            settings.putJmBoolean(SettingKeys.Jm.TEXT_PRIVACY, enabled)
+        }
+    }
+
+    /**
      * 封面缓存的逐条失效。
      *
      * 封面走 Coil 的磁盘缓存（`files/covers` 里是按 URL 哈希命名的文件），

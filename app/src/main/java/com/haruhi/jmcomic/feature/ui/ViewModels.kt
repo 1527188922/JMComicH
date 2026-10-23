@@ -2945,7 +2945,8 @@ class AlbumDetailViewModel(
                         accountInFavorites = true,
                         accountSheetOpen = false,
                         accountFolders = (it.accountFolders + folder).distinctBy { f -> f.fid },
-                        message = "已加入「${folder.name}」",
+                        // 消息里不带夹名：文字隐私下夹名只能露首字符，这里直接不显示，避免绕过遮蔽
+                        message = "已加入收藏夹",
                     )
                 }
             } catch (e: Throwable) {

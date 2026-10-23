@@ -100,6 +100,58 @@ fun mergeComments(existing: List<CommentRow>, incoming: List<CommentRow>): List<
     return existing + incoming.filter { seen.add(it.cid) }
 }
 
+// ----------------------------------------------------------------------
+// 评论正文里的「我推荐这本书 <jmid>」
+// ----------------------------------------------------------------------
+
+/**
+ * 评论正文里的一段：普通文字，或者一条能跳转的「推荐书籍」链接。
+ *
+ * 官方的评论输入框（`NewTopicModal`）在推荐一本书时会往正文里插入
+ * `[ 我推荐这本书 <jmid> ]` 这段**纯文字**；列表渲染时官方会把方括号整段变成
+ * 一条指向那本漫画的链接（`ForumList.renderContent`）。本工程照做：
+ * 清洗成纯文本后再切一次，把命中的那段标成 [AlbumLink]。
+ */
+sealed interface CommentSegment {
+    /** 原样显示、不可点的普通文字。 */
+    data class Text(val text: String) : CommentSegment
+
+    /**
+     * 可点的一段。
+     *
+     * @property text 要显示的文字（**含方括号**，与官方一致）
+     * @property albumId 目标本子号（`JM1246359` 里的 `1246359`）
+     */
+    data class AlbumLink(val text: String, val albumId: Long) : CommentSegment
+}
+
+/**
+ * 把已经清洗过的评论文本切成 [CommentSegment] 列表（没有链接时就只有一段 [CommentSegment.Text]）。
+ *
+ * 能认出来的形态（与官方渲染规则一致，另外放宽了空白与全角括号）：
+ * `[ 我推荐这本书 1246359 ]`、`[ 我推薦這本書 1246359 ]`、`[我推荐这本书 JM1246359]`……
+ *
+ * 认不出数字 id 的（比如 `[ 我推荐这本书 一二三 ]`）**保持原文**，不画一条点了没反应的链接。
+ */
+fun splitCommentSegments(text: String): List<CommentSegment> {
+    if (text.isEmpty()) return emptyList()
+    val segments = ArrayList<CommentSegment>()
+    var cursor = 0
+    COMMENT_ALBUM_LINK_REGEX.findAll(text).forEach { match ->
+        val albumId = match.groupValues[1].toLongOrNull()
+        // 不是数字 / 0 这种明显不是本子号：当普通文字留着
+        if (albumId == null || albumId <= 0L) return@forEach
+        if (match.range.first > cursor) {
+            segments += CommentSegment.Text(text.substring(cursor, match.range.first))
+        }
+        segments += CommentSegment.AlbumLink(text = match.value, albumId = albumId)
+        cursor = match.range.last + 1
+    }
+    if (segments.isEmpty()) return listOf(CommentSegment.Text(text))
+    if (cursor < text.length) segments += CommentSegment.Text(text.substring(cursor))
+    return segments
+}
+
 /**
  * 评论正文的 HTML 清洗：**渲染成纯文本**。
  *
@@ -324,6 +376,25 @@ class CommentCache {
 }
 
 // ----------------------------------------------------------------------
+
+/**
+ * 「推荐书籍」链接里的空白：`\s` 之外还要认全角空格与不换行空格
+ * （正文是从网页/App 拼出来的一串文字，空格字号并不总是 ASCII）。
+ */
+private const val COMMENT_LINK_SPACE = "[\\s\\u00A0\\u3000]"
+
+/**
+ * 正文里的「我推荐这本书 <jmid>」标记。
+ *
+ * - 简繁两种写法都认（官方 `bnLabel = "(?:我推薦這本書|我推荐这本书)"`），
+ *   并且按字放宽成 `推[薦荐][這这]本[書书]`；
+ * - 方括号认半角 `[]` 与全角 `［］`，括号内外空白可有可无；
+ * - id 允许带 `JM` 前缀（官方渲染时也 `replace(/^JM/i, "")`），只认数字。
+ */
+private val COMMENT_ALBUM_LINK_REGEX = Regex(
+    "[\\[［]${COMMENT_LINK_SPACE}*我推[薦荐][這这]本[書书]${COMMENT_LINK_SPACE}*" +
+        "(?:[Jj][Mm]${COMMENT_LINK_SPACE}*)?(\\d{1,12})${COMMENT_LINK_SPACE}*[\\]］]",
+)
 
 private val IMG_TAG_REGEX = Regex("(?is)<img\\b[^>]*>")
 private val ALT_ATTR_REGEX = Regex("""(?i)\balt\s*=\s*(?:"([^"]*)"|'([^']*)')""")

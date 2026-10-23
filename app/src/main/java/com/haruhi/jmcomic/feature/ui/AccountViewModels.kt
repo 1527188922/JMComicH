@@ -500,7 +500,8 @@ class AccountFavoritesViewModel(
         viewModelScope.launch {
             runCatching { account.createFolder(trimmed) }
                 .onSuccess { folder ->
-                    _state.update { it.copy(message = "已创建「${folder.name}」") }
+                    // 消息里不带夹名：文字隐私下夹名只能露首字符，这里直接不显示，避免绕过遮蔽
+                    _state.update { it.copy(message = "已创建收藏夹") }
                     fetch(silent = true)
                 }
                 .onFailure { e ->

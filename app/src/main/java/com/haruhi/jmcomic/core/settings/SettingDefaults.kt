@@ -90,6 +90,12 @@ object SettingDefaults {
         /** [计划 §9.3] 阅读时保持亮屏：开启。 */
         const val KEEP_SCREEN_ON = true
 
+        /** [用户要求] 隐私模式默认关闭。 */
+        const val PRIVACY_MODE = false
+
+        /** [用户要求] 文字隐私默认开启（隐私模式打开后即生效）。 */
+        const val TEXT_PRIVACY = true
+
         /**
          * 同时下载图片数：**默认 4**。
          *

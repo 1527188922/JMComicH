@@ -214,6 +214,8 @@ private fun TaskCard(
     onDeleteOutput: (Long, String) -> Unit,
 ) {
     val task = row.task
+    // 文字隐私：漫画任务显示 JM 号；没有 albumId 的任务（非 JM 类型）保留原名
+    val displayName = row.albumId?.let { privacyAlbumTitle(it, row.displayName) } ?: row.displayName
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -230,7 +232,7 @@ private fun TaskCard(
                     // 任务页**不传 tag**：用户明确要求下载任务里不显示封面主 tag。
                     Cover(
                         albumId = albumId,
-                        contentDescription = row.displayName,
+                        contentDescription = displayName,
                         modifier = Modifier
                             .size(width = 48.dp, height = 66.dp)
                             .clip(RoundedCornerShape(8.dp))
@@ -264,7 +266,7 @@ private fun TaskCard(
                         },
                     ) {
                         Text(
-                            text = row.displayName,
+                            text = displayName,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium,
                             maxLines = 2,

@@ -1,5 +1,6 @@
 package com.haruhi.jmcomic.feature.ui
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -87,6 +88,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -597,7 +600,7 @@ private fun FavoritePickerForSelection(
                                 checked = favorite.id in checked,
                                 onCheckedChange = { checked = checked.toggle(favorite.id) },
                             )
-                            Text(favorite.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(privacyFolderName(favorite.name), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -641,6 +644,8 @@ private fun ContinueReadingCardRow(
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val albumTitle = privacyAlbumTitle(card.albumId, card.albumTitle)
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(14.dp),
@@ -662,7 +667,7 @@ private fun ContinueReadingCardRow(
             ) {
                 Cover(
                     albumId = card.albumId,
-                    contentDescription = card.albumTitle,
+                    contentDescription = albumTitle,
                     modifier = Modifier
                         .size(width = 44.dp, height = 60.dp)
                         .clip(RoundedCornerShape(8.dp))
@@ -676,7 +681,7 @@ private fun ContinueReadingCardRow(
                         .padding(end = 36.dp),
                 ) {
                     Text(
-                        text = card.albumTitle,
+                        text = albumTitle,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -960,6 +965,8 @@ private fun AlbumGridCard(
     onLongPress: () -> Unit,
     onToggleCollected: (() -> Unit)?,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(card.album.id, card.displayName)
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
@@ -983,7 +990,7 @@ private fun AlbumGridCard(
         ) {
             Cover(
                 albumId = card.album.id,
-                contentDescription = card.displayName,
+                contentDescription = displayName,
                 modifier = Modifier.fillMaxSize(),
             )
             if (selecting) {
@@ -1028,7 +1035,7 @@ private fun AlbumGridCard(
         }
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                text = card.displayName,
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
@@ -1101,6 +1108,16 @@ fun Cover(
     val context = LocalContext.current
     // 设置页选中的图片线路：变化时重建请求，封面改用新域名
     val imageDomain = LocalImageDomain.current
+    // 隐私模式：**所有**显示封面的地方都经过 Cover，所以只在这里做一次模糊。
+    val privacyMode = LocalPrivacyMode.current
+    // Android 12 起才有 RenderEffect 可用；更低版本没有原生高斯模糊
+    // （用户明确不要求旧系统真模糊），退化成「低透明度 + 近不透明遮罩」。
+    val canBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val privacyImageModifier = when {
+        !privacyMode -> Modifier
+        canBlur -> Modifier.blur(PRIVACY_COVER_BLUR_RADIUS)
+        else -> Modifier.alpha(PRIVACY_COVER_FALLBACK_ALPHA)
+    }
     val model = remember(albumId, context, imageDomain) {
         ImageRequest.Builder(context)
             .data(Defaults.buildCoverUrl(albumId, imageDomain))
@@ -1113,6 +1130,7 @@ fun Cover(
     // 外层 Box 只是为了能把 tag 叠在封面右上角；尺寸/裁切仍由调用点传进来的 modifier 决定。
     // 所有调用点都会给一个确定尺寸（size / fillMaxSize），所以 matchParentSize 有约束可用。
     Box(modifier = modifier) {
+        val imageModifier = Modifier.matchParentSize().then(privacyImageModifier)
         // imageLoader 为 null（Preview / 测试未安装）时交给 Coil 的单例加载器
         if (imageLoader != null) {
             AsyncImage(
@@ -1120,14 +1138,26 @@ fun Cover(
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
                 imageLoader = imageLoader,
-                modifier = Modifier.matchParentSize(),
+                modifier = imageModifier,
             )
         } else {
             AsyncImage(
                 model = model,
                 contentDescription = contentDescription,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize(),
+                modifier = imageModifier,
+            )
+        }
+        // Android 12 以下没有真模糊：压暗封面，只留一点色块，保证看不出版面。
+        if (privacyMode && !canBlur) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(
+                            alpha = PRIVACY_COVER_FALLBACK_SCRIM_ALPHA,
+                        ),
+                    ),
             )
         }
         if (!tag.isNullOrBlank()) {
@@ -1163,6 +1193,13 @@ internal fun coverMemoryCacheKey(albumId: Long): String = "jm-cover-$albumId"
  */
 private const val COVER_MIN_WIDTH_PX = 400
 private const val COVER_MIN_HEIGHT_PX = 540
+
+/** 隐私模式下封面的模糊半径（仅 Android 12+ 生效）：32dp，保证只剩色块、不透出画面细节。 */
+private val PRIVACY_COVER_BLUR_RADIUS = 32.dp
+
+/** Android 12 以下：封面压到很低的不透明度，再叠一层近不透明遮罩。 */
+private const val PRIVACY_COVER_FALLBACK_ALPHA = 0.2f
+private const val PRIVACY_COVER_FALLBACK_SCRIM_ALPHA = 0.86f
 
 /**
  * 书库卡片的状态文案。
@@ -1442,7 +1479,7 @@ fun SearchResultsScreen(
     removeTarget?.let { target ->
         ConfirmDialog(
             title = "从书库移除这本？",
-            text = "《${target.name.orEmpty().ifBlank { "JM${target.id}" }}》会删除书库记录、章节清单、" +
+            text = "《${privacyAlbumTitle(target.id, target.name)}》会删除书库记录、章节清单、" +
                 "收藏关联、阅读位置，以及本地图片与导出的 zip/pdf。" +
                 "最近浏览记录会保留（封面也还在）。此操作不可撤销。",
             confirmText = "移除并删除",
@@ -1880,6 +1917,8 @@ internal fun OnlineResultRow(
     onAddToLibrary: (() -> Unit)? = null,
     onRequestRemove: (() -> Unit)? = null,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(item.id, item.name)
     // 两个状态各自决定那颗按钮在不在：已入库看 onRequestRemove，未入库看 onAddToLibrary
     val showAction = if (item.existsLocal) onRequestRemove != null else onAddToLibrary != null
     // 不画按钮时这两个回调是 null，退化成空实现只为消除可空性（不会被执行到）
@@ -1907,7 +1946,7 @@ internal fun OnlineResultRow(
                 // 朝里的右上 / 右下是直角（用户要求）。
                 Cover(
                     albumId = item.id,
-                    contentDescription = item.name,
+                    contentDescription = displayName,
                     // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
                     tag = item.categoryTag,
                     modifier = Modifier
@@ -1931,7 +1970,7 @@ internal fun OnlineResultRow(
                         .padding(bottom = if (showAction) ONLINE_ACTION_BUTTON_ZONE else 8.dp),
                 ) {
                     Text(
-                        text = item.name.orEmpty().ifBlank { "JM${item.id}" },
+                        text = displayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 2,
@@ -2116,6 +2155,8 @@ internal fun OnlineGridCard(
     item: OnlineSearchItem,
     onOpen: () -> Unit,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(item.id, item.name)
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(12.dp),
@@ -2132,7 +2173,7 @@ internal fun OnlineGridCard(
             // 封面统一走 Cover（CONVENTIONS 第 1 条）：应用级加载器 + covers 磁盘缓存
             Cover(
                 albumId = item.id,
-                contentDescription = item.name,
+                contentDescription = displayName,
                 // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
                 tag = item.categoryTag,
                 modifier = Modifier.fillMaxSize(),
@@ -2140,7 +2181,7 @@ internal fun OnlineGridCard(
         }
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                text = item.name.orEmpty().ifBlank { "JM${item.id}" },
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
@@ -2177,7 +2218,7 @@ private fun FavoriteCover(row: FavoritesUiState.FavoriteRow) {
     if (albumId != null) {
         Cover(
             albumId = albumId,
-            contentDescription = row.name,
+            contentDescription = privacyFolderName(row.name),
             modifier = size.clip(shape).background(MaterialTheme.colorScheme.surface),
         )
     } else {
@@ -2304,7 +2345,7 @@ fun FavoritesScreen(
                                 FavoriteCover(row)
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(row.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(privacyFolderName(row.name), style = MaterialTheme.typography.bodyLarge)
                                     Text(
                                         text = if (row.isDefault) {
                                             "${row.albumCount} 本 · 默认收藏夹不可删除或重命名"
@@ -2355,7 +2396,7 @@ fun FavoritesScreen(
 
     deleteTarget?.let { target ->
         ConfirmDialog(
-            title = "删除「${target.name}」？",
+            title = "删除「${privacyFolderName(target.name)}」？",
             text = "确认删除当前收藏夹吗，里面有 ${target.albumCount} 本漫画。（不会删除书库和已下载的图片）",
             confirmText = "删除收藏夹",
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
