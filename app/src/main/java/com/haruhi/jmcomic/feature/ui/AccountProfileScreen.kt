@@ -138,17 +138,18 @@ fun AccountProfileScreen(
                             }
                         }
 
-                        InfoCard {
-                            InfoRow("经验", expText(profile))
-                            InfoRow("J Coin", profile.coin)
-                            InfoRow("收藏", "${profile.albumFavorites} / ${profile.albumFavoritesMax}")
-                            state.detail?.nickName?.takeIf { it.isNotBlank() }?.let { InfoRow("昵称", it) }
-                            state.detail?.gender?.takeIf { it.isNotBlank() }?.let { InfoRow("性别", genderText(it)) }
-                            state.detail?.birthday?.takeIf { it.isNotBlank() && !it.startsWith("0000") }?.let {
-                                InfoRow("生日", it)
-                            }
-                            state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { InfoRow("关于我", it) }
-                        }
+                        InfoCard(
+                            rows = listOfNotNull(
+                                "经验" to expText(profile),
+                                "J Coin" to profile.coin,
+                                "收藏" to "${profile.albumFavorites} / ${profile.albumFavoritesMax}",
+                                state.detail?.nickName?.takeIf { it.isNotBlank() }?.let { "昵称" to it },
+                                state.detail?.gender?.takeIf { it.isNotBlank() }?.let { "性别" to genderText(it) },
+                                state.detail?.birthday?.takeIf { it.isNotBlank() && !it.startsWith("0000") }
+                                    ?.let { "生日" to it },
+                                state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { "关于我" to it },
+                            ),
+                        )
 
                         state.error?.let { error ->
                             Text(
@@ -168,12 +169,23 @@ fun AccountProfileScreen(
 }
 
 @Composable
-private fun InfoCard(content: @Composable () -> Unit) {
+private fun InfoCard(rows: List<Pair<String, String>>) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) { content() }
+        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            rows.forEachIndexed { index, (label, value) ->
+                InfoRow(label, value)
+                // 分隔线只画在行与行之间，最后一行下面不留横线（用户要求 2026-10-23）。
+                if (index != rows.lastIndex) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -199,10 +211,6 @@ private fun InfoRow(label: String, value: String) {
             overflow = TextOverflow.Ellipsis,
         )
     }
-    HorizontalDivider(
-        color = MaterialTheme.colorScheme.outlineVariant,
-        modifier = Modifier.padding(start = 16.dp),
-    )
 }
 
 @Composable
