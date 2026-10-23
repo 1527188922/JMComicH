@@ -223,7 +223,7 @@ private fun AccountSummaryCard(
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AccountAvatar(photo = profile?.photo, nickname = profile?.username)
+            AccountAvatar(photo = profile?.photo, nickname = profile?.displayName)
 
             Spacer(Modifier.size(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -236,8 +236,10 @@ private fun AccountSummaryCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
+                    // 摘要卡显示**昵称优先**、没有才用登录名（用户 2026-10-23 要求）；
+                    // 登录名仍然可以在「个人资料 / 编辑资料」里看到（只读）
                     Text(
-                        text = profile.username.ifBlank { "JM 用户" },
+                        text = profile.displayName,
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

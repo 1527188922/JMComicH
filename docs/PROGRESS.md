@@ -2300,3 +2300,143 @@ id 还会 `replace(/^JM/i, "")`）。本工程照做：
 
 验证：`:app:compileDebugKotlin` 通过；按用户要求**未跑测试用例**（用户自行在设备上验证）。
 
+## 功能：注册 + 邮箱验证 + 个人资料编辑（2026-10-23）
+
+用户要求：实现**注册**与**修改个人信息**；并特别指出官方 App 的编辑资料页
+**已有信息无法回显**，本工程必须避免；过程中遇到需要决策的点先问。
+
+### 1. 先确认的四个决策（用户逐条拍板）
+
+| # | 决策点 | 用户选择 |
+|---|---|---|
+| 1 | 注册会真实创建账号、验证码只有用户能收到，怎么验证 | **只做失败形态探测**（不创建账号），成功路径由用户真机验收 |
+| 2 | 资料编辑页放哪些字段 | **全部官方字段 + 改密码**（24 项全量提交；`status` 原样回传、不展示） |
+| 3 | 编辑页的回显/加载策略 | **每次进页面先拉最新，加载完再显示表单** |
+| 4 | 昵称在哪显示 | **「我的」摘要卡优先显示昵称**，没有才用登录名 |
+
+### 2. 「已有信息不回显」的根因（从官方源码核出来的）
+
+官方 `InfoModal.tsx` 的输入框全部是 `defaultValue={formData.nickName}` 这种**非受控**写法，
+而 `formData` 是 `GET /useredit` 回来后才 `setFormData(res)` 的：
+
+1. 打开编辑弹窗 → 首帧渲染，`formData` 还是 `{}`，输入框按空值挂载；
+2. 网络回来 → `formData` 有了值 → **`defaultValue` 不会重新应用**（React 非受控输入只认首次挂载）；
+3. 结果是"已有信息"永远填不进去，用户看到的是空表单。
+
+本工程的修法（三层一起，缺一层都可能回退）：
+
+1. **加载完成前不渲染输入框**：编辑页 `loading` 时只有 `LoadingBox`，加载失败只有「重试」；
+2. 拿到 DTO 后一次性 `UserEditDto.toProfileForm()` 生成 **Compose 受控状态**，
+   输入框永远显示 `state.form`，不存在"初始值/当前值"两套；
+3. **每次进编辑页都重新 `GET`**，并把这份刚拉到的值同时当作提交底稿 —— 用户改的一定是
+   服务端最新值，"整条覆盖"不会用旧快照冲掉别处刚改的字段。
+
+### 3. 接口实测（失败形态 + 一次真机成功注册）
+
+探针脚本 `.work/probe-register.mjs`（未入库）只发**必然失败**的请求，没有创建账号；
+成功形态来自用户后续在真机上的一次真实注册。结论已写进 `docs/official-api-manga.md` §7.3 / §7.4：
+
+| 项 | 结论 |
+|---|---|
+| `/register` 失败 | **HTTP 200 + 信封 code 200**，`data` 解密后 `{status:"fail", msg, errors:[…]}`；顶层另有明文 `errorMsg` |
+| `errors` | `msg` 只给第一条，**`errors` 才是全部**（实测一次返回邮箱格式 + 用户名已存在 / 超长 + 两次密码不一致） |
+| `errors` 成功时 | **空字符串 `""`，不是空数组**；真机实测（账号已创建、邮件已发），客户端已做数组/字符串/空串/null 的宽容解析 |
+| 用户名上限 | **15 个字符**（`用户名只能包含15个字符!`），官方前端写的 `maxLength=50` 是错的 |
+| 邮箱 | 服务端比官方前端正则更严（`probe-only@example.com` 被判非法），所以本地只做首筛、服务端原文照旧展示 |
+| `/confirm` | 失败形态与 `/register` 同构；错误文案原样展示（实测"用户名已经存在"这种文案本身就不准，不自造） |
+| 重发 | 同一个 `/confirm`，参数换成 `username + password`；60 秒冷却只是官方前端限制 |
+
+### 4. 做了什么
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/AccountModels.kt` | `EditResultDto` 补 `errors`（注册的一次多条错误）+ **宽容解析**（成功时是空字符串）；`UserEditDto` 补 `msg`（防业务失败被当成功） |
+| `feature/api/ApiClient.kt` | 新增 `register` / `confirmSignUp` / `resendSignUpCode`（都走 `postDecrypted`，**不自动重试**） |
+| `feature/data/Registration.kt`（新） | `SignUpForm` / `SignUpValidation` / `validateSignUp` / 官方邮箱正则 / 15 字与 50 字上限 / 按码位截断 |
+| `feature/data/UserProfile.kt`（新） | `UserProfileForm`（24 字段）、`toProfileForm()`（回显映射）、`toSubmitFields()`（**全量提交**）、生日归一处理、关系/兴趣/性别选项 |
+| `feature/data/AccountActions.kt`（新） | 服务端 `msg` / `errors` 的 HTML 清洗与 `requireSuccess` 判定（注册与收藏共用） |
+| `feature/data/AccountRepository.kt` | 新增 `register` / `confirmSignUp` / `resendSignUpCode` / `saveUserEdit` / `rememberProfileDetail`；登录后**后台补一次昵称** |
+| `core/account/MemberProfile.kt` | 补 `nickName` 与 `displayName`（昵称优先）；默认值保证老快照兼容 |
+| `feature/ui/AccountViewModels.kt` | 新增 `AccountSignUpViewModel`（表单 → 验证码 → 自动登录，60s 重发冷却）、`AccountProfileEditViewModel`（先 GET 后渲染、全量保存、改密码校验）；`AccountProfileViewModel.onScreenResumed` 同步编辑结果 |
+| `feature/ui/AccountSignUpScreen.kt`（新） | 注册 + 验证码两屏；「已有验证码」模式；注册成功后回表单只给「继续验证」并锁表单 |
+| `feature/ui/AccountProfileEditScreen.kt`（新） | 四组分区表单、生日日期选择器、下拉选项、密码显示切换、保存失败固定提示、未保存返回确认 |
+| `feature/ui/AccountFormWidgets.kt`（新） | 账号表单页共用顶栏 / 分组卡 / 输入框 / 只读行 / 下拉 / 日期 / 勾选行 / 整页消息 |
+| `feature/ui/AccountLoginScreen.kt` | 底部「注册新账号」「输入验证码」；找回密码说明改为只指网页版 |
+| `feature/ui/AccountProfileScreen.kt` | 右上角「编辑」入口；资料页补齐官方 24 项里的全部可读字段（原来只有昵称/性别/生日/关于我） |
+| `feature/ui/MyScreen.kt` | 摘要卡显示名改用 `displayName`（昵称优先） |
+| `feature/ui/ModeRoot.kt` | 新增 `SIGNUP` / `ACCOUNT_PROFILE_EDIT` 路由；登录路由加 `username` 预填；注册路由加 `verify` 模式 |
+| `test/.../ProfileEditLogicTest.kt`（新） | 12 个用例：回显映射 / 空生日归一 / 24 字段全量且顺序一致 / 只改昵称也不漏字段 / 截断与 emoji / 改密码校验 / 选项文案 |
+| `test/.../RegistrationLogicTest.kt`（新） | 15 个用例：本地校验逐条 / 15 字上限 / 邮箱正则 / 验证码校验 / `errors` 全展示 / HTML 清洗 / 成功兜底文案 / **成功时 `errors` 空串、单条字符串、null 三种形态** |
+| `test/.../AccountModelTest.kt` | 新增 3 个：昵称优先 / 空昵称回落登录名 / **老资料快照没有 nickName 字段也能读** |
+
+### 5. 关键取舍
+
+1. **注册成功后回表单只给「继续验证」**：账号已经创建，再点「注册」只会收到
+   "用户名已经存在"，用户会以为流程坏了。注册成功后表单字段一并**锁住**（改这里不会同步到服务端）。
+2. **登录页补一个「输入验证码」入口**：用户关掉 App 再回来时，账号可能"已注册未验证"，
+   这个入口用 `username + password + 验证码` 直接补验证，不需要重新注册。
+3. **密码不落盘**：注册 / 改密码只在内存里用于"验证后自动登录"，用完即弃；
+   与 `AccountStore` "不保存密码" 的取舍一致。
+4. **生日 `1970-01-01` 当成「未设置」**：服务端把空日期归一成它且改不回去，
+   界面上显示成"未设置"比让用户以为生日填错了更诚实；提交未设置时回传空串。
+5. **保存失败的提示固定在滚动区外面**：顶栏的「保存」随时可点，如果报错在表单顶部，
+   滚到底部改资料的用户根本看不见。
+6. **保存中禁止返回**：保存请求挂在页面的 `viewModelScope` 上，一 pop 就被取消，
+   用户会看到"点了保存但什么都没发生"。
+7. **保存成功的提示先弹、再退页**：两者都在同一个 `LaunchedEffect` 里做；
+   如果交给页面的 `MessageEffect`，页面一 pop、组合里的协程会被取消，提示可能来不及显示。
+8. **登录后后台补昵称**：登录响应里没有 `nickName`；不补的话，每次重新登录后
+   「我的」摘要卡都要等用户点进资料页才会显示昵称。
+
+### 5.1 真机反馈修复：注册成功时 `errors` 是空字符串（2026-10-23）
+
+用户第一次真机注册就撞上了：**邮箱确实收到验证邮件、账号也创建成功**，但界面显示
+`返回内容异常（响应字段与预期不符：Unexpected JSON token at offset …:
+Expected start of the array '[', but had '"' instead at path: $.errors）`。
+
+- 服务端成功返回的 `data`：
+  `{"type":"","msg":"您已注册。检查您的电子邮件中的确认链接!","status":"ok","errors":""}`
+  —— 成功时 `errors` 是**空字符串**，失败时才是数组。
+- 我们的 `EditResultDto.errors` 原来声明成 `List<String>?`，所以在**解析**阶段就抛了
+  `NetworkError.Malformed`，`requireSuccess` 还没来得及按 `status` 判成功。
+- 修法：新增 `LooseStringListSerializer`（`JsonTransformingSerializer`），把
+  **数组 / 单个字符串 / 空串 / null** 统一收口成 `List<String>`；
+  `errors` 也改成非空默认空列表。`displayMessage()` 相应简化。
+- 这条也解释了：**接口"成功但客户端报错"不一定是网络问题**，可能是服务端字段类型
+  在成功/失败之间不一致；账号创建类接口尤其要按 `status` 判、不要按"响应能不能解析"判。
+- 补充 3 个单测：成功空串 / 单条字符串 / `null`。
+- 真机上的后续操作：账号已经创建，**不要重新点注册**（会回"用户名已经存在"）；
+  更新安装包后从 登录页 →「输入验证码」补验证即可（或直接在验证页重发验证码）。
+
+### 6. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` ✅（含注册页重写后的最终版本）；
+- `:app:assembleDebug` ✅ —— `app/build/outputs/apk/debug/app-debug.apk`；
+- `:app:lintDebug` ✅ **0 error / 31 warning**；warning 全部是既有项
+  （`FocusOnTap` 的 `VisibleForTests`、`ModifierParameter`、资源颜色 / 主题、bcpkix 依赖等），
+  **本次新增与改动的源文件零命中**；
+- **只跑本次相关的三个测试类**（用户要求不要跑全量）：`ProfileEditLogicTest` 12 + `RegistrationLogicTest` 15 + `AccountModelTest` 13 = **40 个用例全绿**（含 `errors` 空串那轮的 3 个新用例）；
+- **我方没有创建真实账号**：注册 / 验证码的探测只发失败请求；
+  用户在真机上完成了一次真实注册（成功形态由此确认，并修掉了 `errors` 空串的解析问题）；
+  验证码校验 / 自动登录之后的链路仍需要真机继续验收；
+- 真机 / 模拟器本轮未由我跑；首轮真机反馈已按 §5.1 修复。
+
+### 7. 真机验收清单
+
+1. 我的 → 未登录 → 登录页底部「注册新账号」→ 填表：空提交逐条红字；用户名超过 15 字被截断；
+   两次密码不一致 / 邮箱格式错被本地拦住。
+2. 填一个能收信的邮箱提交 → 进「验证邮箱」页；邮箱收到验证码后输入 → 自动登录 →
+   落到来源页（从收藏入口进来就回收藏页）。
+3. 故意输错验证码 → 服务端原文错误 + 「知道了」；点「重新发送验证码」→ 60 秒倒计时。
+4. 在验证码页按返回键 → 回注册表单（字段锁住、只有「继续验证」）；再按返回 → 回登录页。
+5. 完全退出 App 再打开 → 登录页「输入验证码」→ 用刚注册的用户名 / 密码 / 验证码补验证 → 自动登录。
+6. 登录后进「我的 → 个人资料 → 编辑」：**每一个已有字段都必须带着服务端当前值出现**
+   （昵称、姓/名、生日、关系、兴趣、网站、位置 6 项、关于我等 7 项）；
+   生日显示「未设置」或真实日期，不显示 1970。
+7. 只改昵称 → 保存 → 返回资料页「昵称」已变；返回「我的」摘要卡也立刻显示新昵称。
+8. 杀 App 重启 → 「我的」摘要卡仍是昵称（快照落盘）；再进编辑页，所有字段仍回显。
+9. 改密码：只填一个 / 两次不一致 → 本地拦住、不发请求；两次一致 → 保存成功，
+   退出后用新密码登录。
+10. 编辑页有未保存修改时按返回 → 弹「放弃修改？」；保存中按返回 → 不回退、不打断保存。
+11. 断网进编辑页 → 整页「资料加载失败 + 重试」，**不出现空表单**；恢复网络点重试能加载出来。
+12. 保存时后台刚好改过资料（另一台设备）：因为进页面重新 GET，保存不会把新值覆盖成旧值。

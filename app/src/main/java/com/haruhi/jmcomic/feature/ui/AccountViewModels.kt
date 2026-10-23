@@ -15,11 +15,22 @@ import com.haruhi.jmcomic.feature.data.CommentCache
 import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
 import com.haruhi.jmcomic.feature.data.Repository
+import com.haruhi.jmcomic.feature.data.SIGN_UP_CODE_MAX
+import com.haruhi.jmcomic.feature.data.SignUpForm
+import com.haruhi.jmcomic.feature.data.SignUpValidation
+import com.haruhi.jmcomic.feature.data.UserProfileForm
+import com.haruhi.jmcomic.feature.data.limitCodePoints
 import com.haruhi.jmcomic.feature.data.mergeComments
+import com.haruhi.jmcomic.feature.data.toProfileForm
+import com.haruhi.jmcomic.feature.data.validatePasswordChange
+import com.haruhi.jmcomic.feature.data.validateSignUp
+import com.haruhi.jmcomic.feature.data.validateSignUpCode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -1007,6 +1018,25 @@ class AccountProfileViewModel(
     /** 用户下拉刷新 / 报错后的「重试」。 */
     fun refresh() = fetch(silent = false)
 
+    /**
+     * 从「编辑资料」返回时同步一次。
+     *
+     * 保存成功后 `AccountRepository.saveUserEdit` 已经把新资料写进 [AccountCache]，
+     * 这里只负责把它搬到界面状态上——否则返回资料页看到的还是编辑前的内容，
+     * 用户会以为没保存成功。
+     */
+    fun onScreenResumed() {
+        if (inFlight || _state.value.loading || _state.value.refreshing) return
+        val detail = cache.profileDetail ?: return
+        _state.update { current ->
+            current.copy(
+                profile = account.profile,
+                detail = detail,
+                error = null,
+            )
+        }
+    }
+
     private fun fetch(silent: Boolean) {
         if (inFlight) return
         val profile = account.profile
@@ -1027,9 +1057,16 @@ class AccountProfileViewModel(
         viewModelScope.launch {
             runCatching { account.userEdit(profile.uid) }
                 .onSuccess { detail ->
-                    cache.putProfileDetail(detail)
+                    // 缓存与昵称快照由 `AccountRepository.userEdit` 统一写入；
+                    // 这里把会话里的最新快照同步过来，头像首字才能立刻用上昵称。
                     _state.update {
-                        it.copy(loading = false, refreshing = false, detail = detail, error = null)
+                        it.copy(
+                            loading = false,
+                            refreshing = false,
+                            profile = account.profile ?: it.profile,
+                            detail = detail,
+                            error = null,
+                        )
                     }
                 }
                 .onFailure { e ->
@@ -1046,4 +1083,439 @@ class AccountProfileViewModel(
             inFlight = false
         }
     }
+}
+
+// ======================================================================
+// 注册（表单 → 邮箱验证码 → 自动登录）
+// ======================================================================
+
+/** 注册页当前停在哪一步。 */
+enum class SignUpStep {
+    /** 填注册信息。 */
+    FORM,
+
+    /** 已提交注册，等邮箱验证码。 */
+    VERIFY,
+}
+
+/**
+ * 注册页状态。
+ *
+ * 表单字段的本地校验结果单独放 [validation]，服务端/网络错误放 [error]，
+ * 这样"某个输入框该红"与"服务器说邮箱已存在"是两条通道，不会互相覆盖。
+ */
+data class SignUpUiState(
+    val step: SignUpStep = SignUpStep.FORM,
+    val form: SignUpForm = SignUpForm(),
+    val validation: SignUpValidation = SignUpValidation(),
+    val passwordVisible: Boolean = false,
+    val submitting: Boolean = false,
+    /** 服务端 / 网络错误（原样展示服务端 `errors` 拼接后的文案）。 */
+    val error: String? = null,
+    /** 一次性提示（注册成功、验证码已重发等）。 */
+    val notice: String? = null,
+    /** 验证码重发冷却剩余秒数（官方 60 秒）。 */
+    val resendCooldown: Int = 0,
+    /** 验证码输入。 */
+    val code: String = "",
+    /** 注册请求已经成功（账号已创建，只差邮箱验证）；回表单后给一个「继续验证」出口。 */
+    val registered: Boolean = false,
+    /** 从登录页「已有验证码」进来：没有注册表单，直接填用户名 / 密码 / 验证码。 */
+    val verifyOnly: Boolean = false,
+    /** 验证码已通过，但自动登录失败：界面改为「去登录」。 */
+    val verifiedNeedLogin: Boolean = false,
+    /** 注册 + 验证 + 登录全部完成（页面据此关闭并跳到 next）。 */
+    val done: Boolean = false,
+) {
+    val canResend: Boolean get() = resendCooldown <= 0 && !submitting
+    val canSubmit: Boolean get() = !submitting
+
+    /** 验证码步骤要显示的邮箱（注册时填的那个）。 */
+    val email: String get() = form.email.trim()
+    val username: String get() = form.username.trim()
+}
+
+/**
+ * 注册页 ViewModel（`docs/account-design.md` §8）。
+ *
+ * 流程：填表 → `POST /register` → 验证码步骤 → `POST /confirm` → 用刚才的密码自动登录。
+ * 验证码重发走同一个 `/confirm`（换成 `username + password`），60 秒冷却。
+ *
+ * 请求纪律与登录页一致：**本地校验不过不发请求**、提交中重复点击忽略、
+ * 服务端文案原样展示（`docs/CONVENTIONS.md` §3 第 5 条：错误翻译只在账号层）。
+ */
+class AccountSignUpViewModel(
+    private val account: AccountRepository,
+    /** 从登录页「已有验证码」进来：直接停在验证码步骤（不需要再注册一次）。 */
+    private val verifyOnly: Boolean = false,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(
+        SignUpUiState(
+            step = if (verifyOnly) SignUpStep.VERIFY else SignUpStep.FORM,
+            verifyOnly = verifyOnly,
+            registered = verifyOnly,
+        ),
+    )
+    val state: StateFlow<SignUpUiState> = _state.asStateFlow()
+
+    /** 冷却倒计时协程；重发/重新进入验证码步骤时先取消旧的，避免两个计时器打架。 */
+    private var cooldownJob: Job? = null
+
+    fun setUsername(value: String) = updateForm { it.copy(username = value) }
+
+    fun setPassword(value: String) = updateForm { it.copy(password = value) }
+
+    fun setPasswordConfirm(value: String) = updateForm { it.copy(passwordConfirm = value) }
+
+    fun setEmail(value: String) = updateForm { it.copy(email = value) }
+
+    fun setGender(value: String) = updateForm { it.copy(gender = value) }
+
+    fun setAdultConfirmed(value: Boolean) = updateForm { it.copy(adultConfirmed = value) }
+
+    fun setTermsAccepted(value: Boolean) = updateForm { it.copy(termsAccepted = value) }
+
+    fun togglePasswordVisible() = _state.update { it.copy(passwordVisible = !it.passwordVisible) }
+
+    fun setCode(value: String) = _state.update {
+        it.copy(code = limitCodePoints(value, SIGN_UP_CODE_MAX), error = null)
+    }
+
+    fun consumeError() = _state.update { it.copy(error = null) }
+
+    /** 验证码步骤 → 返回注册表单（保留已填内容；返回键也走这里）。 */
+    fun backToForm() {
+        if (_state.value.submitting) return
+        // 从登录页「已有验证码」进来时没有表单可回，调用方不该走这里
+        if (_state.value.verifyOnly) return
+        _state.update { it.copy(step = SignUpStep.FORM, notice = null, error = null) }
+    }
+
+    /**
+     * 回注册表单后重新进验证码步骤。
+     *
+     * 账号**已经创建成功**时，再提交一次注册只会收到"用户名已经存在"，
+     * 所以表单上给的是「继续验证」而不是「注册」——不然用户点返回键就卡死了。
+     */
+    fun resumeVerification() {
+        val current = _state.value
+        if (current.submitting) return
+        if (!current.registered && !current.verifyOnly) return
+        _state.update { it.copy(step = SignUpStep.VERIFY, notice = null, error = null) }
+    }
+
+    private fun updateForm(transform: (SignUpForm) -> SignUpForm) = _state.update { current ->
+        // 输入即清掉对应字段的旧错误：用户已经在改了，红字不该一直挂着
+        current.copy(
+            form = transform(current.form).limited(),
+            validation = SignUpValidation(),
+            error = null,
+        )
+    }
+
+    /** 提交注册表单。 */
+    fun submit() {
+        val current = _state.value
+        if (current.submitting) return
+        val validation = validateSignUp(current.form)
+        if (validation.hasError) {
+            _state.update { it.copy(validation = validation, error = null) }
+            return
+        }
+        val form = current.form
+        _state.update { it.copy(submitting = true, validation = SignUpValidation(), error = null) }
+        viewModelScope.launch {
+            runCatching {
+                account.register(
+                    username = form.username.trim(),
+                    password = form.password,
+                    passwordConfirm = form.passwordConfirm,
+                    email = form.email.trim(),
+                    gender = form.gender,
+                )
+            }
+                .onSuccess { message ->
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            step = SignUpStep.VERIFY,
+                            registered = true,
+                            notice = message,
+                            error = null,
+                            code = "",
+                            verifiedNeedLogin = false,
+                        )
+                    }
+                    startCooldown()
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                }
+        }
+    }
+
+    /** 提交邮箱验证码；成功后自动用注册时的密码登录。 */
+    fun submitCode() {
+        val current = _state.value
+        if (current.submitting || current.step != SignUpStep.VERIFY) return
+        validateSignUpCode(current.code)?.let { message ->
+            _state.update { it.copy(error = message) }
+            return
+        }
+        // 「已有验证码」入口没有注册表单，用户名 / 密码要现填（验证后的自动登录也要用密码）
+        if (current.verifyOnly) {
+            credentialsError(current)?.let { message ->
+                _state.update { it.copy(error = message) }
+                return
+            }
+        }
+        val username = current.username
+        val password = current.form.password
+        _state.update { it.copy(submitting = true, error = null) }
+        viewModelScope.launch {
+            val confirm = runCatching { account.confirmSignUp(username, current.code.trim()) }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                }
+                .getOrNull() ?: return@launch
+            runCatching { account.login(username, password) }
+                .onSuccess {
+                    _state.update {
+                        it.copy(submitting = false, notice = confirm, done = true, error = null)
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    // 账号已经验证成功，只是自动登录失败：不要卡在验证码页，
+                    // 改成"去登录"，把用户名预填进登录页（用户自己输密码）。
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            verifiedNeedLogin = true,
+                            error = "邮箱验证成功，但自动登录失败：${e.toUserMessage()}",
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 重新发送验证码（`username + password`）；60 秒冷却。 */
+    fun resendCode() {
+        val current = _state.value
+        if (!current.canResend || current.step != SignUpStep.VERIFY) return
+        if (current.verifyOnly) {
+            credentialsError(current)?.let { message ->
+                _state.update { it.copy(error = message) }
+                return
+            }
+        }
+        val username = current.username
+        val password = current.form.password
+        _state.update { it.copy(submitting = true, error = null) }
+        viewModelScope.launch {
+            runCatching { account.resendSignUpCode(username, password) }
+                .onSuccess { message ->
+                    _state.update { it.copy(submitting = false, notice = message, error = null) }
+                    startCooldown()
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                }
+        }
+    }
+
+    /** 「已有验证码」入口的必填检查（用户名 + 密码）。 */
+    private fun credentialsError(state: SignUpUiState): String? = when {
+        state.username.isBlank() -> "请输入用户名"
+        state.form.password.isEmpty() -> "请输入密码"
+        else -> null
+    }
+
+    private fun startCooldown() {
+        cooldownJob?.cancel()
+        cooldownJob = viewModelScope.launch {
+            _state.update { it.copy(resendCooldown = RESEND_COOLDOWN_SECONDS) }
+            var left = RESEND_COOLDOWN_SECONDS
+            while (left > 0) {
+                delay(1_000)
+                left -= 1
+                _state.update { it.copy(resendCooldown = left) }
+            }
+        }
+    }
+
+    private companion object {
+        /** 官方 UI 的验证码重发冷却。 */
+        const val RESEND_COOLDOWN_SECONDS = 60
+    }
+}
+
+// ======================================================================
+// 个人资料编辑
+// ======================================================================
+
+/**
+ * 资料编辑页状态。
+ *
+ * [base] 是**本次从服务端拉到的原值**，只用于判断"有没有改过"；
+ * [form] 是用户正在编辑的表单。两者相同 = 没有未保存修改。
+ */
+data class AccountProfileEditUiState(
+    val signedIn: Boolean = true,
+    /** 正在 `GET /useredit`（加载完成前**不渲染表单**，见 `AccountProfileEditViewModel` 的注释）。 */
+    val loading: Boolean = true,
+    /** 只读展示：当前登录名。 */
+    val username: String = "",
+    /** 只读展示：当前邮箱。 */
+    val email: String = "",
+    val form: UserProfileForm? = null,
+    val base: UserProfileForm? = null,
+    val updating: Boolean = false,
+    /** 整页加载失败（没有可编辑的内容）。 */
+    val error: String? = null,
+    /** 保存失败（表单还在，用户改完可以再点保存）。 */
+    val saveError: String? = null,
+    /** 一次性成功提示（由根部 Snackbar 展示）。 */
+    val message: String? = null,
+    /** 保存成功（页面据此返回资料页）。 */
+    val saved: Boolean = false,
+) {
+    val dirty: Boolean get() = form != null && form != base
+    val canSave: Boolean get() = form != null && dirty && !loading && !updating
+}
+
+/**
+ * 个人资料编辑页 ViewModel。
+ *
+ * ## 为什么"加载完才显示表单"（这里踩的是官方 App 的坑）
+ *
+ * 官方 `InfoModal.tsx` 的输入框全是 `defaultValue={formData.xxx}`，而 `formData` 是
+ * `GET /useredit` 回来后才填的：首帧渲染时还是空对象，**之后 `defaultValue` 不会再更新**，
+ * 于是"已有资料回显不出来"。本工程的做法是：
+ * 1. 进页面先 `GET`，加载中只显示 LoadingBox，**根本不渲染输入框**；
+ * 2. 拿到 DTO 后一次性 [UserEditDto.toProfileForm] 生成受控状态，输入框永远是"状态驱动"；
+ * 3. 用户每次进编辑页都会重新拉一次，避免用上一次的快照做整条覆盖。
+ */
+class AccountProfileEditViewModel(
+    private val account: AccountRepository,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(
+        AccountProfileEditUiState(
+            signedIn = account.isSignedIn,
+            username = account.profile?.username.orEmpty(),
+            email = account.profile?.email.orEmpty(),
+        ),
+    )
+    val state: StateFlow<AccountProfileEditUiState> = _state.asStateFlow()
+
+    private var inFlight = false
+
+    init {
+        load()
+    }
+
+    /** 重试整页加载。 */
+    fun retry() = load()
+
+    private fun load() {
+        val profile = account.profile
+        if (!account.isSignedIn || profile == null) {
+            _state.update { it.copy(signedIn = false, loading = false) }
+            return
+        }
+        if (inFlight) return
+        inFlight = true
+        _state.update {
+            it.copy(
+                signedIn = true,
+                loading = true,
+                error = null,
+                saveError = null,
+                username = profile.username,
+                email = profile.email.orEmpty(),
+            )
+        }
+        viewModelScope.launch {
+            runCatching { account.userEdit(profile.uid) }
+                .onSuccess { detail ->
+                    // 服务端理论上也按 50/200 截断，这里再套一次上限，
+                    // 保证"表单值"和"提交值"与输入框的限制是同一套。
+                    val form = detail.toProfileForm().limited()
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            form = form,
+                            base = form,
+                            error = null,
+                            saveError = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            form = null,
+                            base = null,
+                            error = e.toUserMessage(),
+                        )
+                    }
+                }
+            inFlight = false
+        }
+    }
+
+    /** 表单变化（截断上限在 [UserProfileForm.limited] 里统一做）。 */
+    fun updateForm(form: UserProfileForm) = _state.update {
+        it.copy(form = form.limited(), saveError = null)
+    }
+
+    /** 保存：全量提交 24 个字段。 */
+    fun save() {
+        val current = _state.value
+        val form = current.form ?: return
+        if (current.updating || current.loading) return
+        val passwordError = validatePasswordChange(form)
+        if (passwordError != null) {
+            _state.update { it.copy(saveError = passwordError) }
+            return
+        }
+        val uid = account.profile?.uid.orEmpty()
+        if (uid.isEmpty()) {
+            _state.update { it.copy(saveError = "账号信息不完整，请重新登录") }
+            return
+        }
+        _state.update { it.copy(updating = true, saveError = null) }
+        viewModelScope.launch {
+            runCatching { account.saveUserEdit(uid, form) }
+                .onSuccess { updated ->
+                    val fresh = updated.toProfileForm().limited()
+                    _state.update {
+                        it.copy(
+                            updating = false,
+                            form = fresh,
+                            base = fresh,
+                            // 密码字段不留在界面上：保存成功后它已经没有意义
+                            saveError = null,
+                            saved = true,
+                            message = if (form.password.isNotEmpty()) "资料已保存，密码已更新" else "资料已保存",
+                            username = account.profile?.username.orEmpty(),
+                            email = account.profile?.email.orEmpty(),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(updating = false, saveError = e.toUserMessage()) }
+                }
+        }
+    }
+
+    fun consumeMessage() = _state.update { it.copy(message = null) }
 }

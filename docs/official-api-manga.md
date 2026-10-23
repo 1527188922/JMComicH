@@ -737,26 +737,88 @@ var scramble_id = 220980;
 
 无参数。按源码返回 `code=200`；客户端无论如何都要清本地凭证。
 
-### 7.3 `POST /register` ⚠ 未实测
+### 7.3 `POST /register`（2026-10-23 实测：成功 + 失败形态）
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `username` | 是 | |
+| `username` | 是 | 服务端上限实测 **15 个字符**（`用户名只能包含15个字符!`），不是官方前端写的 `maxLength=50` |
 | `password` | 是 | |
 | `password_confirm` | 是 | |
 | `email` | 是 | |
 | `gender` | 是 | `Male` / `Female` |
 
-返回 `{status:"ok",msg}`（按源码）。注册后**还要走邮箱验证码**才能登录。
+注册后**还要走邮箱验证码**（§7.4）才能登录。
 
-### 7.4 `POST /confirm` ⚠ 未实测
+**成功形态（2026-10-23 真机实测，用户完成了一次真实注册）**
+
+```json
+{
+  "type": "",
+  "msg": "您已注册。检查您的电子邮件中的确认链接!",
+  "status": "ok",
+  "errors": ""
+}
+```
+
+两个**容易踩死的细节**：
+
+1. **成功时 `errors` 是空字符串 `""`，不是空数组 `[]`**。把它声明成 `List<String>`
+   会在反序列化阶段直接抛
+   `Unexpected JSON token at offset …: Expected start of the array '[', but had '"' instead`，
+   表现为"邮件已经发出、账号已经创建，但 App 报解析错误"（本工程首轮真机就踩了这个）。
+   客户端必须对 `errors` 做**数组 / 字符串 / 空串 / null 的宽容解析**
+   （本工程 `LooseStringListSerializer`）。
+2. **`msg` 是给用户的通知文案**（"您已注册…"），不是错误；`status == "ok"` 时按成功处理。
+
+**失败形态（2026-10-23 实测，用已占用用户名 / 非法邮箱发的请求，没有创建账号）**
+
+- 与收藏类接口同构：**HTTP 200 + 信封 `code` 200**，真正结果在解密后的 `data` 里：
+
+```json
+{
+  "type": "",
+  "msg": "电子邮件是不是有效的电子邮件地址!1",
+  "status": "fail",
+  "errors": [
+    "电子邮件是不是有效的电子邮件地址!1",
+    "用户名已经存在!"
+  ]
+}
+```
+
+- **顶层还有一个明文 `errorMsg`**，值是 `errors` 的第一条；客户端按 `data` 判成败即可
+  （本工程 `postDecrypted` 解密后读 `status` / `msg` / `errors`）。
+- **`msg` 只给第一条错误，`errors` 才是全部**。实测一次能同时返回
+  「邮箱格式 + 用户名已存在 / 超长 + 两次密码不一致」三四条，界面必须展示 `errors`。
+- 邮箱校验比官方前端正则**更严**：`probe-only@example.com` 这种能过官方正则的地址，
+  服务端仍会判 `电子邮件是不是有效的电子邮件地址!`（疑似校验域名可达性）。
+  所以本地只做格式首筛，**服务端原文照旧展示**。
+- 同一个用户名在**未验证**状态下再次 `POST /register` 会回「用户名已经存在」，
+  所以「已有验证码」必须走 §7.4 的 `confirm`，而不是重新注册。
+
+### 7.4 `POST /confirm`（2026-10-23 补测：失败形态）
 
 | 用途 | 参数 |
 |---|---|
 | 提交验证码 | `username` + `numcode` |
 | 重新发送验证码 | `username` + `password` |
 
-返回 `{status,msg}`。官方 UI 有 60 秒重发冷却。
+返回 `{status,msg}`。
+
+**失败形态（2026-10-23 实测）**
+
+- 与 `/register` 完全同构：HTTP 200、信封 `code` 200、`data` 解密后
+  `{status:"fail", msg:"…", errors:[…]}`，顶层再带一个明文 `errorMsg`。
+- **成功时 `errors` 同样是空字符串**（与 §7.3 的实测一致），所以 `errors` 的类型
+  在成功/失败之间不固定，客户端必须宽容解析。
+- 实测样本（不存在的用户名 + 错误验证码）：
+  `{"status":"fail","msg":"用户名已经存在!","errors":["用户名已经存在!"]}`
+  —— 服务端的文案本身就不一定准确（这里用户名显然不存在），**客户端原样展示，不自造文案**。
+- 重发（`username + password`，不存在的账号）实测：
+  `无效的核查身份证!您确定此ID是正确的？ !2`（同样是服务端原文）。
+- 官方 UI 的 **60 秒重发冷却只是前端限制**（`MemberModal.tsx` 的 `resendCooldown`），
+  服务端没有这个状态；本工程也在 ViewModel 里做了同样的倒计时。
+
 
 ### 7.5 `POST /forgot` ⚠ 未实测
 
@@ -808,6 +870,20 @@ var scramble_id = 220980;
 - 入参就是 §7.6 那一组字段（`password`/`password_confirm` 留空 = 不改密码；实测“空密码字段”不会改密码，**登录仍正常**）。
 - 返回**更新后的整条资料对象**（不是 `{status,msg}`）。
 - 想"只改昵称"也必须把 GET 到的**全部字段**原样回传——这也是官方 App 的做法。
+
+**2026-10-23 本工程实现时补的两条防御**
+
+1. **`GET` 必须发生在渲染表单之前**。官方 `InfoModal.tsx` 用
+   `defaultValue={formData.nickName}`，而 `formData` 是 `GET /useredit` 回来后才 `setFormData` 的：
+   首帧是空对象，`defaultValue` 之后不会再更新，于是**已有资料回显不出来**。
+   本工程改成"加载完成才渲染表单 + Compose 受控状态"，并以**刚刚 GET 到的值**作为提交底稿
+   （详见 `feature/ui/AccountViewModels.kt` 的 `AccountProfileEditViewModel`）。
+2. **`POST` 的业务失败要能识别**。文档写"返回更新后的整条资料"，但为防服务端哪天改成
+   `{status:"fail",msg}`，`UserEditDto` 也读了 `msg`；`AccountRepository.saveUserEdit`
+   遇到 `status == "fail"` 或非空 `msg` 时抛业务错误，不会把失败当成功。
+3. `birthday` 的空值 / `0000-00-00` 被归一成 `1970-01-01` 且**改不回去**，所以界面上把
+   `1970-01-01` 也当成「未设置」展示（用户不可能真的选 1970 年当生日），提交时仍按原值/空串回传。
+
 
 ---
 

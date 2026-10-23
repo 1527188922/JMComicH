@@ -63,6 +63,33 @@ class AccountModelTest {
         assertEquals("Lv.4 · 地上的月影", MyUiState(account = AccountState.SignedIn(profile)).levelLine)
     }
 
+    // ---------------- 显示名：昵称优先 ----------------
+
+    @Test
+    fun `没有昵称时显示登录名`() {
+        val profile = profile().copy(username = "1527188922", nickName = null)
+        assertEquals("1527188922", profile.displayName)
+        assertEquals("1527188922", profile.copy(nickName = "").displayName)
+        assertEquals("1527188922", profile.copy(nickName = "   ").displayName)
+    }
+
+    @Test
+    fun `有昵称时显示昵称`() {
+        val profile = profile().copy(username = "1527188922", nickName = "小早川")
+        assertEquals("小早川", profile.displayName)
+        assertEquals("小早川", profile.copy(nickName = "  小早川  ").displayName)
+    }
+
+    @Test
+    fun `升级前存的资料快照没有昵称字段也能读`() {
+        // 昵称是后加的字段：老快照 JSON 里没有它，必须按默认值 null 读出来，
+        // 否则升级后「我的」页会直接解析失败、退回"未登录"。
+        val oldJson = """{"uid":"6404735","username":"1527188922","level":4,"levelName":"地上的月影"}"""
+        val profile = ApiJson.decodeFromString(MemberProfile.serializer(), oldJson)
+        assertNull(profile.nickName)
+        assertEquals("1527188922", profile.displayName)
+    }
+
     // ---------------- 会话状态 ----------------
 
     @Test

@@ -530,6 +530,68 @@ class ApiClient(
             decode = { json -> ApiJson.decodeFromString(UserEditDto.serializer(), json) },
         )
 
+    /**
+     * `POST /register`：注册（`docs/official-api-manga.md` §7.3）。
+     *
+     * 2026-10-23 实测（**只测失败形态**，没有创建账号）：
+     * - 业务失败仍是 **HTTP 200 + 信封 `code` 200**，`data` 解密后是
+     *   `{status:"fail", msg:"…", errors:[…]}`；顶层还带一个明文 `errorMsg`（= `errors` 的第一条）。
+     * - `errors` 会把**所有**问题列出来（邮箱格式、用户名已存在 / 超长、两次密码不一致……），
+     *   所以界面要展示 `errors` 而不是只看 `msg`。
+     * - 用户名上限实测 **15 个字符**（`用户名只能包含15个字符!`），与官方前端 `maxLength=50` 不一致。
+     *
+     * 注册成功**不代表能登录**：还要走 [confirmSignUp] 过邮箱验证码。
+     * 走 [postDecrypted]（**不重试**）：注册不是幂等操作。
+     */
+    suspend fun register(
+        username: String,
+        password: String,
+        passwordConfirm: String,
+        email: String,
+        gender: String,
+    ): EditResultDto = postDecrypted(
+        path = "/register",
+        fields = listOf(
+            "username" to username.trim(),
+            "password" to password,
+            "password_confirm" to passwordConfirm,
+            "email" to email.trim(),
+            "gender" to gender,
+        ),
+        decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /confirm`：提交邮箱验证码（`docs/official-api-manga.md` §7.4）。
+     *
+     * 参数按官方 `FETCH_SIGN_UP_CONFIRM_THUNK`：`username` + `numcode`。
+     * 响应形态与 [register] 同一套（`status` / `msg` / `errors`），同样不重试。
+     */
+    suspend fun confirmSignUp(username: String, numCode: String): EditResultDto = postDecrypted(
+        path = "/confirm",
+        fields = listOf(
+            "username" to username.trim(),
+            "numcode" to numCode.trim(),
+        ),
+        decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+    )
+
+    /**
+     * `POST /confirm`：**重新发送**邮箱验证码。
+     *
+     * 官方同一个接口换个参数组合：`username` + `password`（`FETCH_SIGN_UP_CONFIRM_THUNK`
+     * 的 resend 分支）。官方 UI 有 60 秒重发冷却，本工程也在 ViewModel 里做了同样的倒计时。
+     */
+    suspend fun resendSignUpCode(username: String, password: String): EditResultDto =
+        postDecrypted(
+            path = "/confirm",
+            fields = listOf(
+                "username" to username.trim(),
+                "password" to password,
+            ),
+            decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+        )
+
     // ------------------------------------------------------------------
     // 内部实现
     // ------------------------------------------------------------------

@@ -37,12 +37,17 @@ import androidx.compose.ui.unit.dp
 import com.haruhi.jmcomic.core.account.MemberProfile
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.feature.api.UserEditDto
+import com.haruhi.jmcomic.feature.data.PROFILE_GENDERS
+import com.haruhi.jmcomic.feature.data.PROFILE_RELATIONS
+import com.haruhi.jmcomic.feature.data.PROFILE_SEXUALITIES
+import com.haruhi.jmcomic.feature.data.isUnsetBirthday
+import com.haruhi.jmcomic.feature.data.optionLabel
 
 /**
- * 个人资料（**只读**，从「我的」页的账户卡点进来）。
+ * 个人资料（从「我的」页的账户卡点进来）。
  *
- * 本版只展示，不做编辑：编辑要用 `POST /useredit/{uid}`，而它是**整条覆盖**
- * （实测少传字段会被写成默认值），所以留给下一版按"全量提交"实现
+ * 只展示；右上角「编辑」进 [AccountProfileEditScreen]。编辑页用的是
+ * `GET /useredit` 的**最新**数据，并按 `POST /useredit` 的"整条覆盖"语义全量提交
  * （见 `docs/account-design.md` §7）。
  *
  * 会员相关信息（`超级会员 · 至 …`）**只在是会员时出现**（用户要求）。
@@ -54,6 +59,8 @@ fun AccountProfileScreen(
     onBack: () -> Unit,
     /** 下拉刷新 / 报错后的「重试」（进页面不再自动联网，见 `AccountProfileViewModel`）。 */
     onRefresh: () -> Unit,
+    /** 右上角「编辑」：进编辑页。 */
+    onEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -68,6 +75,11 @@ fun AccountProfileScreen(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
             Text("个人资料", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            // 只有真的拿到了资料才给编辑入口：编辑页必须先 GET 成功才能渲染表单，
+            // 在"还没登录 / 加载失败"时显示「编辑」只会把人带进一个空页面。
+            if (state.signedIn && state.profile != null) {
+                TextButton(onClick = onEdit) { Text("编辑") }
+            }
         }
 
         Box(
@@ -139,16 +151,7 @@ fun AccountProfileScreen(
                         }
 
                         InfoCard(
-                            rows = listOfNotNull(
-                                "经验" to expText(profile),
-                                "J Coin" to profile.coin,
-                                "收藏" to "${profile.albumFavorites} / ${profile.albumFavoritesMax}",
-                                state.detail?.nickName?.takeIf { it.isNotBlank() }?.let { "昵称" to it },
-                                state.detail?.gender?.takeIf { it.isNotBlank() }?.let { "性别" to genderText(it) },
-                                state.detail?.birthday?.takeIf { it.isNotBlank() && !it.startsWith("0000") }
-                                    ?.let { "生日" to it },
-                                state.detail?.aboutMe?.takeIf { it.isNotBlank() }?.let { "关于我" to it },
-                            ),
+                            rows = profileRows(profile, state.detail),
                         )
 
                         state.error?.let { error ->
@@ -217,7 +220,7 @@ private fun InfoRow(label: String, value: String) {
 private fun ProfileAvatar(profile: MemberProfile) {
     val shape = CircleShape
     val size = Modifier.size(64.dp)
-    val initial = profile.username.trim().take(1).ifBlank { "JM" }
+    val initial = profile.displayName.trim().take(1).ifBlank { "JM" }
     Box(
         modifier = size.clip(shape).background(MaterialTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
@@ -236,8 +239,49 @@ private fun ProfileAvatar(profile: MemberProfile) {
 private fun expText(profile: MemberProfile): String =
     if (profile.nextLevelExp > 0) "${profile.exp} / ${profile.nextLevelExp}" else profile.exp.toString()
 
-private fun genderText(raw: String): String = when (raw.lowercase()) {
-    "male" -> "男"
-    "female" -> "女"
-    else -> raw
+/**
+ * 资料页要展示的行：账号数据（来自登录快照）+ 官方 24 项里的可读字段。
+ *
+ * 只显示**非空**项（空串 / 服务端归一出来的空生日都不占一行），
+ * 与官方"更多资料"折叠区的内容对齐——编辑页能改的，这里都能看到。
+ */
+private fun profileRows(profile: MemberProfile, detail: UserEditDto?): List<Pair<String, String>> {
+    val rows = mutableListOf<Pair<String, String>>(
+        "经验" to expText(profile),
+        "J Coin" to profile.coin,
+        "收藏" to "${profile.albumFavorites} / ${profile.albumFavoritesMax}",
+    )
+    if (detail == null) return rows
+
+    fun add(label: String, value: String?) {
+        val text = value?.trim().orEmpty()
+        if (text.isNotEmpty()) rows += label to text
+    }
+
+    add("昵称", detail.nickName)
+    // 官方表单把 firstName / lastName 的中文标签写反了；这里按字段本意拼成「姓 名」
+    val fullName = listOfNotNull(
+        detail.lastName?.trim()?.takeIf { it.isNotEmpty() },
+        detail.firstName?.trim()?.takeIf { it.isNotEmpty() },
+    ).joinToString(" ")
+    add("姓名", fullName)
+    add("性别", detail.gender?.takeIf { it.isNotBlank() }?.let { optionLabel(PROFILE_GENDERS, it) })
+    add("生日", detail.birthday?.takeUnless { isUnsetBirthday(it) })
+    add("关系", detail.relations?.takeIf { it.isNotBlank() }?.let { optionLabel(PROFILE_RELATIONS, it) })
+    add("兴趣", detail.sexuality?.takeIf { it.isNotBlank() }?.let { optionLabel(PROFILE_SEXUALITIES, it) })
+    add("网站", detail.website)
+    add("出生地", detail.birthPlace)
+    add("城市", detail.city)
+    add("国家", detail.country)
+    add("职业", detail.occupation)
+    add("公司", detail.company)
+    add("学校", detail.school)
+    add("关于我", detail.aboutMe)
+    add("这里的话", detail.infoHere)
+    add("收藏的类别", detail.collections)
+    add("理想中的伴侣", detail.ideal)
+    add("敏感区", detail.erogenic)
+    add("最喜欢", detail.favorite)
+    add("最讨厌", detail.hate)
+    return rows
 }
