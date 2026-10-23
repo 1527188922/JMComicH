@@ -1194,8 +1194,8 @@ internal fun coverMemoryCacheKey(albumId: Long): String = "jm-cover-$albumId"
 private const val COVER_MIN_WIDTH_PX = 400
 private const val COVER_MIN_HEIGHT_PX = 540
 
-/** 隐私模式下封面的模糊半径（仅 Android 12+ 生效）。 */
-private val PRIVACY_COVER_BLUR_RADIUS = 18.dp
+/** 隐私模式下封面的模糊半径（仅 Android 12+ 生效）：32dp，保证只剩色块、不透出画面细节。 */
+private val PRIVACY_COVER_BLUR_RADIUS = 32.dp
 
 /** Android 12 以下：封面压到很低的不透明度，再叠一层近不透明遮罩。 */
 private const val PRIVACY_COVER_FALLBACK_ALPHA = 0.2f
