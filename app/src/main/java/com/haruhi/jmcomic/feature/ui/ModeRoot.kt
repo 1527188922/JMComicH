@@ -687,6 +687,7 @@ fun ModeRoot(
                         onRetry = vm::retry,
                         onMessage = showMessage,
                         onConsumeMessage = vm::consumeMessage,
+                        onConsumeSaveError = vm::consumeSaveError,
                         onSaved = { navController.popBackStack() },
                     )
                 }

@@ -90,6 +90,20 @@ fun AccountSignUpScreen(
         }
     }
 
+    // **只把服务端 / 网络错误**做成弹窗（这类文案长、位置不定，放在页内会把控件顶下去）。
+    // 表单校验、验证码校验、发送成功的提示仍然保持页内展示（用户 2026-10-23 明确要求）。
+    // 「验证完成但自动登录失败」是独立面板，错误正文已经在面板里，不再叠弹窗。
+    val dialogError = state.error
+    if (!state.verifiedNeedLogin) {
+        dialogError?.let { message ->
+            MessageDialog(
+                title = state.errorTitle.ifBlank { "提示" },
+                message = message,
+                onDismiss = onConsumeError,
+            )
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         AccountFormTopBar(
             title = when {
@@ -133,7 +147,6 @@ fun AccountSignUpScreen(
                         onTermsAcceptedChange = onTermsAcceptedChange,
                         onTogglePasswordVisible = onTogglePasswordVisible,
                         onSubmit = onSubmit,
-                        onConsumeError = onConsumeError,
                         onResumeVerification = onResumeVerification,
                         onBackToLogin = onBack,
                     )
@@ -146,7 +159,6 @@ fun AccountSignUpScreen(
                         onCodeChange = onCodeChange,
                         onSubmitCode = onSubmitCode,
                         onResendCode = onResendCode,
-                        onConsumeError = onConsumeError,
                         onBackToForm = onBackToForm,
                         onBack = onBack,
                     )
@@ -169,7 +181,6 @@ private fun SignUpForm(
     onTermsAcceptedChange: (Boolean) -> Unit,
     onTogglePasswordVisible: () -> Unit,
     onSubmit: () -> Unit,
-    onConsumeError: () -> Unit,
     onResumeVerification: () -> Unit,
     onBackToLogin: () -> Unit,
 ) {
@@ -293,14 +304,6 @@ private fun SignUpForm(
         Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     }
 
-    state.error?.let { error ->
-        Spacer(Modifier.height(8.dp))
-        ErrorBanner(message = error, onRetry = null)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onConsumeError) { Text("知道了") }
-        }
-    }
-
     Spacer(Modifier.height(12.dp))
     if (state.registered) {
         // 账号已创建：唯一的下一步是完成邮箱验证，不能再提交一次注册
@@ -355,7 +358,6 @@ private fun VerifyForm(
     onCodeChange: (String) -> Unit,
     onSubmitCode: () -> Unit,
     onResendCode: () -> Unit,
-    onConsumeError: () -> Unit,
     onBackToForm: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -372,6 +374,7 @@ private fun VerifyForm(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+    // 注册成功 / 验证码重发成功：保持原来的页内提示（用户明确不要弹窗）
     state.notice?.let { notice ->
         Spacer(Modifier.height(10.dp))
         Text(
@@ -430,12 +433,14 @@ private fun VerifyForm(
         modifier = Modifier.fillMaxWidth(),
     )
 
-    state.error?.let { error ->
+    // 验证码 / 用户名密码的本地校验：保持页内提示，不弹窗
+    state.codeError?.let { error ->
         Spacer(Modifier.height(8.dp))
-        ErrorBanner(message = error, onRetry = null)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onConsumeError) { Text("知道了") }
-        }
+        Text(
+            text = error,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
 
     Spacer(Modifier.height(12.dp))

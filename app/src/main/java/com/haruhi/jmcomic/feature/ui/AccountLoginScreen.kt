@@ -69,6 +69,11 @@ fun AccountLoginScreen(
         if (state.done) onLoggedIn()
     }
 
+    // 服务端 / 网络 / 本地校验错误统一用弹窗展示：页内错误条会把输入框和登录按钮整体顶下去。
+    state.error?.let { message ->
+        MessageDialog(title = state.errorTitle, message = message, onDismiss = onConsumeError)
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -152,16 +157,6 @@ fun AccountLoginScreen(
                 )
 
                 Spacer(Modifier.height(12.dp))
-                if (state.error != null) {
-                    ErrorBanner(message = state.error, onRetry = null)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                    ) {
-                        TextButton(onClick = onConsumeError) { Text("知道了") }
-                    }
-                }
-
                 Spacer(Modifier.height(8.dp))
                 Button(
                     onClick = onSubmit,

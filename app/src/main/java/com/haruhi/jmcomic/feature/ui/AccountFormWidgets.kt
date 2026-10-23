@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -273,6 +277,41 @@ fun FormCheckRow(
         Spacer(Modifier.size(4.dp))
         Text(text = text, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+/**
+ * 账号表单页的错误 / 提示对话框。
+ *
+ * 为什么要用弹窗而不是页内红字：注册页的字段一多，任何一行错误（尤其是服务端一次返回
+ * 三四条）都会把下面的控件整体顶下去，用户正在点的按钮会"跳走"。
+ * 弹窗是覆盖层，**不参与布局**，出现/消失都不会改变任何控件位置。
+ *
+ * 关掉对话框只是收起提示；字段自己的红框由 `isError` 负责，仍然保留到用户修改为止。
+ */
+@Composable
+fun MessageDialog(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+    confirmText: String = "知道了",
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            // 服务端一次可能返回三四条错误；小屏 / 大字号下给一层滚动，别让正文被裁掉
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(message)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(confirmText) }
+        },
+    )
 }
 
 /**

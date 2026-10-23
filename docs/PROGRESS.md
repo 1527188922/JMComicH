@@ -2358,10 +2358,10 @@ id 还会 `replace(/^JM/i, "")`）。本工程照做：
 | `feature/data/AccountRepository.kt` | 新增 `register` / `confirmSignUp` / `resendSignUpCode` / `saveUserEdit` / `rememberProfileDetail`；登录后**后台补一次昵称** |
 | `core/account/MemberProfile.kt` | 补 `nickName` 与 `displayName`（昵称优先）；默认值保证老快照兼容 |
 | `feature/ui/AccountViewModels.kt` | 新增 `AccountSignUpViewModel`（表单 → 验证码 → 自动登录，60s 重发冷却）、`AccountProfileEditViewModel`（先 GET 后渲染、全量保存、改密码校验）；`AccountProfileViewModel.onScreenResumed` 同步编辑结果 |
-| `feature/ui/AccountSignUpScreen.kt`（新） | 注册 + 验证码两屏；「已有验证码」模式；注册成功后回表单只给「继续验证」并锁表单 |
-| `feature/ui/AccountProfileEditScreen.kt`（新） | 四组分区表单、生日日期选择器、下拉选项、密码显示切换、保存失败固定提示、未保存返回确认 |
-| `feature/ui/AccountFormWidgets.kt`（新） | 账号表单页共用顶栏 / 分组卡 / 输入框 / 只读行 / 下拉 / 日期 / 勾选行 / 整页消息 |
-| `feature/ui/AccountLoginScreen.kt` | 底部「注册新账号」「输入验证码」；找回密码说明改为只指网页版 |
+| `feature/ui/AccountSignUpScreen.kt`（新） | 注册 + 验证码两屏；「已有验证码」模式；注册成功后回表单只给「继续验证」并锁表单；**服务端错误弹窗，表单校验 / 成功提示保持页内** |
+| `feature/ui/AccountProfileEditScreen.kt`（新） | 四组分区表单、生日日期选择器、下拉选项、密码显示切换、**保存失败弹窗**、未保存返回确认 |
+| `feature/ui/AccountFormWidgets.kt`（新） | 账号表单页共用顶栏 / 分组卡 / 输入框 / 只读行 / 下拉 / 日期 / 勾选行 / 整页消息 / **`MessageDialog`** |
+| `feature/ui/AccountLoginScreen.kt` | 底部「注册新账号」「输入验证码」；找回密码说明改为只指网页版；**登录失败改弹窗** |
 | `feature/ui/AccountProfileScreen.kt` | 右上角「编辑」入口；资料页补齐官方 24 项里的全部可读字段（原来只有昵称/性别/生日/关于我） |
 | `feature/ui/MyScreen.kt` | 摘要卡显示名改用 `displayName`（昵称优先） |
 | `feature/ui/ModeRoot.kt` | 新增 `SIGNUP` / `ACCOUNT_PROFILE_EDIT` 路由；登录路由加 `username` 预填；注册路由加 `verify` 模式 |
@@ -2408,6 +2408,25 @@ Expected start of the array '[', but had '"' instead at path: $.errors）`。
 - 真机上的后续操作：账号已经创建，**不要重新点注册**（会回"用户名已经存在"）；
   更新安装包后从 登录页 →「输入验证码」补验证即可（或直接在验证页重发验证码）。
 
+### 5.2 报错展示：只有服务端错误用弹窗（2026-10-23 第二轮反馈）
+
+用户先反馈页内错误会顶动控件、要求弹窗；随后又明确：**验证码发送成功的提示**、
+**未选性别 / 未满 18 / 未同意协议**这类表单校验要恢复页内展示。
+
+最终行为（按用户原话逐条对齐）：
+
+- **服务端 / 网络错误**（注册、验证、重发验证码、登录、资料保存）→ `MessageDialog` 弹窗；
+  正文超过 400dp 可滚动；**服务端一次返回多条错误时逐行换行展示**（`errors` 用 `\n` 拼，
+  不再用「；」串成一行）。
+- **表单校验**（用户名 / 密码 / 邮箱 / 性别 / 18+ / 协议）→ 页内提示，保持原样：
+  输入框错误回到 `supportingText`，性别与勾选行的错误回到下方红字。
+- **验证码本地校验**（空验证码 / 未填用户名密码）→ 验证码页页内红字。
+- **一次性提示**（注册成功、验证码已重发）→ 验证码页页内文字（用户明确不要弹窗）。
+- **资料编辑**：本地改密码校验（只填一个 / 两次不一致）→ 页内横幅；
+  服务端 / 网络保存失败 → 弹窗。
+- **登录页** → 服务端错误弹窗；空字段校验恢复 `supportingText`。
+- 一句话原则：**只有"服务端返回的错误"才弹框，本地能判断的错误一律页内提示**。
+
 ### 6. 回归验证（本机实跑）
 
 - `:app:compileDebugKotlin` ✅（含注册页重写后的最终版本）；
@@ -2440,3 +2459,9 @@ Expected start of the array '[', but had '"' instead at path: $.errors）`。
 10. 编辑页有未保存修改时按返回 → 弹「放弃修改？」；保存中按返回 → 不回退、不打断保存。
 11. 断网进编辑页 → 整页「资料加载失败 + 重试」，**不出现空表单**；恢复网络点重试能加载出来。
 12. 保存时后台刚好改过资料（另一台设备）：因为进页面重新 GET，保存不会把新值覆盖成旧值。
+13. **只有服务端 / 网络错误弹对话框**（用户名已存在、验证码错误、断网、资料保存失败、登录密码错）：
+    弹窗出现和关闭时页面上控件位置不动；关掉后已填内容还在。
+    服务端一次返回多条错误时，弹窗里**一行一条**（不是「；」连成一行）。
+14. **本地能判断的错误保持页内提示**：空字段 / 两次密码不一致 / 邮箱格式 / 未选性别 / 未满 18 /
+    未同意协议 / 改密码只填一个 → 输入框下方、勾选行下方或页内横幅出现红字（与改造前一致），不弹窗。
+15. 注册成功、验证码重发成功的提示仍然是验证码页上的一行文字，不弹窗。

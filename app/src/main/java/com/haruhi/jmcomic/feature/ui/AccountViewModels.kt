@@ -210,8 +210,10 @@ data class LoginUiState(
     val submitting: Boolean = false,
     val usernameError: String? = null,
     val passwordError: String? = null,
-    /** 接口级错误（服务端 `errorMsg` 原文或网络错误文案）。 */
+    /** 接口级 / 本地校验错误（弹窗正文）。 */
     val error: String? = null,
+    /** 错误弹窗标题（"登录失败" / "请检查填写内容"）。 */
+    val errorTitle: String = "登录失败",
     /** 登录成功（页面据此关闭）。 */
     val done: Boolean = false,
 ) {
@@ -257,10 +259,11 @@ class AccountAuthViewModel(private val account: AccountRepository) : ViewModel()
             hasError = true
         }
         if (hasError) {
+            // 空字段校验保持页内 `supportingText`（用户明确要求：这类不要弹框）
             _state.value = next
             return
         }
-        _state.update { it.copy(submitting = true) }
+        _state.update { it.copy(submitting = true, errorTitle = "登录失败") }
         viewModelScope.launch {
             runCatching { account.login(username, password) }
                 .onSuccess {
@@ -268,7 +271,9 @@ class AccountAuthViewModel(private val account: AccountRepository) : ViewModel()
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { s -> s.copy(submitting = false, error = e.toUserMessage()) }
+                    _state.update {
+                        s -> s.copy(submitting = false, errorTitle = "登录失败", error = e.toUserMessage())
+                    }
                 }
         }
     }
@@ -1110,9 +1115,13 @@ data class SignUpUiState(
     val validation: SignUpValidation = SignUpValidation(),
     val passwordVisible: Boolean = false,
     val submitting: Boolean = false,
-    /** 服务端 / 网络错误（原样展示服务端 `errors` 拼接后的文案）。 */
+    /** 服务端 / 网络错误（弹窗正文）。 */
     val error: String? = null,
-    /** 一次性提示（注册成功、验证码已重发等）。 */
+    /** 错误对话框的标题（"注册失败" / "验证失败" / "发送失败"）。 */
+    val errorTitle: String = "提示",
+    /** 验证码步骤的**本地**校验错误（空验证码 / 未填用户名密码），页内提示、不弹窗。 */
+    val codeError: String? = null,
+    /** 一次性提示（注册成功、验证码已重发等），页内展示、不弹窗。 */
     val notice: String? = null,
     /** 验证码重发冷却剩余秒数（官方 60 秒）。 */
     val resendCooldown: Int = 0,
@@ -1179,7 +1188,7 @@ class AccountSignUpViewModel(
     fun togglePasswordVisible() = _state.update { it.copy(passwordVisible = !it.passwordVisible) }
 
     fun setCode(value: String) = _state.update {
-        it.copy(code = limitCodePoints(value, SIGN_UP_CODE_MAX), error = null)
+        it.copy(code = limitCodePoints(value, SIGN_UP_CODE_MAX), codeError = null)
     }
 
     fun consumeError() = _state.update { it.copy(error = null) }
@@ -1189,7 +1198,9 @@ class AccountSignUpViewModel(
         if (_state.value.submitting) return
         // 从登录页「已有验证码」进来时没有表单可回，调用方不该走这里
         if (_state.value.verifyOnly) return
-        _state.update { it.copy(step = SignUpStep.FORM, notice = null, error = null) }
+        _state.update {
+            it.copy(step = SignUpStep.FORM, notice = null, error = null, codeError = null)
+        }
     }
 
     /**
@@ -1202,15 +1213,18 @@ class AccountSignUpViewModel(
         val current = _state.value
         if (current.submitting) return
         if (!current.registered && !current.verifyOnly) return
-        _state.update { it.copy(step = SignUpStep.VERIFY, notice = null, error = null) }
+        _state.update {
+            it.copy(step = SignUpStep.VERIFY, notice = null, error = null, codeError = null)
+        }
     }
 
     private fun updateForm(transform: (SignUpForm) -> SignUpForm) = _state.update { current ->
-        // 输入即清掉对应字段的旧错误：用户已经在改了，红字不该一直挂着
+        // 输入即清掉对应字段的旧错误：用户已经在改了，红框 / 页内提示都该收起来
         current.copy(
             form = transform(current.form).limited(),
             validation = SignUpValidation(),
             error = null,
+            codeError = null,
         )
     }
 
@@ -1220,11 +1234,22 @@ class AccountSignUpViewModel(
         if (current.submitting) return
         val validation = validateSignUp(current.form)
         if (validation.hasError) {
-            _state.update { it.copy(validation = validation, error = null) }
+            // 表单校验**保持页内提示**（用户 2026-10-23 明确要求）：
+            // 输入框下方 / 勾选行下方各自显示，不弹对话框。
+            _state.update {
+                it.copy(validation = validation, error = null, codeError = null)
+            }
             return
         }
         val form = current.form
-        _state.update { it.copy(submitting = true, validation = SignUpValidation(), error = null) }
+        _state.update {
+            it.copy(
+                submitting = true,
+                validation = SignUpValidation(),
+                error = null,
+                codeError = null,
+            )
+        }
         viewModelScope.launch {
             runCatching {
                 account.register(
@@ -1243,6 +1268,7 @@ class AccountSignUpViewModel(
                             registered = true,
                             notice = message,
                             error = null,
+                            codeError = null,
                             code = "",
                             verifiedNeedLogin = false,
                         )
@@ -1251,7 +1277,14 @@ class AccountSignUpViewModel(
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            errorTitle = "注册失败",
+                            error = e.toUserMessage(),
+                            codeError = null,
+                        )
+                    }
                 }
         }
     }
@@ -1261,30 +1294,43 @@ class AccountSignUpViewModel(
         val current = _state.value
         if (current.submitting || current.step != SignUpStep.VERIFY) return
         validateSignUpCode(current.code)?.let { message ->
-            _state.update { it.copy(error = message) }
+            _state.update { it.copy(codeError = message, error = null) }
             return
         }
         // 「已有验证码」入口没有注册表单，用户名 / 密码要现填（验证后的自动登录也要用密码）
         if (current.verifyOnly) {
             credentialsError(current)?.let { message ->
-                _state.update { it.copy(error = message) }
+                _state.update { it.copy(codeError = message, error = null) }
                 return
             }
         }
         val username = current.username
         val password = current.form.password
-        _state.update { it.copy(submitting = true, error = null) }
+        _state.update { it.copy(submitting = true, error = null, codeError = null) }
         viewModelScope.launch {
             val confirm = runCatching { account.confirmSignUp(username, current.code.trim()) }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            errorTitle = "验证失败",
+                            error = e.toUserMessage(),
+                            codeError = null,
+                        )
+                    }
                 }
                 .getOrNull() ?: return@launch
             runCatching { account.login(username, password) }
                 .onSuccess {
                     _state.update {
-                        it.copy(submitting = false, notice = confirm, done = true, error = null)
+                        it.copy(
+                            submitting = false,
+                            notice = confirm,
+                            done = true,
+                            error = null,
+                            codeError = null,
+                        )
                     }
                 }
                 .onFailure { e ->
@@ -1295,7 +1341,9 @@ class AccountSignUpViewModel(
                         it.copy(
                             submitting = false,
                             verifiedNeedLogin = true,
+                            errorTitle = "自动登录失败",
                             error = "邮箱验证成功，但自动登录失败：${e.toUserMessage()}",
+                            codeError = null,
                         )
                     }
                 }
@@ -1308,22 +1356,36 @@ class AccountSignUpViewModel(
         if (!current.canResend || current.step != SignUpStep.VERIFY) return
         if (current.verifyOnly) {
             credentialsError(current)?.let { message ->
-                _state.update { it.copy(error = message) }
+                _state.update { it.copy(codeError = message, error = null) }
                 return
             }
         }
         val username = current.username
         val password = current.form.password
-        _state.update { it.copy(submitting = true, error = null) }
+        _state.update { it.copy(submitting = true, error = null, codeError = null) }
         viewModelScope.launch {
             runCatching { account.resendSignUpCode(username, password) }
                 .onSuccess { message ->
-                    _state.update { it.copy(submitting = false, notice = message, error = null) }
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            notice = message,
+                            error = null,
+                            codeError = null,
+                        )
+                    }
                     startCooldown()
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(submitting = false, error = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            errorTitle = "发送失败",
+                            error = e.toUserMessage(),
+                            codeError = null,
+                        )
+                    }
                 }
         }
     }
@@ -1377,7 +1439,14 @@ data class AccountProfileEditUiState(
     val updating: Boolean = false,
     /** 整页加载失败（没有可编辑的内容）。 */
     val error: String? = null,
-    /** 保存失败（表单还在，用户改完可以再点保存）。 */
+    /**
+     * **本地**校验错误（改密码只填一个 / 两次不一致 / 账号信息不完整）。
+     *
+     * 与 [saveError] 分开：本地错误仍然用页内横幅（用户要求"只有服务端返回错误才弹框"），
+     * 服务端 / 网络错误才走 [saveError] 的弹窗。
+     */
+    val localError: String? = null,
+    /** 保存时服务端 / 网络返回的错误（弹窗）。 */
     val saveError: String? = null,
     /** 一次性成功提示（由根部 Snackbar 展示）。 */
     val message: String? = null,
@@ -1435,6 +1504,7 @@ class AccountProfileEditViewModel(
                 signedIn = true,
                 loading = true,
                 error = null,
+                localError = null,
                 saveError = null,
                 username = profile.username,
                 email = profile.email.orEmpty(),
@@ -1452,6 +1522,7 @@ class AccountProfileEditViewModel(
                             form = form,
                             base = form,
                             error = null,
+                            localError = null,
                             saveError = null,
                         )
                     }
@@ -1464,6 +1535,8 @@ class AccountProfileEditViewModel(
                             form = null,
                             base = null,
                             error = e.toUserMessage(),
+                            localError = null,
+                            saveError = null,
                         )
                     }
                 }
@@ -1473,7 +1546,7 @@ class AccountProfileEditViewModel(
 
     /** 表单变化（截断上限在 [UserProfileForm.limited] 里统一做）。 */
     fun updateForm(form: UserProfileForm) = _state.update {
-        it.copy(form = form.limited(), saveError = null)
+        it.copy(form = form.limited(), localError = null, saveError = null)
     }
 
     /** 保存：全量提交 24 个字段。 */
@@ -1483,15 +1556,18 @@ class AccountProfileEditViewModel(
         if (current.updating || current.loading) return
         val passwordError = validatePasswordChange(form)
         if (passwordError != null) {
-            _state.update { it.copy(saveError = passwordError) }
+            // 本地校验 → 页内横幅（不弹框）
+            _state.update { it.copy(localError = passwordError, saveError = null) }
             return
         }
         val uid = account.profile?.uid.orEmpty()
         if (uid.isEmpty()) {
-            _state.update { it.copy(saveError = "账号信息不完整，请重新登录") }
+            _state.update {
+                it.copy(localError = "账号信息不完整，请重新登录", saveError = null)
+            }
             return
         }
-        _state.update { it.copy(updating = true, saveError = null) }
+        _state.update { it.copy(updating = true, localError = null, saveError = null) }
         viewModelScope.launch {
             runCatching { account.saveUserEdit(uid, form) }
                 .onSuccess { updated ->
@@ -1502,6 +1578,7 @@ class AccountProfileEditViewModel(
                             form = fresh,
                             base = fresh,
                             // 密码字段不留在界面上：保存成功后它已经没有意义
+                            localError = null,
                             saveError = null,
                             saved = true,
                             message = if (form.password.isNotEmpty()) "资料已保存，密码已更新" else "资料已保存",
@@ -1512,10 +1589,14 @@ class AccountProfileEditViewModel(
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
+                    // 只有服务端 / 网络错误才走弹窗
                     _state.update { it.copy(updating = false, saveError = e.toUserMessage()) }
                 }
         }
     }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }
+
+    /** 关掉保存失败的对话框（错误正文在弹窗里，不再用占位的横幅把表单顶下去）。 */
+    fun consumeSaveError() = _state.update { it.copy(saveError = null) }
 }

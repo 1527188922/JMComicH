@@ -128,13 +128,13 @@ class RegistrationLogicTest {
         val dto = ApiJson.decodeFromString(EditResultDto.serializer(), json)
         assertFalse(dto.isOk)
         assertEquals(
-            "电子邮件是不是有效的电子邮件地址!1；用户名已经存在!",
+            "电子邮件是不是有效的电子邮件地址!1\n用户名已经存在!",
             dto.displayMessage(),
         )
         val error = assertThrows(NetworkError.Business::class.java) {
             dto.requireSuccess(fallback = "注册失败", successFallback = "注册成功")
         }
-        assertEquals("电子邮件是不是有效的电子邮件地址!1；用户名已经存在!", error.message)
+        assertEquals("电子邮件是不是有效的电子邮件地址!1\n用户名已经存在!", error.message)
     }
 
     @Test

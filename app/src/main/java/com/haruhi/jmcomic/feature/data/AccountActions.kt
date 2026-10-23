@@ -16,10 +16,13 @@ import com.haruhi.jmcomic.feature.api.EditResultDto
 fun EditResultDto.displayMessage(): String? {
     // `errors` 里是**全部**问题；`msg` 只是第一条。界面优先展示完整的一份，
     // 否则用户改完第一条又会被第二条挡住（实测注册会一次返回邮箱 + 用户名 + 密码三类错误）。
+    //
+    // **逐行**拼接而不是用「；」串成一行：弹框正文支持换行（用户 2026-10-23 明确要求），
+    // 多条错误一行一条更好读。
     val allErrors = errors
         .mapNotNull { cleanServerMessage(it) }
         .distinct()
-    if (allErrors.isNotEmpty()) return allErrors.joinToString("；")
+    if (allErrors.isNotEmpty()) return allErrors.joinToString("\n")
     return cleanServerMessage(msg)
 }
 

@@ -74,6 +74,8 @@ fun AccountProfileEditScreen(
     onRetry: () -> Unit,
     onMessage: (String) -> Unit,
     onConsumeMessage: () -> Unit,
+    /** 关掉「保存失败」对话框。 */
+    onConsumeSaveError: () -> Unit,
     /** 保存成功：回到资料页。 */
     onSaved: () -> Unit,
     modifier: Modifier = Modifier,
@@ -124,9 +126,9 @@ fun AccountProfileEditScreen(
             },
         )
 
-        // 保存失败的提示固定在滚动区外面：顶栏的「保存」随时可点，
-        // 报错也必须在同一视线内出现，否则用户滚到表单底部时根本看不到失败原因。
-        state.saveError?.let { error ->
+        // 本地校验错误（改密码只填一个 / 两次不一致）保持页内横幅，不弹框；
+        // 服务端 / 网络错误才走文件末尾的 `MessageDialog`。
+        state.localError?.let { error ->
             ErrorBanner(message = error, onRetry = null)
         }
 
@@ -438,6 +440,18 @@ fun AccountProfileEditScreen(
             },
         ) {
             DatePicker(state = pickerState)
+        }
+    }
+
+    // 保存失败 / 本地校验失败都用弹窗：错误文案长度不定，放在页内会把整张表单顶来顶去。
+    // 与「放弃修改」同时出现时让确认框优先，避免两个 AlertDialog 叠在一起。
+    if (!showDiscardDialog) {
+        state.saveError?.let { error ->
+            MessageDialog(
+                title = "保存失败",
+                message = error,
+                onDismiss = onConsumeSaveError,
+            )
         }
     }
 
