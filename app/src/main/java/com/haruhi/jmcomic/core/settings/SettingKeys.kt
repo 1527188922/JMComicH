@@ -46,6 +46,13 @@ internal object SettingKeys {
         const val PRIVACY_MODE = "privacy_mode"
 
         /**
+         * 文字隐私：隐私模式开启时才生效的「隐藏书名」开关。
+         *
+         * 开启后漫画名称一律换成 JM 号、详情页 tags 隐藏、收藏夹名称只保留首字符。
+         */
+        const val TEXT_PRIVACY = "text_privacy"
+
+        /**
          * 阅读器取图管线：0=解扰后落盘（旧） 1=原图缓存（默认）。
          *
          * 两套管线都保留，用户可随时切回来（见 [ReaderCacheMode]）。

@@ -481,6 +481,29 @@ class AppContainer(private val appContext: Context) {
     }
 
     /**
+     * 文字隐私（隐藏书名）的**热流**。
+     *
+     * 独立于 [privacyMode] 存储：设置页里只有隐私模式开启时才显示这一项，
+     * 但值本身要跨重启保留。实际是否生效由根节点按 `privacyMode && textPrivacy` 计算。
+     */
+    val textPrivacy: StateFlow<Boolean> by lazy {
+        val flow = settings.jmBoolean(SettingKeys.Jm.TEXT_PRIVACY, SettingDefaults.Jm.TEXT_PRIVACY)
+        flow.stateIn(
+            scope = appScope,
+            started = SharingStarted.Eagerly,
+            initialValue = runBlocking { flow.first() },
+        )
+    }
+
+    /** 写入文字隐私；默认开启，与「隐私模式」分开保存。 */
+    fun setTextPrivacy(enabled: Boolean) {
+        if (textPrivacy.value == enabled) return
+        appScope.launch {
+            settings.putJmBoolean(SettingKeys.Jm.TEXT_PRIVACY, enabled)
+        }
+    }
+
+    /**
      * 封面缓存的逐条失效。
      *
      * 封面走 Coil 的磁盘缓存（`files/covers` 里是按 URL 哈希命名的文件），

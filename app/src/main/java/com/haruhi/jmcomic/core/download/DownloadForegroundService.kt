@@ -61,11 +61,20 @@ class DownloadForegroundService : Service() {
                     running.totalImages > 0 -> running.doneImages
                     else -> 0
                 }
+                // 文字隐私（隐私模式 && 文字隐私）：通知标题会露书名，换成 JM 号。
+                // 两个开关都是同步初值的 StateFlow，服务里直接读当前值即可。
+                val textPrivacy = container.privacyMode.value && container.textPrivacy.value
+                val albumId = running.bizKey.toLongOrNull()
+                val title = if (textPrivacy && albumId != null && running.type.name.startsWith("JM")) {
+                    "JM$albumId"
+                } else {
+                    running.displayName ?: "下载中"
+                }
                 DownloadNotifications.notify(
                     this@DownloadForegroundService,
                     DownloadNotifications.buildProgressNotification(
                         context = this@DownloadForegroundService,
-                        title = running.displayName ?: "下载中",
+                        title = title,
                         text = buildText(running, tasks.size),
                         progress = done,
                         max = total,

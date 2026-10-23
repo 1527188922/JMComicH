@@ -284,14 +284,20 @@ fun ModeRoot(
     val imageDomain by container.imageDomain.collectAsStateWithLifecycle()
     // 隐私模式：设置页 Switch 与全局双指手势共用同一份存储，封面只订阅这一个值。
     val privacyMode by container.privacyMode.collectAsStateWithLifecycle()
+    // 文字隐私：独立保存的开关，只有隐私模式开启时才生效。
+    val textPrivacy by container.textPrivacy.collectAsStateWithLifecycle()
     // 稳定回调：pointerInput 的 lambda 不会因为页面重组被换成新实例。
     val setPrivacyMode: (Boolean) -> Unit = remember(container) {
         { enabled -> container.setPrivacyMode(enabled) }
+    }
+    val setTextPrivacy: (Boolean) -> Unit = remember(container) {
+        { enabled -> container.setTextPrivacy(enabled) }
     }
     CompositionLocalProvider(
         LocalImageLoader provides container.imageLoader,
         LocalImageDomain provides imageDomain,
         LocalPrivacyMode provides privacyMode,
+        LocalTextPrivacy provides (privacyMode && textPrivacy),
     ) {
         Scaffold(
             // 「点输入框以外的地方就失焦、收起软键盘」挂在**根节点**上，一处覆盖所有页面
@@ -771,6 +777,9 @@ fun ModeRoot(
                         // 隐私模式：与全局双指手势共用同一个存储值
                         privacyMode = privacyMode,
                         onSetPrivacyMode = setPrivacyMode,
+                        // 文字隐私：只在隐私模式开启时显示，单独保存
+                        textPrivacy = textPrivacy,
+                        onSetTextPrivacy = setTextPrivacy,
                         // 下载
                         onSetDownloadThreads = vm::setDownloadThreads,
                         onSetDownloadNetwork = vm::setDownloadNetwork,

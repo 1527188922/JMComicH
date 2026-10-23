@@ -81,3 +81,48 @@ val LocalImageDomain = compositionLocalOf { Defaults.IMAGE_DOMAIN }
  * 默认 `false`，Preview / UI 测试不需要额外配置。
  */
 val LocalPrivacyMode = compositionLocalOf { false }
+
+/**
+ * 文字隐私：书名换成 JM 号、详情页 tags 隐藏、收藏夹名称只留首字符。
+ *
+ * 实际值是 `privacyMode && textPrivacy`（由 `ModeRoot` 下发）：设置里的开关独立保存，
+ * 但只有隐私模式开启时才生效。默认 `false`，Preview / UI 测试按正常文字渲染。
+ */
+val LocalTextPrivacy = compositionLocalOf { false }
+
+/**
+ * 漫画标题的统一出口。
+ *
+ * 文字隐私开启时一律显示 `JM{id}`（连同封面的 contentDescription 一起换掉，
+ * 否则 TalkBack 仍会把真实书名读出来）；关闭时保留原标题，空白才回落到 JM 号。
+ */
+@Composable
+fun privacyAlbumTitle(albumId: Long, name: String?): String {
+    val fallback = "JM$albumId"
+    return if (LocalTextPrivacy.current) fallback else name.orEmpty().ifBlank { fallback }
+}
+
+/**
+ * 收藏夹名称的统一出口：文字隐私开启时只保留首字符，其余用 `*` 代替。
+ *
+ * 用 code point 取首字符，避免把 emoji 的代理对拆成半个字符。
+ */
+@Composable
+fun privacyFolderName(name: String): String {
+    if (!LocalTextPrivacy.current || name.isEmpty()) return name
+    val firstLength = Character.charCount(name.codePointAt(0))
+    return name.substring(0, firstLength) + "*".repeat(name.length - firstLength)
+}
+
+/**
+ * 导出成品文件名的统一出口：文字隐私开启时把主文件名换成 JM 号、只留扩展名。
+ *
+ * 成品文件名是 `<标题>_JM<aid>.pdf/zip`，直接显示会露书名；
+ * 但它是磁盘上的真实文件名，所以**只换显示**——打开/发送/删除仍传真实文件名。
+ */
+@Composable
+fun privacyExportName(fileName: String, albumId: Long?): String {
+    if (!LocalTextPrivacy.current || albumId == null) return fileName
+    val dot = fileName.lastIndexOf('.')
+    return if (dot <= 0) "JM$albumId" else "JM$albumId" + fileName.substring(dot)
+}

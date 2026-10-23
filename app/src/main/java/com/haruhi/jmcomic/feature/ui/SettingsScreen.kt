@@ -763,6 +763,9 @@ fun SettingsScreen(
     /** 隐私模式：所有漫画封面模糊显示；与全局双指手势共用同一个存储值。 */
     privacyMode: Boolean,
     onSetPrivacyMode: (Boolean) -> Unit,
+    /** 文字隐私：隐私模式开启时才显示并生效；默认开启。 */
+    textPrivacy: Boolean,
+    onSetTextPrivacy: (Boolean) -> Unit,
     // 下载
     onSetDownloadThreads: (Int) -> Unit,
     /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
@@ -850,6 +853,8 @@ fun SettingsScreen(
                 PrivacySection(
                     privacyMode = privacyMode,
                     onSetPrivacyMode = onSetPrivacyMode,
+                    textPrivacy = textPrivacy,
+                    onSetTextPrivacy = onSetTextPrivacy,
                 )
                 DownloadSection(
                     state = state,
@@ -968,11 +973,16 @@ private fun ReadingSection(
  *
  * 开关值与全局双指手势共用同一个 DataStore key，所以这里不做本页草稿态：
  * 点击即写，根节点下发的 StateFlow 再回推给 Switch。
+ *
+ * 「文字隐私」只在隐私模式开启时出现：值一直保留在存储里（默认开启），
+ * 关掉隐私模式只是让它暂时不生效，再打开时按上次的选择继续。
  */
 @Composable
 private fun PrivacySection(
     privacyMode: Boolean,
     onSetPrivacyMode: (Boolean) -> Unit,
+    textPrivacy: Boolean,
+    onSetTextPrivacy: (Boolean) -> Unit,
 ) {
     SettingsSection("隐私") {
         SwitchRow(
@@ -981,6 +991,15 @@ private fun PrivacySection(
             checked = privacyMode,
             onCheckedChange = onSetPrivacyMode,
         )
+        if (privacyMode) {
+            CardDivider()
+            SwitchRow(
+                title = "文字隐私",
+                hint = "漫画名称显示为 JM 号；详情页标签隐藏；收藏夹名称只显示首字",
+                checked = textPrivacy,
+                onCheckedChange = onSetTextPrivacy,
+            )
+        }
     }
 }
 

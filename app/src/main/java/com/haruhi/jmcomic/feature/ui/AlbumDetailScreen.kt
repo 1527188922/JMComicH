@@ -387,9 +387,7 @@ fun AlbumDetailScreen(
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Text(
-                        text = state.album?.name?.takeIf { it.isNotBlank() }
-                            ?: state.album?.id?.let { "JM$it" }
-                            ?: "漫画详情",
+                        text = state.album?.let { privacyAlbumTitle(it.id, it.name) } ?: "漫画详情",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -551,6 +549,7 @@ fun AlbumDetailScreen(
                                     ExportSection(
                                         exports = state.exports,
                                         active = state.activeExports,
+                                        albumId = state.album?.id,
                                         canOpenFolder = state.canOpenFolder,
                                         onOpen = onOpenOutput,
                                         onSend = onSendOutput,
@@ -711,7 +710,8 @@ fun AlbumDetailScreen(
     pendingDeleteExport?.let { name ->
         ConfirmDialog(
             title = "删除这个导出文件？",
-            text = "会从下载目录里删掉「$name」。",
+            // 文字隐私：成品文件名里带书名，显示时换成 JM 号（删除仍用真实文件名）
+            text = "会从下载目录里删掉「${privacyExportName(name, state.album?.id)}」。",
             confirmText = "删除",
             onConfirm = {
                 pendingDeleteExport = null
@@ -1582,6 +1582,8 @@ private fun SmallCloseButton(contentDescription: String, onClick: () -> Unit) {
 private fun ExportSection(
     exports: List<ExportedFormat>,
     active: List<ActiveExport>,
+    /** 文字隐私下显示成品文件名要用的 JM 号（文件名本身仍用真实值）。 */
+    albumId: Long?,
     canOpenFolder: Boolean,
     onOpen: (String) -> Unit,
     onSend: (String) -> Unit,
@@ -1650,6 +1652,7 @@ private fun ExportSection(
                     if (index > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                     ExportedFileRow(
                         exported = exported,
+                        albumId = albumId,
                         onOpen = { onOpen(exported.file.displayName) },
                         onSend = { onSend(exported.file.displayName) },
                         onDelete = { onDelete(exported.file.displayName) },
@@ -1721,10 +1724,13 @@ private fun ActiveExportRow(row: ActiveExport) {
 @Composable
 private fun ExportedFileRow(
     exported: ExportedFormat,
+    albumId: Long?,
     onOpen: () -> Unit,
     onSend: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    // 文字隐私：文件名会露书名，显示层换成 JM 号
+    val displayName = privacyExportName(exported.file.displayName, albumId)
     Row(verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.height(IntrinsicSize.Min),) {
         // 格式徽标：一眼分清哪个是 zip 哪个是 pdf，不用去读扩展名
@@ -1746,7 +1752,7 @@ private fun ExportedFileRow(
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = exported.file.displayName,
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -1930,11 +1936,13 @@ private fun AlbumHeader(
     onSearchAuthor: (String) -> Unit = {},
 ) {
     val album = state.album ?: return
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val albumTitle = privacyAlbumTitle(album.id, album.name)
     Column(modifier = Modifier.padding(12.dp)) {
         Row {
             Cover(
                 albumId = album.id,
-                contentDescription = album.name,
+                contentDescription = albumTitle,
                 modifier = Modifier
                     .size(width = 110.dp, height = 150.dp)
                     .clip(RoundedCornerShape(10.dp))
@@ -1951,7 +1959,7 @@ private fun AlbumHeader(
                 // 所以每处都用默认 state，各管各的。
                 SelectionContainer {
                     Text(
-                        text = album.name?.takeIf { it.isNotBlank() } ?: "JM${album.id}",
+                        text = albumTitle,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
@@ -2080,16 +2088,19 @@ private fun AlbumHeader(
             )
         }
 
-        parseStringArray(album.tags).takeIf { it.isNotEmpty() }?.let { tags ->
-            Spacer(Modifier.height(8.dp))
-            // **不限行数**（用户 2026-10-20 要求）：有多少 tag 就展示多少。
-            // 以前这里写的是 maxLines = 2 + 省略号，第三个以后的标签直接被截掉、还看不出被截了。
-            // 现在按宽度自然换行，整块跟着上面的 LazyColumn 一起滚，不会把内容顶出屏幕。
-            Text(
-                text = tags.filter { it.isNotBlank() }.joinToString(" · ") { "#${it.trim()}" },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        // 文字隐私：详情页标签整块隐藏（用户要求）
+        if (!LocalTextPrivacy.current) {
+            parseStringArray(album.tags).takeIf { it.isNotEmpty() }?.let { tags ->
+                Spacer(Modifier.height(8.dp))
+                // **不限行数**（用户 2026-10-20 要求）：有多少 tag 就展示多少。
+                // 以前这里写的是 maxLines = 2 + 省略号，第三个以后的标签直接被截掉、还看不出被截了。
+                // 现在按宽度自然换行，整块跟着上面的 LazyColumn 一起滚，不会把内容顶出屏幕。
+                Text(
+                    text = tags.filter { it.isNotBlank() }.joinToString(" · ") { "#${it.trim()}" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         album.description?.takeIf { it.isNotBlank() }?.let { description ->
@@ -2171,6 +2182,8 @@ private fun FavoritePickerSheet(
                 LazyColumn(state = favoritesState, modifier = Modifier.fillMaxWidth()) {
                     items(allFavorites, key = { it.id }) { favorite ->
                         val joined = favorite.id in currentFavoriteIds
+                        // 文字隐私：收藏夹名称只保留首字符
+                        val folderName = privacyFolderName(favorite.name)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2182,7 +2195,7 @@ private fun FavoritePickerSheet(
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Text(
-                                    text = if (joined) "✓ ${favorite.name}" else favorite.name,
+                                    text = if (joined) "✓ $folderName" else folderName,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                             }

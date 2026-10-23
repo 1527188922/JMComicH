@@ -600,7 +600,7 @@ private fun FavoritePickerForSelection(
                                 checked = favorite.id in checked,
                                 onCheckedChange = { checked = checked.toggle(favorite.id) },
                             )
-                            Text(favorite.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(privacyFolderName(favorite.name), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -644,6 +644,8 @@ private fun ContinueReadingCardRow(
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val albumTitle = privacyAlbumTitle(card.albumId, card.albumTitle)
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(14.dp),
@@ -665,7 +667,7 @@ private fun ContinueReadingCardRow(
             ) {
                 Cover(
                     albumId = card.albumId,
-                    contentDescription = card.albumTitle,
+                    contentDescription = albumTitle,
                     modifier = Modifier
                         .size(width = 44.dp, height = 60.dp)
                         .clip(RoundedCornerShape(8.dp))
@@ -679,7 +681,7 @@ private fun ContinueReadingCardRow(
                         .padding(end = 36.dp),
                 ) {
                     Text(
-                        text = card.albumTitle,
+                        text = albumTitle,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -963,6 +965,8 @@ private fun AlbumGridCard(
     onLongPress: () -> Unit,
     onToggleCollected: (() -> Unit)?,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(card.album.id, card.displayName)
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
@@ -986,7 +990,7 @@ private fun AlbumGridCard(
         ) {
             Cover(
                 albumId = card.album.id,
-                contentDescription = card.displayName,
+                contentDescription = displayName,
                 modifier = Modifier.fillMaxSize(),
             )
             if (selecting) {
@@ -1031,7 +1035,7 @@ private fun AlbumGridCard(
         }
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                text = card.displayName,
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
@@ -1475,7 +1479,7 @@ fun SearchResultsScreen(
     removeTarget?.let { target ->
         ConfirmDialog(
             title = "从书库移除这本？",
-            text = "《${target.name.orEmpty().ifBlank { "JM${target.id}" }}》会删除书库记录、章节清单、" +
+            text = "《${privacyAlbumTitle(target.id, target.name)}》会删除书库记录、章节清单、" +
                 "收藏关联、阅读位置，以及本地图片与导出的 zip/pdf。" +
                 "最近浏览记录会保留（封面也还在）。此操作不可撤销。",
             confirmText = "移除并删除",
@@ -1913,6 +1917,8 @@ internal fun OnlineResultRow(
     onAddToLibrary: (() -> Unit)? = null,
     onRequestRemove: (() -> Unit)? = null,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(item.id, item.name)
     // 两个状态各自决定那颗按钮在不在：已入库看 onRequestRemove，未入库看 onAddToLibrary
     val showAction = if (item.existsLocal) onRequestRemove != null else onAddToLibrary != null
     // 不画按钮时这两个回调是 null，退化成空实现只为消除可空性（不会被执行到）
@@ -1940,7 +1946,7 @@ internal fun OnlineResultRow(
                 // 朝里的右上 / 右下是直角（用户要求）。
                 Cover(
                     albumId = item.id,
-                    contentDescription = item.name,
+                    contentDescription = displayName,
                     // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
                     tag = item.categoryTag,
                     modifier = Modifier
@@ -1964,7 +1970,7 @@ internal fun OnlineResultRow(
                         .padding(bottom = if (showAction) ONLINE_ACTION_BUTTON_ZONE else 8.dp),
                 ) {
                     Text(
-                        text = item.name.orEmpty().ifBlank { "JM${item.id}" },
+                        text = displayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 2,
@@ -2149,6 +2155,8 @@ internal fun OnlineGridCard(
     item: OnlineSearchItem,
     onOpen: () -> Unit,
 ) {
+    // 文字隐私：书名统一换成 JM 号（封面 contentDescription 一起换）
+    val displayName = privacyAlbumTitle(item.id, item.name)
     Card(
         onClick = onOpen,
         shape = RoundedCornerShape(12.dp),
@@ -2165,7 +2173,7 @@ internal fun OnlineGridCard(
             // 封面统一走 Cover（CONVENTIONS 第 1 条）：应用级加载器 + covers 磁盘缓存
             Cover(
                 albumId = item.id,
-                contentDescription = item.name,
+                contentDescription = displayName,
                 // 主 tag 只认接口的 `category.title`；拿不到就不画（用户要求）
                 tag = item.categoryTag,
                 modifier = Modifier.fillMaxSize(),
@@ -2173,7 +2181,7 @@ internal fun OnlineGridCard(
         }
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                text = item.name.orEmpty().ifBlank { "JM${item.id}" },
+                text = displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 maxLines = 2,
@@ -2210,7 +2218,7 @@ private fun FavoriteCover(row: FavoritesUiState.FavoriteRow) {
     if (albumId != null) {
         Cover(
             albumId = albumId,
-            contentDescription = row.name,
+            contentDescription = privacyFolderName(row.name),
             modifier = size.clip(shape).background(MaterialTheme.colorScheme.surface),
         )
     } else {
@@ -2337,7 +2345,7 @@ fun FavoritesScreen(
                                 FavoriteCover(row)
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(row.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(privacyFolderName(row.name), style = MaterialTheme.typography.bodyLarge)
                                     Text(
                                         text = if (row.isDefault) {
                                             "${row.albumCount} 本 · 默认收藏夹不可删除或重命名"
@@ -2388,7 +2396,7 @@ fun FavoritesScreen(
 
     deleteTarget?.let { target ->
         ConfirmDialog(
-            title = "删除「${target.name}」？",
+            title = "删除「${privacyFolderName(target.name)}」？",
             text = "确认删除当前收藏夹吗，里面有 ${target.albumCount} 本漫画。（不会删除书库和已下载的图片）",
             confirmText = "删除收藏夹",
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
