@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -340,14 +339,13 @@ private fun MyCommentCard(
             }
             if (comment.text.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
-                // 与详情页评论一致：正文可长按选中复制
-                SelectionContainer {
-                    Text(
-                        text = comment.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        lineHeight = 20.sp,
-                    )
-                }
+                // 与详情页评论一致：正文可长按选中复制；其中的「我推荐这本书 <jmid>」可点
+                CommentBody(
+                    text = comment.text,
+                    onOpenAlbum = onOpenAlbum,
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 20.sp,
+                )
             }
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {

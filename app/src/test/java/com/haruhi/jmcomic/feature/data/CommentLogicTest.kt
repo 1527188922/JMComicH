@@ -276,6 +276,52 @@ class CommentLogicTest {
         assertThat(comment("1").copy(parentCid = "9").isReply).isTrue()
     }
 
+    // ---------------- 正文里的「我推荐这本书 <jmid>」（2026-10-22） ----------------
+
+    @Test
+    fun `recommend book marker becomes a link and the rest stays text`() {
+        val text = "原来天堂不只有篇😭[ 我推荐这本书 1246359 ]"
+        val segments = splitCommentSegments(text)
+        assertThat(segments).hasSize(2)
+        assertThat(segments[0]).isEqualTo(CommentSegment.Text("原来天堂不只有篇😭"))
+        assertThat(segments[1]).isEqualTo(
+            CommentSegment.AlbumLink(text = "[ 我推荐这本书 1246359 ]", albumId = 1246359L),
+        )
+    }
+
+    @Test
+    fun `recommend book marker accepts traditional form full width brackets and jm prefix`() {
+        // 服务端会把正文统一成繁体；官方渲染两种写法都认
+        assertThat(splitCommentSegments("[ 我推薦這本書 1246359 ]"))
+            .containsExactly(CommentSegment.AlbumLink("[ 我推薦這本書 1246359 ]", 1246359L))
+        // 全角括号 / 少一个空格 / 带 JM 前缀
+        assertThat(splitCommentSegments("好本［我推荐这本书JM1246359］"))
+            .containsExactly(
+                CommentSegment.Text("好本"),
+                CommentSegment.AlbumLink("［我推荐这本书JM1246359］", 1246359L),
+            )
+    }
+
+    @Test
+    fun `text without markers or with a bad id is left alone`() {
+        val plain = "求车牌，评论区没人发过"
+        assertThat(splitCommentSegments(plain)).containsExactly(CommentSegment.Text(plain))
+        // 认不出数字 id：保持原文，不画一条点了没反应的链接
+        val bogus = "[ 我推荐这本书 一二三 ]"
+        assertThat(splitCommentSegments(bogus)).containsExactly(CommentSegment.Text(bogus))
+        assertThat(splitCommentSegments("")).isEmpty()
+    }
+
+    @Test
+    fun `several markers in one comment are all recognized`() {
+        val text = "[ 我推荐这本书 111 ] 和 [ 我推薦這本書 JM222 ]"
+        assertThat(splitCommentSegments(text)).containsExactly(
+            CommentSegment.AlbumLink("[ 我推荐这本书 111 ]", 111L),
+            CommentSegment.Text(" 和 "),
+            CommentSegment.AlbumLink("[ 我推薦這本書 JM222 ]", 222L),
+        ).inOrder()
+    }
+
     // ---------------- DTO 解析（真实响应形态） ----------------
 
     @Test

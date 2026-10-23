@@ -249,6 +249,13 @@ fun AlbumDetailScreen(
      */
     onSearchAuthor: (String) -> Unit = {},
     /**
+     * 评论里的「我推荐这本书 <jmid>」：点它打开**那本漫画的详情页**（用户 2026-10-22 要求）。
+     *
+     * 参数是目标本子号。与 [onSearchAuthor] 一样是普通入栈：返回就回到正在看的这本；
+     * "点的是不是当前这本"由上层判断（官方的 `handleGetId` 也是同一个本子就不动）。
+     */
+    onOpenAlbum: (Long) -> Unit = {},
+    /**
      * 提示文案的**上层**回调。
      *
      * 为什么不在这里自己弹 Snackbar：收藏夹是 `ModalBottomSheet`，
@@ -640,6 +647,7 @@ fun AlbumDetailScreen(
                             onRetry = onRetryComments,
                             onReply = onReplyComment,
                             onDelete = { pendingDeleteComment = it },
+                            onOpenAlbum = onOpenAlbum,
                         )
                     }
                 }
@@ -933,6 +941,7 @@ private fun LazyListScope.commentTabItems(
     onRetry: () -> Unit,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     if (state.comments.isEmpty()) {
         item(key = "comments_placeholder") {
@@ -970,6 +979,7 @@ private fun LazyListScope.commentTabItems(
             deletingCid = state.commentDeletingCid,
             onReply = onReply,
             onDelete = onDelete,
+            onOpenAlbum = onOpenAlbum,
         )
     }
 
@@ -1115,6 +1125,7 @@ private fun CommentActionText(
  *
  * @param onReply 点「回复」：上层把这一条设成回复目标，底部输入条变成「回复 @昵称」。
  * @param onDelete 点「删除」：只有自己发的留言（`UID` 与当前账号一致）才会出现这个动作。
+ * @param onOpenAlbum 点正文里的「我推荐这本书 <jmid>」：打开那本漫画的详情页。
  */
 @Composable
 private fun CommentItem(
@@ -1123,6 +1134,7 @@ private fun CommentItem(
     deletingCid: String?,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1156,14 +1168,14 @@ private fun CommentItem(
                 }
                 if (comment.text.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    // 正文可长按选中复制（评论里常有"求车牌"之类的文字，用户会想复制）
-                    SelectionContainer {
-                        Text(
-                            text = comment.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            lineHeight = 20.sp,
-                        )
-                    }
+                    // 正文可长按选中复制（评论里常有"求车牌"之类的文字，用户会想复制）；
+                    // 里面的「我推荐这本书 <jmid>」是链接，点了跳那本（见 CommentBody）
+                    CommentBody(
+                        text = comment.text,
+                        onOpenAlbum = onOpenAlbum,
+                        style = MaterialTheme.typography.bodyMedium,
+                        lineHeight = 20.sp,
+                    )
                 }
                 if (comment.replies.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
@@ -1173,6 +1185,7 @@ private fun CommentItem(
                         deletingCid = deletingCid,
                         onReply = onReply,
                         onDelete = onDelete,
+                        onOpenAlbum = onOpenAlbum,
                     )
                 }
                 // 「回复」与点赞数同一行：回复是**动作**，点赞数只是信息，
@@ -1307,6 +1320,7 @@ private fun CommentReplies(
     deletingCid: String?,
     onReply: (CommentRow) -> Unit,
     onDelete: (CommentRow) -> Unit,
+    onOpenAlbum: (Long) -> Unit,
 ) {
     var expanded by remember(replies) { mutableStateOf(false) }
     val folded = !expanded && replies.size > COMMENT_REPLY_PREVIEW
@@ -1344,12 +1358,12 @@ private fun CommentReplies(
                 }
                 if (reply.text.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
-                    SelectionContainer {
-                        Text(
-                            text = reply.text,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                    // 回复里的推荐书籍同样是链接（官方回复正文也允许带这条标记）
+                    CommentBody(
+                        text = reply.text,
+                        onOpenAlbum = onOpenAlbum,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 // 回复也能被回复（服务端同样用 `comment_id` 指向它的 CID）。
                 // 自己发的回复同样给「删除」，与主楼一致。

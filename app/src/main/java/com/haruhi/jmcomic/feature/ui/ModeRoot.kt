@@ -975,6 +975,22 @@ fun ModeRoot(
                                 launchSingleTop = true
                             }
                         },
+                        // 点评论里的「我推荐这本书 <jmid>」：打开那本漫画的详情页。
+                        //
+                        // ⚠ 不能带 `launchSingleTop`（用户 2026-10-22 反馈"点了跳不过去"的根因）：
+                        // DETAIL 只有一个 destination，singleTop 只比 destination id，命中后走的是
+                        // `NavBackStackEntry(oldEntry, newArgs)`——**复用同一个 entry id 与
+                        // ViewModelStore**。参数换成新本子号、`AlbumDetailViewModel` 还是原来那本的
+                        // 实例，页面看着纹丝不动。普通入栈就对了：新 entry → 新 ViewModel → 真换本子。
+                        //
+                        // 点的是**当前这本**（推荐评论里很常见，实测 aid=1246359 就在推荐 1246359）：
+                        // 按用户要求**保持无反应**，什么都不做 —— 已经站在它的详情页上了，
+                        // 再重开一次只会白丢草稿、滚动位置和 tab。
+                        onOpenAlbum = { targetId ->
+                            if (targetId != albumId) {
+                                navController.navigate(Routes.detail(targetId))
+                            }
+                        },
                         // 提示交给根 Scaffold 弹，否则会被收藏夹底部面板挡住（用户反馈）；
                         // 页面内部的 MessageEffect 会先把消息消费掉，所以切页不会重放
                         onMessage = showMessage,

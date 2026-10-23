@@ -2262,3 +2262,41 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
    （主楼连回复一起、回复只从父楼里摘），`CommentCache` 清掉，避免下次进来还看到已删的。
 4. 发送/删除的结果仍走输入条内的 `commentNotice`（`commentDeletingCid` 单独控制按钮转圈）。
 
+### 评论里的「我推荐这本书」可以点开那本漫画（用户 2026-10-22 第三轮）
+
+官方 App 的评论正文里，`[ 我推荐这本书 1246359 ]`（服务端会统一成 `我推薦這本書`）
+**整段是一条指向那本漫画的链接**（`ForumList.renderContent`：正则切分 → `<Link to="/comic/detail?id=…">`，
+id 还会 `replace(/^JM/i, "")`）。本工程照做：
+
+| 文件 | 改动 |
+|---|---|
+| `feature/data/Comments.kt` | 新增 `CommentSegment`（`Text` / `AlbumLink`）与 `splitCommentSegments()`：把**清洗后**的正文按标记切开。简繁两种写法（`推[薦荐][這这]本[書书]`）、全角括号、`JM` 前缀、括号内外空白（含全角空格 / 不换行空格）都认；非数字 id 原样保留，不画一条点了没反应的链接 |
+| `feature/ui/CommentText.kt`（新增） | `CommentBody`：正文 + `LinkAnnotation.Clickable`（与详情页作者行 `authorLinkText` 同一套，链接色用 primary），外层仍是 `SelectionContainer`，长按正文其余位置照样能选中复制 |
+| `feature/ui/AlbumDetailScreen.kt` | 新增 `onOpenAlbum` 回调；评论主楼与内嵌回复的正文都改走 `CommentBody` |
+| `feature/ui/AccountCommentsScreen.kt` | 「留言记录」卡片正文同样走 `CommentBody`（那里本来就有 `onOpenAlbum`） |
+| `feature/ui/ModeRoot.kt` | 点链接 `navigate(Routes.detail(targetId))`：**不带 `launchSingleTop`**（原因见下面的修复）；**目标就是当前这本时什么都不做**（用户 2026-10-22 明确要求"保持无反应"） |
+| `test/.../CommentLogicTest.kt` | 新增 4 个用例：正常形态 / 繁体+全角括号+`JM` 前缀 / 非数字 id 与纯文字 / 一条评论里多个推荐 |
+
+实测（2026-10-22，`GET /forum` 真实样本，扫了 aid `350234` / `114514` / `1484920`）：
+
+```html
+<div style='flex-direction:row;flex-wrap:wrap;'>浙江省溫州市第一中學肖嘉晨實名開導[ 我推薦這本書 350234 ]</div>
+```
+
+`content` 里就是**一段纯文字**（没有 `<a href>` 之类），所以"先清洗成纯文本、再匹配标记"就够了。
+
+#### 修复：点了没反应（用户 2026-10-22 反馈）
+
+- **`launchSingleTop` 会连 ViewModel 一起复用**（真正的 bug）。DETAIL 只有一个 destination，
+  `NavController.launchSingleTopInternal` 对非 graph 只比 `node.id`，命中后走的是
+  `NavBackStackEntry(oldEntry, newArgs)`——**复用同一个 entry id 与 ViewModelStore**，
+  于是参数换成了新本子号、`AlbumDetailViewModel` 还是原来那本的实例，页面看着纹丝不动
+  （源码：`NavControllerImpl.kt` 的 `navigate()` / `launchSingleTopInternal()`）。
+  所以这条跳转**不能**用 `launchSingleTop`：普通入栈，新 entry → 新 ViewModel → 真的换本子。
+- **目标是当前这本时保持无反应**（用户 2026-10-22 明确拍板）。推荐评论里"推荐自己这本"
+  很常见（实测 `aid=1246359` 的样本原文就是 `原來天堂不隻有篇😭[ 我推薦這本書 1246359 ]`），
+  但既然已经站在它的详情页上，就不做任何动作——重开一次反而会白丢草稿、评论滚动位置、
+  当前 tab，还会打断正在跑的导出（`confirmExport` 挂在 `viewModelScope` 上）。
+
+验证：`:app:compileDebugKotlin` 通过；按用户要求**未跑测试用例**（用户自行在设备上验证）。
+
