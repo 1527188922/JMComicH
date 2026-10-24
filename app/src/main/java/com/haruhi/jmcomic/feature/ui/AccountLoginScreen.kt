@@ -98,7 +98,7 @@ fun AccountLoginScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
             ) {
                 Text("用 JM 账号登录", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(8.dp))
@@ -108,75 +108,77 @@ fun AccountLoginScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
+                // 「灰底白卡」：字段与主按钮在白卡内，注册 / 补验证码的链接留在卡外灰底上
                 Spacer(Modifier.height(20.dp))
-                OutlinedTextField(
-                    value = state.username,
-                    onValueChange = onUsernameChange,
-                    singleLine = true,
-                    enabled = !state.submitting,
-                    isError = state.usernameError != null,
-                    label = { Text("用户名") },
-                    supportingText = state.usernameError?.let { { Text(it) } },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Ascii,
-                        imeAction = ImeAction.Next,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                FormCard {
+                    OutlinedTextField(
+                        value = state.username,
+                        onValueChange = onUsernameChange,
+                        singleLine = true,
+                        enabled = !state.submitting,
+                        isError = state.usernameError != null,
+                        label = { Text("用户名") },
+                        supportingText = state.usernameError?.let { { Text(it) } },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Next,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
-                Spacer(Modifier.height(4.dp))
-                OutlinedTextField(
-                    value = state.password,
-                    onValueChange = onPasswordChange,
-                    singleLine = true,
-                    enabled = !state.submitting,
-                    isError = state.passwordError != null,
-                    label = { Text("密码") },
-                    supportingText = state.passwordError?.let { { Text(it) } },
-                    visualTransformation = if (state.passwordVisible) {
-                        VisualTransformation.None
-                    } else {
-                        PasswordVisualTransformation()
-                    },
-                    trailingIcon = {
-                        // 用文字而不是眼睛图标：`material-icons-core` 里没有 Visibility，
-                        // 手画一个只为这个功能不划算（见 `ui/theme/Icons.kt` 的取舍）
-                        TextButton(
-                            onClick = onTogglePasswordVisible,
-                            enabled = !state.submitting,
-                        ) {
-                            Text(if (state.passwordVisible) "隐藏" else "显示")
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = state.password,
+                        onValueChange = onPasswordChange,
+                        singleLine = true,
+                        enabled = !state.submitting,
+                        isError = state.passwordError != null,
+                        label = { Text("密码") },
+                        supportingText = state.passwordError?.let { { Text(it) } },
+                        visualTransformation = if (state.passwordVisible) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            // 用文字而不是眼睛图标：`material-icons-core` 里没有 Visibility，
+                            // 手画一个只为这个功能不划算（见 `ui/theme/Icons.kt` 的取舍）
+                            TextButton(
+                                onClick = onTogglePasswordVisible,
+                                enabled = !state.submitting,
+                            ) {
+                                Text(if (state.passwordVisible) "隐藏" else "显示")
+                            }
+                        },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(onDone = { onSubmit() }),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = onSubmit,
+                        enabled = !state.submitting,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (state.submitting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text("正在登录…")
+                        } else {
+                            Text("登录")
                         }
-                    },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done,
-                    ),
-                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                Spacer(Modifier.height(12.dp))
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onSubmit,
-                    enabled = !state.submitting,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (state.submitting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        Text("正在登录…")
-                    } else {
-                        Text("登录")
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.Center,

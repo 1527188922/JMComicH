@@ -215,134 +215,137 @@ private fun SignUpForm(
     }
     val formEnabled = !state.submitting && !state.registered
 
+    // 「灰底白卡」：字段、勾选与主按钮在白卡内，返回登录的链接留在卡外灰底上
     Spacer(Modifier.height(16.dp))
-    FormTextField(
-        label = "用户名",
-        value = state.form.username,
-        onValueChange = onUsernameChange,
-        enabled = formEnabled,
-        isError = state.validation.username != null,
-        helper = state.validation.username ?: "最多 $SIGN_UP_USERNAME_MAX 个字符",
-        keyboardType = KeyboardType.Ascii,
-    )
+    FormCard {
+        FormTextField(
+            label = "用户名",
+            value = state.form.username,
+            onValueChange = onUsernameChange,
+            enabled = formEnabled,
+            isError = state.validation.username != null,
+            helper = state.validation.username ?: "最多 $SIGN_UP_USERNAME_MAX 个字符",
+            keyboardType = KeyboardType.Ascii,
+        )
 
-    Spacer(Modifier.height(4.dp))
-    FormTextField(
-        label = "密码",
-        value = state.form.password,
-        onValueChange = onPasswordChange,
-        enabled = formEnabled,
-        isError = state.validation.password != null,
-        helper = state.validation.password,
-        keyboardType = KeyboardType.Password,
-        visualTransformation = if (state.passwordVisible) {
-            VisualTransformation.None
-        } else {
-            PasswordVisualTransformation()
-        },
-        trailingIcon = {
-            // 用文字而不是眼睛图标：`material-icons-core` 里没有 Visibility（与登录页同一个取舍）
-            TextButton(
-                onClick = onTogglePasswordVisible,
-                enabled = formEnabled,
-            ) {
-                Text(if (state.passwordVisible) "隐藏" else "显示")
-            }
-        },
-    )
-
-    Spacer(Modifier.height(4.dp))
-    FormTextField(
-        label = "重新输入密码",
-        value = state.form.passwordConfirm,
-        onValueChange = onPasswordConfirmChange,
-        enabled = formEnabled,
-        isError = state.validation.passwordConfirm != null,
-        helper = state.validation.passwordConfirm,
-        keyboardType = KeyboardType.Password,
-        visualTransformation = if (state.passwordVisible) {
-            VisualTransformation.None
-        } else {
-            PasswordVisualTransformation()
-        },
-    )
-
-    Spacer(Modifier.height(4.dp))
-    FormTextField(
-        label = "邮箱",
-        value = state.form.email,
-        onValueChange = onEmailChange,
-        enabled = formEnabled,
-        isError = state.validation.email != null,
-        helper = state.validation.email ?: "验证码会发到这个邮箱",
-        keyboardType = KeyboardType.Email,
-    )
-
-    Spacer(Modifier.height(12.dp))
-    Text("性别", style = MaterialTheme.typography.bodyMedium)
-    Spacer(Modifier.height(4.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SIGN_UP_GENDERS.forEach { (value, label) ->
-            FilterChip(
-                selected = state.form.gender == value,
-                onClick = { onGenderChange(value) },
-                enabled = formEnabled,
-                label = { Text(label) },
-            )
-        }
-    }
-    state.validation.gender?.let { error ->
         Spacer(Modifier.height(4.dp))
-        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    }
-
-    Spacer(Modifier.height(12.dp))
-    FormCheckRow(
-        text = "我已年满 18 岁",
-        checked = state.form.adultConfirmed,
-        onCheckedChange = onAdultConfirmedChange,
-        enabled = formEnabled,
-    )
-    FormCheckRow(
-        text = "我已阅读并同意用户协议与隐私政策",
-        checked = state.form.termsAccepted,
-        onCheckedChange = onTermsAcceptedChange,
-        enabled = formEnabled,
-    )
-    state.validation.confirmation?.let { error ->
-        Spacer(Modifier.height(4.dp))
-        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    }
-
-    Spacer(Modifier.height(12.dp))
-    if (state.registered) {
-        // 账号已创建：唯一的下一步是完成邮箱验证，不能再提交一次注册
-        Button(
-            onClick = onResumeVerification,
-            enabled = !state.submitting,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("继续验证") }
-    } else {
-        Button(
-            onClick = onSubmit,
-            enabled = !state.submitting,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (state.submitting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-                Spacer(Modifier.size(8.dp))
-                Text("正在提交…")
+        FormTextField(
+            label = "密码",
+            value = state.form.password,
+            onValueChange = onPasswordChange,
+            enabled = formEnabled,
+            isError = state.validation.password != null,
+            helper = state.validation.password,
+            keyboardType = KeyboardType.Password,
+            visualTransformation = if (state.passwordVisible) {
+                VisualTransformation.None
             } else {
-                Text("注册")
+                PasswordVisualTransformation()
+            },
+            trailingIcon = {
+                // 用文字而不是眼睛图标：`material-icons-core` 里没有 Visibility（与登录页同一个取舍）
+                TextButton(
+                    onClick = onTogglePasswordVisible,
+                    enabled = formEnabled,
+                ) {
+                    Text(if (state.passwordVisible) "隐藏" else "显示")
+                }
+            },
+        )
+
+        Spacer(Modifier.height(4.dp))
+        FormTextField(
+            label = "重新输入密码",
+            value = state.form.passwordConfirm,
+            onValueChange = onPasswordConfirmChange,
+            enabled = formEnabled,
+            isError = state.validation.passwordConfirm != null,
+            helper = state.validation.passwordConfirm,
+            keyboardType = KeyboardType.Password,
+            visualTransformation = if (state.passwordVisible) {
+                VisualTransformation.None
+            } else {
+                PasswordVisualTransformation()
+            },
+        )
+
+        Spacer(Modifier.height(4.dp))
+        FormTextField(
+            label = "邮箱",
+            value = state.form.email,
+            onValueChange = onEmailChange,
+            enabled = formEnabled,
+            isError = state.validation.email != null,
+            helper = state.validation.email ?: "验证码会发到这个邮箱",
+            keyboardType = KeyboardType.Email,
+        )
+
+        Spacer(Modifier.height(12.dp))
+        Text("性别", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SIGN_UP_GENDERS.forEach { (value, label) ->
+                FilterChip(
+                    selected = state.form.gender == value,
+                    onClick = { onGenderChange(value) },
+                    enabled = formEnabled,
+                    label = { Text(label) },
+                )
+            }
+        }
+        state.validation.gender?.let { error ->
+            Spacer(Modifier.height(4.dp))
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+
+        Spacer(Modifier.height(12.dp))
+        FormCheckRow(
+            text = "我已年满 18 岁",
+            checked = state.form.adultConfirmed,
+            onCheckedChange = onAdultConfirmedChange,
+            enabled = formEnabled,
+        )
+        FormCheckRow(
+            text = "我已阅读并同意用户协议与隐私政策",
+            checked = state.form.termsAccepted,
+            onCheckedChange = onTermsAcceptedChange,
+            enabled = formEnabled,
+        )
+        state.validation.confirmation?.let { error ->
+            Spacer(Modifier.height(4.dp))
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+
+        Spacer(Modifier.height(16.dp))
+        if (state.registered) {
+            // 账号已创建：唯一的下一步是完成邮箱验证，不能再提交一次注册
+            Button(
+                onClick = onResumeVerification,
+                enabled = !state.submitting,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("继续验证") }
+        } else {
+            Button(
+                onClick = onSubmit,
+                enabled = !state.submitting,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (state.submitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text("正在提交…")
+                } else {
+                    Text("注册")
+                }
             }
         }
     }
 
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(16.dp))
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
@@ -395,86 +398,83 @@ private fun VerifyForm(
         )
     }
 
-    // 从登录页「已有验证码」进来时，用户名与密码都还没有；重新发送验证码 / 自动登录都要它们。
-    if (state.verifyOnly) {
-        Spacer(Modifier.height(16.dp))
-        FormTextField(
-            label = "用户名",
-            value = state.form.username,
-            onValueChange = onUsernameChange,
-            enabled = !state.submitting,
-            keyboardType = KeyboardType.Ascii,
-        )
-        Spacer(Modifier.height(4.dp))
-        FormTextField(
-            label = "密码",
-            value = state.form.password,
-            onValueChange = onPasswordChange,
-            enabled = !state.submitting,
-            keyboardType = KeyboardType.Password,
-            visualTransformation = if (state.passwordVisible) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
-            helper = "验证成功后会用这个密码自动登录",
-            trailingIcon = {
-                TextButton(onClick = onTogglePasswordVisible, enabled = !state.submitting) {
-                    Text(if (state.passwordVisible) "隐藏" else "显示")
-                }
-            },
-        )
-    }
-
+    // 「灰底白卡」：字段与主按钮在白卡内；返回 / 重发是次级动作，留在卡外灰底上。
+    // 本地校验错误与登录 / 注册表单一致：挂在**对应输入框下方**的 supportingText。
     Spacer(Modifier.height(16.dp))
-    OutlinedTextField(
-        value = state.code,
-        onValueChange = onCodeChange,
-        singleLine = true,
-        enabled = !state.submitting,
-        label = { Text("邮箱验证码") },
-        supportingText = { Text("没收到就检查一下垃圾邮件，或者重新发送") },
-        keyboardOptions = KeyboardOptions(
-            // `numcode` 看名字像纯数字，但官方输入框是普通文本框；用 ASCII 键盘
-            // 既能打数字也能打字母，不为一个没实测过的格式把用户挡住。
-            keyboardType = KeyboardType.Ascii,
-            imeAction = ImeAction.Done,
-        ),
-        keyboardActions = KeyboardActions(onDone = { onSubmitCode() }),
-        modifier = Modifier.fillMaxWidth(),
-    )
-
-    // 验证码 / 用户名密码的本地校验：保持页内提示，不弹窗
-    state.codeError?.let { error ->
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = error,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-    }
-
-    Spacer(Modifier.height(12.dp))
-    Button(
-        onClick = onSubmitCode,
-        // 重发验证信期间也禁止提交验证码：两个请求都依赖同一份用户名/密码，串行更稳
-        enabled = !state.submitting && !state.resending,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        if (state.submitting) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary,
+    FormCard {
+        // 从登录页「已有验证码」进来时，用户名与密码都还没有；重新发送验证码 / 自动登录都要它们。
+        if (state.verifyOnly) {
+            FormTextField(
+                label = "用户名",
+                value = state.form.username,
+                onValueChange = onUsernameChange,
+                enabled = !state.submitting,
+                isError = state.verifyUsernameError != null,
+                helper = state.verifyUsernameError,
+                keyboardType = KeyboardType.Ascii,
             )
-            Spacer(Modifier.size(8.dp))
-            Text("正在验证…")
-        } else {
-            Text("验证并登录")
+            Spacer(Modifier.height(4.dp))
+            FormTextField(
+                label = "密码",
+                value = state.form.password,
+                onValueChange = onPasswordChange,
+                enabled = !state.submitting,
+                isError = state.verifyPasswordError != null,
+                helper = state.verifyPasswordError ?: "验证成功后会用这个密码自动登录",
+                keyboardType = KeyboardType.Password,
+                visualTransformation = if (state.passwordVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    TextButton(onClick = onTogglePasswordVisible, enabled = !state.submitting) {
+                        Text(if (state.passwordVisible) "隐藏" else "显示")
+                    }
+                },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+        OutlinedTextField(
+            value = state.code,
+            onValueChange = onCodeChange,
+            singleLine = true,
+            enabled = !state.submitting,
+            isError = state.codeError != null,
+            label = { Text("邮箱验证码") },
+            supportingText = { Text(state.codeError ?: "没收到就检查一下垃圾邮件，或者重新发送") },
+            keyboardOptions = KeyboardOptions(
+                // `numcode` 看名字像纯数字，但官方输入框是普通文本框；用 ASCII 键盘
+                // 既能打数字也能打字母，不为一个没实测过的格式把用户挡住。
+                keyboardType = KeyboardType.Ascii,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { onSubmitCode() }),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = onSubmitCode,
+            // 重发验证信期间也禁止提交验证码：两个请求都依赖同一份用户名/密码，串行更稳
+            enabled = !state.submitting && !state.resending,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.submitting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text("正在验证…")
+            } else {
+                Text("验证并登录")
+            }
         }
     }
 
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(16.dp))
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -507,22 +507,26 @@ private fun VerifiedPanel(
     state: SignUpUiState,
     onGoLogin: (String) -> Unit,
 ) {
-    Text("邮箱验证成功", style = MaterialTheme.typography.titleLarge)
-    Spacer(Modifier.height(8.dp))
-    Text(
-        text = "账号「${state.username}」已经可以登录了。",
-        style = MaterialTheme.typography.bodyMedium,
-    )
-    state.error?.let { error ->
-        Spacer(Modifier.height(8.dp))
-        Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    }
+    // 与同页两个表单同一张「灰底白卡」，只是内容换成结果说明
     Spacer(Modifier.height(16.dp))
-    Button(
-        onClick = { onGoLogin(state.username) },
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text("去登录")
+    FormCard {
+        Text("邮箱验证成功", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "账号「${state.username}」已经可以登录了。",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        state.error?.let { error ->
+            Spacer(Modifier.height(8.dp))
+            Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = { onGoLogin(state.username) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("去登录")
+        }
     }
     Spacer(Modifier.height(24.dp))
 }

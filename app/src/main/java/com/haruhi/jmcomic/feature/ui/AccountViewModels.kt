@@ -1119,8 +1119,11 @@ data class SignUpUiState(
     val error: String? = null,
     /** 错误对话框的标题（"注册失败" / "验证失败" / "发送失败"）。 */
     val errorTitle: String = "提示",
-    /** 验证码步骤的**本地**校验错误（空验证码 / 未填用户名密码），页内提示、不弹窗。 */
+    /** 验证码字段的**本地**校验错误（空验证码），显示在验证码输入框下方、不弹窗。 */
     val codeError: String? = null,
+    /** 「已有验证码」入口的用户名 / 密码**本地**校验错误，显示在对应输入框下方（与登录页一致）。 */
+    val verifyUsernameError: String? = null,
+    val verifyPasswordError: String? = null,
     /** 一次性提示（注册成功、验证码已重发等），页内展示、不弹窗。 */
     val notice: String? = null,
     /** 验证码重发冷却剩余秒数（官方 60 秒）。 */
@@ -1201,7 +1204,14 @@ class AccountSignUpViewModel(
         // 从登录页「已有验证码」进来时没有表单可回，调用方不该走这里
         if (_state.value.verifyOnly) return
         _state.update {
-            it.copy(step = SignUpStep.FORM, notice = null, error = null, codeError = null)
+            it.copy(
+                step = SignUpStep.FORM,
+                notice = null,
+                error = null,
+                codeError = null,
+                verifyUsernameError = null,
+                verifyPasswordError = null,
+            )
         }
     }
 
@@ -1216,7 +1226,14 @@ class AccountSignUpViewModel(
         if (current.submitting) return
         if (!current.registered && !current.verifyOnly) return
         _state.update {
-            it.copy(step = SignUpStep.VERIFY, notice = null, error = null, codeError = null)
+            it.copy(
+                step = SignUpStep.VERIFY,
+                notice = null,
+                error = null,
+                codeError = null,
+                verifyUsernameError = null,
+                verifyPasswordError = null,
+            )
         }
     }
 
@@ -1227,6 +1244,8 @@ class AccountSignUpViewModel(
             validation = SignUpValidation(),
             error = null,
             codeError = null,
+            verifyUsernameError = null,
+            verifyPasswordError = null,
         )
     }
 
@@ -1295,16 +1314,21 @@ class AccountSignUpViewModel(
     fun submitCode() {
         val current = _state.value
         if (current.submitting || current.resending || current.step != SignUpStep.VERIFY) return
-        validateSignUpCode(current.code)?.let { message ->
-            _state.update { it.copy(codeError = message, error = null) }
-            return
-        }
+        // 本地校验：错误挂到**对应输入框下方**（与登录 / 注册表单一致），全部一起判、不发请求
+        val codeError = validateSignUpCode(current.code)
         // 「已有验证码」入口没有注册表单，用户名 / 密码要现填（验证后的自动登录也要用密码）
-        if (current.verifyOnly) {
-            credentialsError(current)?.let { message ->
-                _state.update { it.copy(codeError = message, error = null) }
-                return
+        val usernameError = if (current.verifyOnly && current.username.isBlank()) "请输入用户名" else null
+        val passwordError = if (current.verifyOnly && current.form.password.isEmpty()) "请输入密码" else null
+        if (codeError != null || usernameError != null || passwordError != null) {
+            _state.update {
+                it.copy(
+                    codeError = codeError,
+                    verifyUsernameError = usernameError,
+                    verifyPasswordError = passwordError,
+                    error = null,
+                )
             }
+            return
         }
         val username = current.username
         val password = current.form.password
@@ -1356,9 +1380,18 @@ class AccountSignUpViewModel(
     fun resendCode() {
         val current = _state.value
         if (!current.canResend || current.step != SignUpStep.VERIFY) return
+        // 重发只需要用户名 / 密码；本地校验同样挂到对应输入框下方
         if (current.verifyOnly) {
-            credentialsError(current)?.let { message ->
-                _state.update { it.copy(codeError = message, error = null) }
+            val usernameError = if (current.username.isBlank()) "请输入用户名" else null
+            val passwordError = if (current.form.password.isEmpty()) "请输入密码" else null
+            if (usernameError != null || passwordError != null) {
+                _state.update {
+                    it.copy(
+                        verifyUsernameError = usernameError,
+                        verifyPasswordError = passwordError,
+                        error = null,
+                    )
+                }
                 return
             }
         }
@@ -1392,13 +1425,6 @@ class AccountSignUpViewModel(
                     }
                 }
         }
-    }
-
-    /** 「已有验证码」入口的必填检查（用户名 + 密码）。 */
-    private fun credentialsError(state: SignUpUiState): String? = when {
-        state.username.isBlank() -> "请输入用户名"
-        state.form.password.isEmpty() -> "请输入密码"
-        else -> null
     }
 
     private fun startCooldown() {

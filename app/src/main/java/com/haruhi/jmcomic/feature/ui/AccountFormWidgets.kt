@@ -83,6 +83,30 @@ fun AccountFormTopBar(
     }
 }
 
+/**
+ * 无标题的白卡表单容器（登录 / 注册 / 邮箱验证页的字段区，「灰底白卡」主题）。
+ *
+ * 与 [FormSection] 同一张卡，只是不带分区标题——这三页页首已有大标题，
+ * 卡里再放一个就重复了。主按钮跟字段放卡内，次级链接留在卡外的灰底上。
+ */
+@Composable
+fun FormCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        ) {
+            content()
+        }
+    }
+}
+
 /** 白色分组卡 + 分区标题（资料编辑页的四个分区）。 */
 @Composable
 fun FormSection(
@@ -90,19 +114,14 @@ fun FormSection(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.height(10.dp))
-            content()
-        }
+    FormCard(modifier = modifier) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(10.dp))
+        content()
     }
 }
 
