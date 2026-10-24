@@ -32,6 +32,11 @@ data class AlbumUsage(
     val sizeBytes: Long,
     /** 附加说明行（zip / pdf 行放文件名）。 */
     val detail: String? = null,
+    /**
+     * 删除键：图片库行 = 本子目录名；阅读缓存行 = `reader-cache/` 下的目录名。
+     * zip / pdf 行不需要它（[detail] 的文件名就是删除键）。
+     */
+    val folderName: String? = null,
 )
 
 data class SegmentStats(
@@ -127,6 +132,7 @@ class StorageStatsCollector(
                     albumId = album?.id ?: aid,
                     title = album?.let(::titleOf) ?: dir.name,
                     sizeBytes = size,
+                    folderName = dir.name,
                 )
             }
             .sortedByDescending { it.sizeBytes }
@@ -144,6 +150,7 @@ class StorageStatsCollector(
                     albumId = album?.id ?: aid,
                     title = album?.let(::titleOf) ?: "JM${dir.name}",
                     sizeBytes = size,
+                    folderName = dir.name,
                 )
             }
             .sortedByDescending { it.sizeBytes }

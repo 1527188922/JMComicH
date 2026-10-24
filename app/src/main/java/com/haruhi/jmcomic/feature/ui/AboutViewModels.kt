@@ -8,6 +8,9 @@ import com.haruhi.jmcomic.core.download.AppDownloadGateway
 import com.haruhi.jmcomic.feature.api.GiteeRelease
 import com.haruhi.jmcomic.feature.api.ReleaseCheckResult
 import com.haruhi.jmcomic.feature.api.ReleaseChecker
+import com.haruhi.jmcomic.feature.data.AlbumUsage
+import com.haruhi.jmcomic.feature.data.ExportManager
+import com.haruhi.jmcomic.feature.data.Repository
 import com.haruhi.jmcomic.feature.data.StorageKind
 import com.haruhi.jmcomic.feature.data.StorageStats
 import com.haruhi.jmcomic.feature.data.StorageStatsCollector
@@ -87,6 +90,8 @@ data class AboutUiState(
 )
 
 class AboutViewModel(
+    private val repo: Repository,
+    private val exports: ExportManager,
     private val collector: StorageStatsCollector,
     private val releaseChecker: ReleaseChecker,
     private val downloads: AppDownloadGateway,
@@ -115,7 +120,9 @@ class AboutViewModel(
     fun rescan() {
         if (scanJob?.isActive == true) return
         scanJob = viewModelScope.launch {
-            _state.update { it.copy(storage = null, storageFailed = false) }
+            // 不清掉旧数据：重扫期间界面继续显示旧数字，新数据到了原位替换，
+            // 不会每次回来都闪一下"统计中"（首次进入时 storage 本来就是 null）。
+            _state.update { it.copy(storageFailed = false) }
             val stats = collector.collect()
             _state.update { state ->
                 if (stats != null) state.copy(storage = stats) else state.copy(storageFailed = true)
@@ -127,6 +134,58 @@ class AboutViewModel(
     fun select(kind: StorageKind) {
         _state.update { it.copy(selected = if (it.selected == kind) null else kind) }
     }
+
+    // ------------------------------------------------------------------
+    // 明细列表的操作
+    // ------------------------------------------------------------------
+
+    /**
+     * 删除明细里某一行的内容。**按段语义**：每行只删它所代表的那一块——
+     * 图片库行只删图片（`deleteAlbumFiles`，保留库记录与导出成品），
+     * 阅读缓存行只删 `reader-cache` 目录，zip / pdf 行只删那一个成品文件。
+     * 确认弹窗由界面负责，这里收到调用就是用户已确认。
+     */
+    fun deleteUsage(kind: StorageKind, usage: AlbumUsage) {
+        when (kind) {
+            StorageKind.LIBRARY -> usage.folderName?.let { folder ->
+                viewModelScope.launch {
+                    val freed = repo.deleteAlbumFiles(folder)
+                    rescan()
+                    _state.update { it.copy(message = "已删除本地图片（${formatBytes(freed)}）") }
+                }
+            }
+
+            StorageKind.READER_CACHE -> usage.folderName?.let { folder ->
+                viewModelScope.launch {
+                    val freed = repo.deleteReaderCacheFiles(folder)
+                    rescan()
+                    _state.update { it.copy(message = "已删除阅读缓存（${formatBytes(freed)}）") }
+                }
+            }
+
+            StorageKind.EXPORT_ZIP, StorageKind.EXPORT_PDF -> usage.detail?.let { fileName ->
+                viewModelScope.launch {
+                    val deleted = exports.deleteOutput(fileName)
+                    rescan()
+                    _state.update {
+                        it.copy(
+                            message = if (deleted) {
+                                "已删除导出文件"
+                            } else {
+                                "删除失败，文件可能已经不在了"
+                            },
+                        )
+                    }
+                }
+            }
+
+            // 封面缓存不支持按本钻取，不会走到这
+            StorageKind.COVERS -> Unit
+        }
+    }
+
+    /** 导出成品的内容 Uri（「打开至 / 发送至」发 Intent 用，与任务页/详情页同一模式）。 */
+    suspend fun outputUri(displayName: String): android.net.Uri? = exports.outputUri(displayName)
 
     // ------------------------------------------------------------------
     // 检查更新

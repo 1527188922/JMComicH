@@ -2627,3 +2627,23 @@ App 的 `/confirm` 少了这个字段，服务端走错分支，于是永远失�
 `:app:compileDebugKotlin` → `ReleaseCheckTest` + `StorageAttributionTest` →
 真机验收（检查更新 → 下载进度 → 完成唤起安装 → 取消安装后再查显示「安装」→
 退出 App 取消未完成下载、保留已完成）。
+
+### 5. 明细列表的操作按钮（同日补充需求）
+
+存储明细的每一行（封面缓存段除外）在内容行下方加操作按钮行
+（样式与详情页「导出文件」区块的 `ExportedFileRow` 一致，右对齐 TextButton）：
+
+| 段 | 按钮 | 动作 |
+|---|---|---|
+| 导出 ZIP / PDF | 打开至 / 发送至 / 删除 | 复用 `launchOutputIntent` + `ExportManager.outputUri`（与任务页/详情页同一套）；删除走 `ExportManager.deleteOutput` |
+| 漫画图片 | 删除 | `Repository.deleteAlbumFiles`（只删图片，保留库记录与成品） |
+| 阅读缓存 | 删除 | 新增 `Repository.deleteReaderCacheFiles`（只删 `reader-cache/<目录>`） |
+
+要点：**按段语义**——每行只删它代表的那一块，删图片不动 zip/pdf、删缓存不动图片；
+删除先弹 `ConfirmDialog`（文案标注影响范围与大小），确认后 `AboutViewModel.deleteUsage`
+按段路由执行，完成后 `rescan()` 原位刷新（重扫不再清旧数据，避免"统计中"闪烁）并
+Snackbar 报释放字节数。`AlbumUsage` 新增 `folderName` 作为图片库/阅读缓存行的删除键
+（未归属行也有，照样能删）。未归属的 zip/pdf 行（文件名配不上库）同样可以打开/发送/删除。
+
+验收补充：zip 行点「打开至/发送至」能唤起系统；删除某本图片后该书从"漫画图片"明细消失、
+总量与分段条同步变小，zip/pdf 明细不受影响。

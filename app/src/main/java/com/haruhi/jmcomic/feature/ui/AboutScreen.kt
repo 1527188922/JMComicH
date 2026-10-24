@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -92,8 +93,17 @@ fun AboutScreen(
     onUpdateToBackground: () -> Unit,
     onDismissUpdateDialog: () -> Unit,
     onOpenReleasesPage: () -> Unit,
+    /** 明细行操作：zip / pdf 的「打开至」（发系统 Intent，上层接线）。 */
+    onOpenOutput: (String) -> Unit,
+    /** 明细行操作：zip / pdf 的「发送至」。 */
+    onSendOutput: (String) -> Unit,
+    /** 明细行操作：删除某一行的内容（界面已弹过确认框）。 */
+    onDeleteUsage: (StorageKind, AlbumUsage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 待确认的删除目标（弹框是整页一份；确认后才调 ViewModel）
+    var pendingDelete by remember { mutableStateOf<Pair<StorageKind, AlbumUsage>?>(null) }
+
     Column(modifier = modifier.fillMaxSize()) {
         // 二级页标题行（与最近浏览页同一套）
         Row(
@@ -144,7 +154,14 @@ fun AboutScreen(
                         }
 
                         else -> items(usages) { usage ->
-                            UsageRow(usage, onOpenAlbum)
+                            UsageRow(
+                                usage = usage,
+                                kind = kind,
+                                onOpenAlbum = onOpenAlbum,
+                                onOpenOutput = onOpenOutput,
+                                onSendOutput = onSendOutput,
+                                onRequestDelete = { pendingDelete = kind to usage },
+                            )
                         }
                     }
                 }
@@ -161,6 +178,38 @@ fun AboutScreen(
             onBackground = onUpdateToBackground,
             onDismiss = onDismissUpdateDialog,
             onOpenReleasesPage = onOpenReleasesPage,
+        )
+    }
+
+    // 删除确认：与书库批量删除同一款 ConfirmDialog
+    pendingDelete?.let { (kind, usage) ->
+        val title = if (usage.albumId != null) privacyAlbumTitle(usage.albumId, usage.title) else usage.title
+        val fileName = usage.detail?.let { privacyExportName(it, usage.albumId) }
+        ConfirmDialog(
+            title = when (kind) {
+                StorageKind.LIBRARY -> "删除这本的下载图片？"
+                StorageKind.READER_CACHE -> "删除这本的阅读缓存？"
+                else -> "删除导出文件？"
+            },
+            text = when (kind) {
+                StorageKind.LIBRARY ->
+                    "会删除《$title》的本地图片（约 ${formatBytes(usage.sizeBytes)}）。" +
+                        "导出的 zip / pdf 与阅读缓存不受影响。"
+                StorageKind.READER_CACHE ->
+                    "会删除《$title》的阅读器缓存（约 ${formatBytes(usage.sizeBytes)}）。" +
+                        "下次阅读时重新联网获取。"
+                else ->
+                    "会删除 ${fileName ?: usage.title}（约 ${formatBytes(usage.sizeBytes)}）。此操作不可撤销。"
+            },
+            confirmText = "删除",
+            confirmButtonColors = ButtonDefaults.textButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+            onConfirm = {
+                pendingDelete = null
+                onDeleteUsage(kind, usage)
+            },
+            onDismiss = { pendingDelete = null },
         )
     }
 
@@ -624,8 +673,22 @@ private fun CoversNote(totalBytes: Long) {
     )
 }
 
+/**
+ * 明细里的一行：内容行（封面 + 标题/文件名 + 大小，可点进详情）+ 右对齐的操作按钮行。
+ *
+ * 操作按段给（与详情页「导出文件」区块同一款按钮）：
+ * - zip / pdf：打开至 / 发送至 / 删除；
+ * - 漫画图片 / 阅读缓存：只有删除（每行只删它代表的那一块，删除前弹确认框）。
+ */
 @Composable
-private fun UsageRow(usage: AlbumUsage, onOpenAlbum: (Long) -> Unit) {
+private fun UsageRow(
+    usage: AlbumUsage,
+    kind: StorageKind,
+    onOpenAlbum: (Long) -> Unit,
+    onOpenOutput: (String) -> Unit,
+    onSendOutput: (String) -> Unit,
+    onRequestDelete: () -> Unit,
+) {
     val navigable = usage.albumId != null
     // 文字隐私：能归属到本子的走统一出口；文件名行单独走 privacyExportName
     val title = if (navigable) {
@@ -634,59 +697,92 @@ private fun UsageRow(usage: AlbumUsage, onOpenAlbum: (Long) -> Unit) {
         usage.title
     }
     val detail = usage.detail?.let { privacyExportName(it, usage.albumId) }
+    val exportRow = kind == StorageKind.EXPORT_ZIP || kind == StorageKind.EXPORT_PDF
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = navigable) { onOpenAlbum(usage.albumId) }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (usage.albumId != null) {
-            Cover(
-                albumId = usage.albumId,
-                contentDescription = title,
-                modifier = Modifier
-                    .size(width = 44.dp, height = 60.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            )
-        } else {
-            // 无法归属的"其他"行：同尺寸占位块，保持列表对齐
-            Box(
-                modifier = Modifier
-                    .size(width = 44.dp, height = 60.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .padding(end = 12.dp),
+                .fillMaxWidth()
+                // enabled 已经挡掉了不可点的行，`?.let` 只是把 Long? 收成 Long
+                .clickable(enabled = navigable) { usage.albumId?.let(onOpenAlbum) }
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (detail != null) {
+            if (usage.albumId != null) {
+                Cover(
+                    albumId = usage.albumId,
+                    contentDescription = title,
+                    modifier = Modifier
+                        .size(width = 44.dp, height = 60.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                )
+            } else {
+                // 无法归属的"其他"行：同尺寸占位块，保持列表对齐
+                Box(
+                    modifier = Modifier
+                        .size(width = 44.dp, height = 60.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp),
+            ) {
                 Text(
-                    text = detail,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (detail != null) {
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Text(
+                text = formatBytes(usage.sizeBytes),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // 操作行：右对齐，样式与详情页「导出文件」区块一致
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(end = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+        ) {
+            if (exportRow) {
+                // 打开/发送要传**真实文件名**（privacyExportName 只换显示，不动操作）
+                usage.detail?.let { fileName ->
+                    TextButton(onClick = { onOpenOutput(fileName) }) { Text("打开至") }
+                    TextButton(onClick = { onSendOutput(fileName) }) { Text("发送至") }
+                }
+            }
+            TextButton(
+                onClick = onRequestDelete,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = null,
+                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                )
+                Text("删除")
             }
         }
-        Text(
-            text = formatBytes(usage.sizeBytes),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

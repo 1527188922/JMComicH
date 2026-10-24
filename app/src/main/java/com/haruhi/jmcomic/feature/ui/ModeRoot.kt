@@ -976,6 +976,18 @@ fun ModeRoot(
                         onOpenReleasesPage = {
                             openUrl(context, ReleaseChecker.RELEASES_PAGE_URL, showMessage)
                         },
+                        // 明细行操作：导出成品的「打开至 / 发送至」（与任务页/详情页同一套 Intent）
+                        onOpenOutput = { name ->
+                            launchOutputIntent(context, name, share = false, showMessage, scope) {
+                                vm.outputUri(name)
+                            }
+                        },
+                        onSendOutput = { name ->
+                            launchOutputIntent(context, name, share = true, showMessage, scope) {
+                                vm.outputUri(name)
+                            }
+                        },
+                        onDeleteUsage = vm::deleteUsage,
                     )
                 }
 
@@ -1475,6 +1487,8 @@ class ViewModelFactory(
         // 关于页：存储统计扫描器 + 更新检查器 + 系统下载收口
         modelClass.isAssignableFrom(AboutViewModel::class.java) ->
             AboutViewModel(
+                repo = container.jmRepository,
+                exports = container.jmExports,
                 collector = container.storageStatsCollector,
                 releaseChecker = container.releaseChecker,
                 downloads = container.appDownloadGateway,

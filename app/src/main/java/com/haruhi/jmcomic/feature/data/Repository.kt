@@ -26,8 +26,10 @@ import com.haruhi.jmcomic.feature.api.ChapterDto
 import com.haruhi.jmcomic.feature.api.ApiJson
 import com.haruhi.jmcomic.feature.api.SearchItemDto
 import com.haruhi.jmcomic.feature.api.SeriesDto
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import timber.log.Timber
@@ -1024,6 +1026,22 @@ class Repository(
     /** 本子本地占用（字节）。 */
     fun localSize(albumFolderName: String?): Long =
         albumFolderName?.takeIf { it.isNotBlank() }?.let { dirs.sizeOf(dirs.albumDir(it)) } ?: 0L
+
+    /**
+     * 删除某本漫画的**阅读原图缓存**（`reader-cache/<目录名>`），返回释放的字节数。
+     *
+     * 只动缓存：图片库与导出成品不受影响（「关于」页存储明细按段删除用，
+     * 与 [deleteAlbumFiles] 的"只删图片"同一语义，各管各的段）。
+     */
+    suspend fun deleteReaderCacheFiles(dirName: String): Long {
+        if (dirName.isBlank()) return 0L
+        return withContext(Dispatchers.IO) {
+            val dir = File(dirs.readerCache, dirName)
+            val freed = dirs.sizeOf(dir)
+            dir.deleteRecursively()
+            freed
+        }
+    }
 
     /**
      * 全部漫画基础数据（**不看是否入库**——`t_jm_album` 是永久缓存表）。
