@@ -577,10 +577,15 @@ class ApiClient(
     )
 
     /**
-     * `POST /confirm`：**重新发送**邮箱验证码。
+     * `POST /confirm`：**App API 的重新发送验证码**。
      *
-     * 官方同一个接口换个参数组合：`username` + `password`（`FETCH_SIGN_UP_CONFIRM_THUNK`
-     * 的 resend 分支）。官方 UI 有 60 秒重发冷却，本工程也在 ViewModel 里做了同样的倒计时。
+     * ⚠ **实测不可用（2026-10-23）**：App API 的重发分支稳定返回
+     * `无效的核查身份证!您确定此ID是正确的？`，即使账号刚注册、验证码还没过期也一样。
+     * 把网页版的参数（`submit_action=resend` / `submit_confirm` / `email` 等）
+     * 原样打到这个接口上**同样失败**，所以不是缺参数的问题，而是服务端分支坏了。
+     *
+     * **保留此方法**（用户明确要求保留 App `/confirm` 接口），但生产路径**不要调用**；
+     * 重发验证信走 [WebConfirmClient]（网页版 `/confirm` + `submit_action=resend`）。
      */
     suspend fun resendSignUpCode(username: String, password: String): EditResultDto =
         postDecrypted(

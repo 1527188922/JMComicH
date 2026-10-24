@@ -120,6 +120,26 @@ class AppContainer(private val appContext: Context) {
             scope = appScope,
             // 收藏页/资料页进页面先用上次的快照渲染，避免每次重建 ViewModel 都重新联网而"闪一下"
             cache = accountCache,
+            // 重发验证信走网页版（App API 的 /confirm 重发分支是坏的，见 WebConfirmClient）
+            webConfirm = webConfirmClient,
+        )
+    }
+
+    /**
+     * 网页版「重发验证信」客户端。
+     *
+     * 与接口请求**分开一个派生客户端**：
+     * - 网页版 `/confirm` 返回的是带广告的 HTML（实测 ~180KB），可能比接口慢；
+     *   而接口默认超时只有 3 秒，直接用 `httpClient` 会频繁超时；
+     * - 仍从 `httpClient` 派生：代理 / UA / 拦截器与 App 保持一致，只放宽超时。
+     */
+    val webConfirmClient: com.haruhi.jmcomic.feature.api.WebConfirmClient by lazy {
+        com.haruhi.jmcomic.feature.api.WebConfirmClient(
+            client = com.haruhi.jmcomic.core.network.NetworkClientFactory.deriveWithTimeout(
+                base = httpClient,
+                timeoutSeconds = WEB_CONFIRM_TIMEOUT_SECONDS,
+                callTimeoutSeconds = WEB_CONFIRM_CALL_TIMEOUT_SECONDS,
+            ),
         )
     }
 
@@ -631,5 +651,15 @@ class AppContainer(private val appContext: Context) {
 
         /** 封面内存缓存上限（占可用内存比例）。 */
         const val MEMORY_CACHE_PERCENT = 0.15
+
+        /**
+         * 网页版重发验证信的单次请求超时。
+         *
+         * 网页版 `/confirm` 会返回一整页带广告的 HTML（实测 ~180KB），比接口慢；
+         * 接口默认 3 秒超时不够用。单条 host 最多 12 秒，整次重发由
+         * `WebConfirmClient` 自己再封顶 30 秒。
+         */
+        const val WEB_CONFIRM_TIMEOUT_SECONDS = 12
+        const val WEB_CONFIRM_CALL_TIMEOUT_SECONDS = 15L
     }
 }

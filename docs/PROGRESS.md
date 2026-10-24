@@ -2465,3 +2465,102 @@ Expected start of the array '[', but had '"' instead at path: $.errors）`。
 14. **本地能判断的错误保持页内提示**：空字段 / 两次密码不一致 / 邮箱格式 / 未选性别 / 未满 18 /
     未同意协议 / 改密码只填一个 → 输入框下方、勾选行下方或页内横幅出现红字（与改造前一致），不弹窗。
 15. 注册成功、验证码重发成功的提示仍然是验证码页上的一行文字，不弹窗。
+
+## 修复：验证码过期后无法重发验证信（2026-10-23）
+
+用户反馈：注册后如果没在验证码有效期内输入，之后在 App 里点「重新发送验证码」
+会一直提示"无效的核查身份证"之类的文案，导致刚注册的账号既不能登录、用户名和邮箱
+又一直被占用。官方 App 也有同样问题，但网页版
+（`https://18comic.vip/confirm` 的"請輸入須重發驗證信的帳號與密碼"）没有这个问题。
+
+### 1. 根因（实测，不是猜）
+
+用随机账号 + 随机邮箱通过 App API 注册后**立即**调用 App 的
+`POST /confirm{username,password}`，同样稳定返回：
+
+```json
+{"status":"fail","msg":"无效的核查身份证!您确定此ID是正确的？ !2",
+ "errors":["无效的核查身份证!您确定此ID是正确的？ !2","用户名已经存在!"]}
+```
+
+也就是说**不是"验证码过期"才坏，App 的重发分支从一开始就是坏的**。
+对比网页版 `/confirm` 的表单，发现关键差异是一个隐藏字段：
+
+```html
+<form name="confirmEmailForm" method="post" action="/confirm">
+  <input name="submit_action" type="hidden" value="resend">
+  <input name="username" ...>
+  <input name="password" ...>
+  <input name="submit_confirm" type="submit" value="发送邮件">
+</form>
+```
+
+网页版由 `submit_action=resend` 触发**另一套 web 控制器**，能正常重发；
+App 的 `/confirm` 少了这个字段，服务端走错分支，于是永远失败。
+
+### 2. 实测过程
+
+- **把网页版的参数原样打到 App API `/confirm` 上**（`submit_action=resend` +
+  `submit_confirm=发送邮件` + `username` + `password`，另测了 `email`/`email_username`
+  与 urlencoded / multipart 两种编码）——**仍然返回同一个 `无效的核查身份证`**；
+  所以不是"App 少传了参数"，而是 App API 的重发分支本身坏了。
+  按用户要求，`ApiClient.resendSignUpCode` **保留**（生产不调用）；
+- 从官方 `2.1.12` APK 的 web bundle 里确认 App 仍然只发 `username+password`
+  （`FETCH_SIGN_UP_CONFIRM_THUNK`），没有 `submit_action`；
+- 找到官方 APK 下载页所在的镜像 `comic18j-guta.quest`，它的 `/confirm` 页面
+  与网页版一致（标题 `Re-Send Confirmation Email`，表单带 `submit_action`），
+  且**与主站共享账号数据**：用 API 注册的随机账号能在它上面重发；
+- 用 `submit_action=resend` + `username` + `password` + `submit_confirm=发送邮件`
+  向该镜像 POST，返回 HTML 里的
+  `toastr['error']("信件已发出，请十分钟后再试 !")` —— **重发成功**；
+- 同页还夹着 `toastr['error']("請勿重複簽到")` 这种无关提示，解析时必须按内容筛选；
+- 用 App 的移动端 UA、不带 `Token` / CSRF / Cookie，同样成功（说明可以直接原生 POST）。
+
+### 3. 实现
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/WebConfirmClient.kt`（新） | 网页版重发客户端：`submit_action=resend` 表单、按 host 回退、HTML 解析（`parseWebConfirmResponse`）、`toastr` 文案清洗 |
+| `core/di/AppContainer.kt` | 新增 `webConfirmClient`：从 `httpClient` 派生（代理 / UA 一致），超时放宽到 12s/15s；注入 `AccountRepository` |
+| `feature/data/AccountRepository.kt` | `resendSignUpCode` 改走 `webConfirm.resend(...)`；**不再调用 App API 的 `/confirm` 重发** |
+| `feature/api/ApiClient.kt` | 保留 `resendSignUpCode`（用户要求保留 App `/confirm` 接口；实测不可用、生产不调用，注释写明原因） |
+| `feature/ui/AccountViewModels.kt` | `SignUpUiState` 新增 `resending`；重发期间按钮显示「正在发送…」，不走 `submitting`（避免主按钮误显示"正在验证…"） |
+| `feature/ui/AccountSignUpScreen.kt` | 重发中禁用提交按钮；重发按钮显示「正在发送…」；成功提示仍走页内 notice，失败走服务端错误弹窗 |
+| `test/.../WebConfirmParserTest.kt`（新） | 10 个用例：成功（简/繁）/ 同一页无关提示 / 密码错误 / 无效核查身份证 / 用户名不存在 / 无 toastr / 只有无关提示 / HTML 实体与转义 / **表单必须带 `submit_action`** |
+
+几个关键取舍：
+
+1. **只走网页版，不回退 App API**：App API 的重发分支是坏的，回退只会把用户引到同一个错误；
+2. **host 顺序**：`18comic.vip`（官方 `main_web_host`）→ `comic18j-guta.quest`
+   （官方 APK 下载镜像，实测同账号可重发）→ `www.18comic.vip` → `18comic.org`；
+   单条 host 12s、整次重发封顶 30s；
+3. **不能按 toastr level 判成功**：网页版成功用的是 `toastr['error']`，只能按文案
+   （"已发出"/"已發出"）判断；
+4. **过滤无关提示**：同页的 `請勿重複簽到` 等不能当成本次重发结果；
+5. **失败就是服务端错误**：网页版返回的失败文案（密码错、账号不存在等）走 `error` 弹窗；
+   成功文案（含"请十分钟后再试"）走页内 notice；
+6. 网页版的「重新填寫 e-mail」表单（`email` + `email_username`）本次**未接入 App**，
+   只记录在接口文档里。
+
+### 4. 回归验证（本机实跑）
+
+- `:app:compileDebugKotlin` ✅；
+- `:app:assembleDebug` ✅ —— `app/build/outputs/apk/debug/app-debug.apk`；
+- 只跑相关测试类（按用户要求不跑全量）：`WebConfirmParserTest` 10 + `RegistrationLogicTest` 15 +
+  `ProfileEditLogicTest` 12 + `AccountModelTest` 13 = **50 个用例全绿**；
+- `:app:lintDebug` ✅ **0 error / 31 warning**（warning 全部是既有项，本次新增/改动文件零命中）；
+- **真实接口验证**：用随机账号 `zz17b0c823`（邮箱 `jmprobe17b0c823@qq.com`，不可收信）
+  在 `comic18j-guta.quest` 的网页版表单上重发成功，返回
+  `信件已发出，请十分钟后再试 !`；**没有使用用户的邮箱**；
+  该随机账号没有删除接口，保留在服务器上（未验证），仅此一个。
+
+### 5. 真机验收清单
+
+1. 用一个**已注册但验证码过期**的账号：登录页 →「输入验证码」→ 填用户名/密码 → 点「重新发送验证码」；
+   按钮先显示「正在发送…」，随后页内出现「信件已发出，请十分钟后再试 !」；
+2. 到邮箱确认收到新的验证信；把新验证码填回 App → 能验证并自动登录；
+3. 密码故意填错 → 服务端失败文案以**弹窗**出现（不是页内顶动控件）；
+4. 断网 / 主站被墙：会依次尝试 `18comic.vip` → `comic18j-guta.quest` 等 host；
+   最终失败时弹窗提示，不会卡在"无效的核查身份证"；
+5. 重复点重发：60 秒内按钮禁用；超过 60 秒再点，服务端若返回"请十分钟后再试"，按页内提示展示；
+6. 网页版主站能打开、但 App 里仍失败时：把 `logcat -s jm:*` 里 `网页版重发：<host> -> ...` 的日志发出来排查。

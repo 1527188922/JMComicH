@@ -9,6 +9,7 @@ import com.haruhi.jmcomic.feature.api.EditResultDto
 import com.haruhi.jmcomic.feature.api.FavoritePageDto
 import com.haruhi.jmcomic.feature.api.LoginDto
 import com.haruhi.jmcomic.feature.api.UserEditDto
+import com.haruhi.jmcomic.feature.api.WebConfirmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +43,14 @@ class AccountRepository(
     private val scope: CoroutineScope,
     /** 账号数据的进程内缓存（进页面先渲染上次的快照，避免每次进来都闪一下）。 */
     private val cache: AccountCache,
+    /**
+     * 网页版重发验证信。
+     *
+     * App API 的 `POST /confirm{username,password}` 在服务端走错分支、永远返回
+     * "无效的核查身份证"；网页版表单多一个 `submit_action=resend`，能正常重发。
+     * 详见 [WebConfirmClient] 的注释。
+     */
+    private val webConfirm: WebConfirmClient,
 ) {
 
     val state: StateFlow<AccountState> get() = session.state
@@ -140,14 +149,16 @@ class AccountRepository(
         )
     }
 
-    /** 重新发送邮箱验证码（`POST /confirm` 的 `username + password`）。 */
-    suspend fun resendSignUpCode(username: String, password: String): String {
-        val dto = api().resendSignUpCode(username = username, password = password)
-        return dto.requireSuccess(
-            fallback = "验证码发送失败，请稍后重试",
-            successFallback = "验证码已重新发送",
-        )
-    }
+    /**
+     * 重新发送邮箱验证码。
+     *
+     * **走网页版 `/confirm`，不走 App API**：App 的 `POST /confirm{username,password}`
+     * 少了网页版的 `submit_action=resend`，服务端会返回"无效的核查身份证"，
+     * 导致未验证/验证码过期的账号永远收不到新邮件（2026-10-23 实测，官方 App 同问题）。
+     * 网页版表单的字段与响应解析见 [WebConfirmClient]。
+     */
+    suspend fun resendSignUpCode(username: String, password: String): String =
+        webConfirm.resend(username = username, password = password)
 
     // ------------------------------------------------------------------
     // 收藏

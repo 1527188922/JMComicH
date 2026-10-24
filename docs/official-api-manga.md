@@ -796,16 +796,51 @@ var scramble_id = 220980;
 - 同一个用户名在**未验证**状态下再次 `POST /register` 会回「用户名已经存在」，
   所以「已有验证码」必须走 §7.4 的 `confirm`，而不是重新注册。
 
-### 7.4 `POST /confirm`（2026-10-23 补测：失败形态）
+### 7.4 `POST /confirm`（2026-10-23 实测）
 
-| 用途 | 参数 |
-|---|---|
-| 提交验证码 | `username` + `numcode` |
-| 重新发送验证码 | `username` + `password` |
+App API 的两种用法：
 
-返回 `{status,msg}`。
+| 用途 | 参数 | 结果 |
+|---|---|---|
+| 提交验证码 | `username` + `numcode` | 可用（错误码时返回 `无效的确认ID和/或代码!`） |
+| **App 的"重新发送验证码"** | `username` + `password` | ⚠ **坏的**，稳定返回 `无效的核查身份证!您确定此ID是正确的？`，**即使账号刚注册、验证码还没过期也一样** |
 
-**失败形态（2026-10-23 实测）**
+这就是用户遇到的"验证码过期后账号无法登录、邮箱/用户名一直被占用"的根因：
+App 的重发分支在服务端走错了控制器，永远发不出新验证信；官方 App 也有同样问题。
+
+#### 网页版的重发（可用，2026-10-23 实测）
+
+网页版 `https://18comic.vip/confirm`（`/setting` 的 `main_web_host`）上有一个
+"沒有收到確認郵件？"表单，它的请求与 App API **不是同一条分支**：
+
+```
+POST https://{web_host}/confirm
+Content-Type: application/x-www-form-urlencoded
+
+submit_action=resend
+username={账号}
+password={密码}
+submit_confirm=发送邮件      ← 表单提交按钮的 name/value，服务端不校验值
+```
+
+- **关键就是 `submit_action=resend`**：网页表单里还有一个"验证信箱"表单用
+  `submit_action=verify` + `username` + `numcode`。
+- 不需要 `Token` / `Tokenparam` 签名，也不需要 CSRF token；响应是 **HTML**（不是 JSON 信封）。
+- 成功时页面里是：
+  `<script>toastr['error']("信件已发出，请十分钟后再试 !")</script>`
+  —— **用的是 `error` 样式**，不能按 toastr level 判成功，要按文案判断。
+- 同页还可能有无关提示（实测出现 `請勿重複簽到`），解析时要按"是否与重发相关"筛选。
+- 表单里还有"重新填寫 e-mail"：同一路径再带 `email` + `email_username` 可以改邮箱后重发
+  （本次未接入 App，仅记录）。
+- 可用 host：
+  - `18comic.vip`（官方 `main_web_host`，账号在主站时优先）；
+  - `comic18j-guta.quest`（官方 APK 下载页所在镜像；实测与主站共享账号数据，
+    在 `18comic.vip` 被墙/Cloudflare 拦截时可用）。
+
+**App 侧的结论**：重发验证信**只走网页版 `/confirm`**，不要回退到 App API 的 `/confirm{username,password}`。
+本工程的实现见 `feature/api/WebConfirmClient.kt`。
+
+**失败形态（App API，2026-10-23 实测）**
 
 - 与 `/register` 完全同构：HTTP 200、信封 `code` 200、`data` 解密后
   `{status:"fail", msg:"…", errors:[…]}`，顶层再带一个明文 `errorMsg`。
@@ -814,10 +849,14 @@ var scramble_id = 220980;
 - 实测样本（不存在的用户名 + 错误验证码）：
   `{"status":"fail","msg":"用户名已经存在!","errors":["用户名已经存在!"]}`
   —— 服务端的文案本身就不一定准确（这里用户名显然不存在），**客户端原样展示，不自造文案**。
-- 重发（`username + password`，不存在的账号）实测：
-  `无效的核查身份证!您确定此ID是正确的？ !2`（同样是服务端原文）。
+- App 的重发（`username + password`）：即使**刚注册成功的新账号**也返回
+  `无效的核查身份证!您确定此ID是正确的？ !2`（不是"不存在的账号"才这样）。
+- 把网页版的参数（`submit_action=resend` + `submit_confirm` + `email` / `email_username`）
+  原样打到 **App API `/confirm`** 上**同样失败**（urlencoded / multipart 都试过），
+  所以不是"App 少传了参数"，而是 App API 的重发分支本身坏了。
+  `ApiClient.resendSignUpCode` 因此保留但不用于生产（用户要求保留该接口）。
 - 官方 UI 的 **60 秒重发冷却只是前端限制**（`MemberModal.tsx` 的 `resendCooldown`），
-  服务端没有这个状态；本工程也在 ViewModel 里做了同样的倒计时。
+  服务端实际在网页版提示"请十分钟后再试"。
 
 
 ### 7.5 `POST /forgot` ⚠ 未实测

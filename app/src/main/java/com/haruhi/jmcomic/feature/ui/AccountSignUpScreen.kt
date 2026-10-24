@@ -192,6 +192,16 @@ private fun SignUpForm(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+    // 重发成功时用户可能已经按返回回到了这里：提示也要能看到（仍然不弹窗）
+    state.notice?.let { notice ->
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = notice,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+
     if (state.registered) {
         // 注册请求已经成功、用户又按返回键回到了表单：账号已经存在，
         // 再点一次「注册」只会收到"用户名已经存在"。所以这里只给「继续验证」，
@@ -446,7 +456,8 @@ private fun VerifyForm(
     Spacer(Modifier.height(12.dp))
     Button(
         onClick = onSubmitCode,
-        enabled = !state.submitting,
+        // 重发验证信期间也禁止提交验证码：两个请求都依赖同一份用户名/密码，串行更稳
+        enabled = !state.submitting && !state.resending,
         modifier = Modifier.fillMaxWidth(),
     ) {
         if (state.submitting) {
@@ -478,10 +489,10 @@ private fun VerifyForm(
             enabled = state.canResend,
         ) {
             Text(
-                if (state.resendCooldown > 0) {
-                    "重新发送（${state.resendCooldown}s）"
-                } else {
-                    "重新发送验证码"
+                when {
+                    state.resending -> "正在发送…"
+                    state.resendCooldown > 0 -> "重新发送（${state.resendCooldown}s）"
+                    else -> "重新发送验证码"
                 },
             )
         }

@@ -1125,6 +1125,8 @@ data class SignUpUiState(
     val notice: String? = null,
     /** 验证码重发冷却剩余秒数（官方 60 秒）。 */
     val resendCooldown: Int = 0,
+    /** 正在重发验证信（走网页版接口，可能比普通接口慢，按钮要给出反馈）。 */
+    val resending: Boolean = false,
     /** 验证码输入。 */
     val code: String = "",
     /** 注册请求已经成功（账号已创建，只差邮箱验证）；回表单后给一个「继续验证」出口。 */
@@ -1136,7 +1138,7 @@ data class SignUpUiState(
     /** 注册 + 验证 + 登录全部完成（页面据此关闭并跳到 next）。 */
     val done: Boolean = false,
 ) {
-    val canResend: Boolean get() = resendCooldown <= 0 && !submitting
+    val canResend: Boolean get() = resendCooldown <= 0 && !submitting && !resending
     val canSubmit: Boolean get() = !submitting
 
     /** 验证码步骤要显示的邮箱（注册时填的那个）。 */
@@ -1292,7 +1294,7 @@ class AccountSignUpViewModel(
     /** 提交邮箱验证码；成功后自动用注册时的密码登录。 */
     fun submitCode() {
         val current = _state.value
-        if (current.submitting || current.step != SignUpStep.VERIFY) return
+        if (current.submitting || current.resending || current.step != SignUpStep.VERIFY) return
         validateSignUpCode(current.code)?.let { message ->
             _state.update { it.copy(codeError = message, error = null) }
             return
@@ -1362,13 +1364,15 @@ class AccountSignUpViewModel(
         }
         val username = current.username
         val password = current.form.password
-        _state.update { it.copy(submitting = true, error = null, codeError = null) }
+        // 重发走网页版接口，可能比普通接口慢：用独立的 resending 状态，
+        // 不要复用 submitting，否则主按钮会误显示"正在验证…"。
+        _state.update { it.copy(resending = true, error = null, codeError = null) }
         viewModelScope.launch {
             runCatching { account.resendSignUpCode(username, password) }
                 .onSuccess { message ->
                     _state.update {
                         it.copy(
-                            submitting = false,
+                            resending = false,
                             notice = message,
                             error = null,
                             codeError = null,
@@ -1380,7 +1384,7 @@ class AccountSignUpViewModel(
                     if (e is CancellationException) throw e
                     _state.update {
                         it.copy(
-                            submitting = false,
+                            resending = false,
                             errorTitle = "发送失败",
                             error = e.toUserMessage(),
                             codeError = null,

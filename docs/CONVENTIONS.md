@@ -159,6 +159,12 @@ material3 1.4.0 的 `ModalBottomSheet` 把面板拖动挂在**整块内容**上�
    401 一律翻译成"登录已失效"并把会话标成 `Expired`，页面里不许各自弹 401 对话框。
 6. **`POST` 不自动重试**：`ApiClient.postDecrypted` 刻意不套 `withTimeoutRetry`——
    `POST /favorite` 是**切换**语义，重放一次等于把刚加上的收藏取消掉。
+7. **重发验证信只走网页版 `/confirm`**（`feature/api/WebConfirmClient.kt`）：请求体必须带
+   `submit_action=resend` + `username` + `password`。App API 的
+   `POST /confirm{username,password}` 少了 `submit_action`，服务端稳定返回
+   `无效的核查身份证!您确定此ID是正确的？`——即使账号刚注册也一样；
+   回退到它会重新制造"验证码过期后账号无法登录"的问题。响应是 HTML，按
+   `toastr[...]` 文案判成败（成功时用的是 `toastr['error']`）。
 
 ### 验收清单（改收藏链路后照着跑）
 
