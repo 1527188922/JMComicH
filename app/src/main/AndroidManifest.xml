@@ -16,6 +16,14 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!--
+      「关于」页自更新：安装下载好的 APK 需要"安装未知应用"授权（API 26+）。
+      这不是运行时弹窗权限——manifest 声明它之后，代码里用
+      canRequestPackageInstalls() 检查、不够就跳 ACTION_MANAGE_UNKNOWN_APP_SOURCES
+      引导用户在系统设置里给本应用开开关。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
       「打开文件夹」要跳到系统的文件管理器（DocumentsUI 或第三方文件管理器）。
       Android 11+ 有**软件包可见性**过滤：不声明这一段的话，系统会把文件管理器
       判定成"看不见的应用"，startActivity 直接抛 ActivityNotFoundException
@@ -44,6 +52,11 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="application/pdf" />
+        </intent>
+        <!-- 「关于」页安装新版本 APK（系统包安装器） -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android-package-archive" />
         </intent>
     </queries>
 

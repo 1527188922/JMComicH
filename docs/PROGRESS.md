@@ -2564,3 +2564,66 @@ App 的 `/confirm` 少了这个字段，服务端走错分支，于是永远失�
    最终失败时弹窗提示，不会卡在"无效的核查身份证"；
 5. 重复点重发：60 秒内按钮禁用；超过 60 秒再点，服务端若返回"请十分钟后再试"，按页内提示展示；
 6. 网页版主站能打开、但 App 里仍失败时：把 `logcat -s jm:*` 里 `网页版重发：<host> -> ...` 的日志发出来排查。
+
+## 功能：「关于」页——版本号、检查更新（应用内下载 APK）与存储统计（2026-10-24）
+
+「我的」页新增「关于」入口（副标题 = 版本号，原页脚版本行删除）。关于页两块内容：
+应用信息卡（当前版本 + 检查更新）与存储统计卡（五类本地占用的分段条 + 引线标签，
+点段看按本明细，大小降序；封面缓存只有总量不钻取——Coil 磁盘缓存按 URL 哈希命名，
+无法按本归属，用户拍板）。
+
+### 1. 检查更新：状态机与关键决策
+
+`Idle → Checking → Available（弹框）→ Downloading（进度%）→ Ready（安装）`，
+由 `AboutViewModel` 驱动（`feature/ui/AboutViewModels.kt`）。要点：
+
+- **debug 包点「检查更新」无反应**（guard 放 ViewModel，用户拍板）；
+- 每次检查都重新调 Gitee `releases/latest`，`tag_name` 对 `VERSION_NAME` 数值比较
+  （`ReleaseChecker.isNewer`，不符合 `v*.*.*` 判"无法识别"，绝不误报）；
+- **下载走系统 DownloadManager**（进程被杀也继续、系统通知、零存储权限），
+  `AppDownloadGateway`（`core/download/`）是它的唯一收口：enqueue 把用途标记写进
+  `COLUMN_DESCRIPTION`，`records(marker)` 按标记找回——**不做任何本地持久化**，
+  下载记录本身就是持久层；将来第二个系统下载场景加新 marker 即可；
+- **零持久化的代价与对策**：版本号从下载记录的 title（`JMComicH 新版本 v1.2.0`）
+  反推（`tagFromTitle`）；
+- **退出收尾**（用户拍板：退出即取消，不留看不见的系统下载）：挂进
+  `AppContainer.handleAppExit()`，只取消未完成的（`remove` 连半成品文件一起删，
+  不需要手动清理）；**已完成的不动**——下次检查直接显示「安装」；
+- 用户取消安装后再检查：本地已有该版本 APK → 弹框按钮直接是「安装」；
+  进程死亡后系统侧下完的场景由 `restoreUpdateState()` 找回（含陈旧记录清理）；
+- 安装：`getUriForDownloadedFile` 的 content Uri + `ACTION_VIEW`；
+  `canRequestPackageInstalls()` 不过就跳 `ACTION_MANAGE_UNKNOWN_APP_SOURCES`
+  （manifest 已声明 `REQUEST_INSTALL_PACKAGES` + APK MIME 的 `<queries>`）。
+
+### 2. 存储统计：归属规则
+
+`StorageStatsCollector`（`feature/data/`）一次扫描同时产出五类总量与按本明细
+（点段切换零 IO）：图片库 / 阅读缓存逐目录 `sizeOf`；zip/pdf 用
+`ExportPublisher.listAll()` 一次 MediaStore 查询；封面只有总量。
+归属两级匹配：目录名/文件基名精确配 `t_jm_album.album_folder_name`（新查询
+`Repository.albumBasicsAll()`，含未入库的永久缓存行）→ 尾缀 `_JM<aid>` 解析 aid
+配 id → 仍未中的进"其他"行（只展示不跳转），保证明细合计 = 段总量。
+
+### 3. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `core/download/AppDownloadGateway.kt`（新） | DownloadManager 收口：标记 enqueue / records / remove / cancelIncomplete |
+| `feature/api/ReleaseChecker.kt`（新） | Gitee 客户端 + `isNewer` / `tagFromTitle` / `apkUrlOf`（deriveWithTimeout 15s/20s） |
+| `feature/data/StorageStatsCollector.kt`（新） | 五类扫描与两级归属 |
+| `feature/ui/AboutViewModels.kt`（新） | 更新状态机 + 存储状态 + 进度轮询（800ms） |
+| `feature/ui/AboutScreen.kt`（新） | 分段条（weight 按字节占比）+ 引线（boundsInRoot + Canvas elbow 折线，占比 <6% 不画标签）+ 钻取列表（整页一个 LazyColumn，无嵌套滚动）+ 更新弹框（预览版徽标 / 下载% / 安装） |
+| `feature/ui/MyScreen.kt` | +「关于」行（subtitle = 版本号），删页脚版本行 |
+| `feature/ui/ModeRoot.kt` | `Routes.ABOUT` + composable 接线 + Factory 分支 + `launchApkInstall` / `openUrl` |
+| `core/di/AppContainer.kt` | `appDownloadGateway` / `releaseChecker` / `storageStatsCollector` + `handleAppExit` 收尾 |
+| `feature/data/Repository.kt` | +`albumBasicsAll()` |
+| `ui/theme/Color.kt` | +五个分段色（浅色主题专用，深色主题启用时按 WarningOrange 先例补） |
+| `AndroidManifest.xml` | +`REQUEST_INSTALL_PACKAGES` + APK MIME `<queries>` |
+| `test/.../ReleaseCheckTest.kt`、`StorageAttributionTest.kt`（新） | 版本比较 / 标题反解 / 真实响应样本解析 / 归属解析 |
+
+### 4. 验证状态（如实记录）
+
+本机无 Android 环境，本次**只改代码未编译**。上线前需跑：
+`:app:compileDebugKotlin` → `ReleaseCheckTest` + `StorageAttributionTest` →
+真机验收（检查更新 → 下载进度 → 完成唤起安装 → 取消安装后再查显示「安装」→
+退出 App 取消未完成下载、保留已完成）。

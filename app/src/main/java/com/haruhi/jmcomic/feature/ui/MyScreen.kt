@@ -52,7 +52,7 @@ import com.haruhi.jmcomic.core.protocol.Defaults
  * 三块：
  * 1. **账户摘要卡** —— 头像 / 昵称 / 等级·称号 / 会员行（**非会员不显示**）；点卡片进个人资料；
  * 2. **账号** —— 收藏（官方在线收藏，替代原来的本机收藏 tab）；
- * 3. **本机** —— 最近浏览（仍是本机数据）、下载任务、应用设置。
+ * 3. **本机** —— 最近浏览（仍是本机数据）、下载任务、应用设置、关于。
  *
  * 未登录时账号区照常显示，副标题写「登录后可用」，点击直接去登录页
  * （由导航层记住目标，登录成功直达）。
@@ -68,6 +68,8 @@ fun MyScreen(
     onOpenRecent: () -> Unit,
     onOpenTasks: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** 关于页（版本号 + 检查更新 + 存储统计）。 */
+    onOpenAbout: () -> Unit,
     onOpenProfile: () -> Unit,
     onLogin: () -> Unit,
     onLogout: () -> Unit,
@@ -156,6 +158,13 @@ fun MyScreen(
                             subtitle = "阅读与显示、下载、导出、网络、线路",
                             onClick = onOpenSettings,
                         )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        // 版本号挪进「关于」的副标题（原页脚那行随之删除，不再重复展示）
+                        MyEntryRow(
+                            title = "关于",
+                            subtitle = "版本 v${BuildConfig.VERSION_NAME.substringBefore('-')}",
+                            onClick = onOpenAbout,
+                        )
                     }
 
                     // 退出登录放在「应用设置」下面（用户要求 2026-10-21）：
@@ -170,13 +179,6 @@ fun MyScreen(
                             )
                         }
                     }
-
-                    Text(
-                        text = "版本 ${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                    )
                 }
             }
         }

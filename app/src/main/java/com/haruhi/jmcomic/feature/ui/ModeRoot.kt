@@ -2,6 +2,8 @@ package com.haruhi.jmcomic.feature.ui
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -52,6 +54,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.haruhi.jmcomic.core.di.AppContainer
 import com.haruhi.jmcomic.core.protocol.SearchSort
+import com.haruhi.jmcomic.feature.api.ReleaseChecker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -147,6 +150,12 @@ object Routes {
      * 它和这个页面读写的是同一份 `Jm.READING_*` 偏好，两处入口、一份存储。
      */
     const val SETTINGS = "jm/settings"
+
+    /**
+     * 关于页（「我的 → 关于」）：版本号、检查更新（Gitee 最新发行版 → 应用内下载
+     * → 唤起安装）、五类本地存储的分段统计。
+     */
+    const val ABOUT = "jm/about"
     const val FAVORITE_ALBUMS = "jm/favorites/{favoriteId}?name={name}"
     /**
      * 详情页。
@@ -482,6 +491,7 @@ fun ModeRoot(
                         },
                         onOpenTasks = { navController.navigate(Routes.TASKS) },
                         onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                        onOpenAbout = { navController.navigate(Routes.ABOUT) },
                         onOpenProfile = {
                             if (accountState.isSignedIn) {
                                 navController.navigate(Routes.ACCOUNT_PROFILE)
@@ -938,6 +948,37 @@ fun ModeRoot(
                     )
                 }
 
+                // 关于页：版本号 / 检查更新（应用内下载 APK 并唤起安装）/ 存储统计。
+                // 更新下载由系统 DownloadManager 承担（进程被杀也继续），
+                // 这里只负责状态接线与"发安装 Intent / 开设置页"这类 Context 动作
+                //（与导出成品的 launchOutputIntent 同一模式）。
+                composable(Routes.ABOUT) { entry ->
+                    val vm: AboutViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                    val state by vm.state.collectAsStateWithLifecycle()
+                    // 从详情页（删文件/下载）或别的页面回来时重扫存储，数字跟着变
+                    OnResumeEffect { vm.rescan() }
+                    MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
+                    AboutScreen(
+                        state = state,
+                        onBack = { navController.popBackStack() },
+                        onSelectSegment = vm::select,
+                        onOpenAlbum = { navController.navigate(Routes.detail(it)) },
+                        onCheckUpdate = vm::checkUpdate,
+                        onRetryScan = vm::rescan,
+                        onReopenUpdateDialog = vm::reopenUpdateDialog,
+                        onDownloadUpdate = vm::downloadUpdate,
+                        onInstallUpdate = { downloadId ->
+                            launchApkInstall(context, container.appDownloadGateway, downloadId, showMessage)
+                        },
+                        onCancelUpdateDownload = vm::cancelUpdateDownload,
+                        onUpdateToBackground = vm::updateToBackground,
+                        onDismissUpdateDialog = vm::dismissUpdateDialog,
+                        onOpenReleasesPage = {
+                            openUrl(context, ReleaseChecker.RELEASES_PAGE_URL, showMessage)
+                        },
+                    )
+                }
+
                 // 【本地UI隐藏】本机收藏夹内页（原「夹内复用书库布局」）。
                 // 与上面的 `Routes.FAVORITES` 一起放开即可恢复。
                 /*
@@ -1272,6 +1313,51 @@ private fun openExportFolder(
 }
 
 /**
+ * 安装下载好的新版本 APK（「关于」页的检查更新）。
+ *
+ * 两道前置检查：
+ * 1. 成品 Uri 还在不在——用户可能在文件管理器里把 APK 删了（记录一般会一起消失，
+ *    兜底提示重新下载）；
+ * 2. **「安装未知应用」授权**（API 26+ 的必备步骤，manifest 已声明
+ *    `REQUEST_INSTALL_PACKAGES`）：没有授权时直接发安装 Intent 会被系统静默拒绝，
+ *    所以先跳 `ACTION_MANAGE_UNKNOWN_APP_SOURCES` 让用户在系统设置里给本应用开开关，
+ *    开完回来再点一次「安装」。
+ */
+private fun launchApkInstall(
+    context: Context,
+    downloads: com.haruhi.jmcomic.core.download.AppDownloadGateway,
+    downloadId: Long,
+    showMessage: (String) -> Unit,
+) {
+    val uri = downloads.downloadedFileUri(downloadId)
+    if (uri == null) {
+        showMessage("安装包不在了，请重新下载")
+        return
+    }
+    if (!context.packageManager.canRequestPackageInstalls()) {
+        val settings = Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:${context.packageName}"),
+        )
+        runCatching { context.startActivity(settings) }
+            .onFailure { showMessage("请先在系统设置中允许本应用安装未知应用") }
+        return
+    }
+    val install = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android-package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(install) }
+        .onFailure { showMessage("无法启动安装") }
+}
+
+/** 浏览器打开一个链接（发行版没带 APK 资产时的兜底入口）。 */
+private fun openUrl(context: Context, url: String, showMessage: (String) -> Unit) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        .onFailure { showMessage("没有可以打开链接的应用") }
+}
+
+/**
  * 手写 ViewModel 工厂（P0 决策 D-3：不用 Hilt）。
  *
  * `albumId` / `chapterId` / `searchEntry` 只有对应页面需要，所以做成可选参数：
@@ -1384,6 +1470,14 @@ class ViewModelFactory(
                 //     container.jmCategoryCache.clearCatalogAndLists()
                 //     container.jmCommentCache.clearAll()
                 // },
+            ) as T
+
+        // 关于页：存储统计扫描器 + 更新检查器 + 系统下载收口
+        modelClass.isAssignableFrom(AboutViewModel::class.java) ->
+            AboutViewModel(
+                collector = container.storageStatsCollector,
+                releaseChecker = container.releaseChecker,
+                downloads = container.appDownloadGateway,
             ) as T
 
         modelClass.isAssignableFrom(ReaderViewModel::class.java) ->

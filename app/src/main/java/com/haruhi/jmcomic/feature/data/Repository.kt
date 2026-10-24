@@ -1026,6 +1026,14 @@ class Repository(
         albumFolderName?.takeIf { it.isNotBlank() }?.let { dirs.sizeOf(dirs.albumDir(it)) } ?: 0L
 
     /**
+     * 全部漫画基础数据（**不看是否入库**——`t_jm_album` 是永久缓存表）。
+     *
+     * 「关于」页的存储统计用它做归属：目录名 / 成品文件名 → 本子，
+     * 被移出书库的本子（基础行仍在）也要能配上。
+     */
+    suspend fun albumBasicsAll(): List<AlbumBaseEntity> = albumDao.all()
+
+    /**
      * 只读一次在线详情，取 `is_favorite`（**账号收藏**的状态）。
      *
      * 为什么单独开一个口：`is_favorite` 只有登录后才有意义，而且会**在别处被改**

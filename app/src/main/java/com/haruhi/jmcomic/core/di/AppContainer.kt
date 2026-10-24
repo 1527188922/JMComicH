@@ -413,6 +413,37 @@ class AppContainer(private val appContext: Context) {
         )
     }
 
+    // ---------------- 关于页（版本更新 / 存储统计） ----------------
+
+    /** 系统下载（DownloadManager）的唯一收口：enqueue 打用途标记、records 按标记找回。 */
+    val appDownloadGateway: com.haruhi.jmcomic.core.download.AppDownloadGateway by lazy {
+        com.haruhi.jmcomic.core.download.AppDownloadGateway(appContext)
+    }
+
+    /**
+     * Gitee 最新发行版检查（「关于」页）。从 [httpClient] 派生：代理 / 拦截器与
+     * 其它请求一致，只放宽超时——Gitee 的响应不比 JM 接口快，默认 3 秒太紧
+     * （与 [webConfirmClient] 同一模式）。
+     */
+    val releaseChecker: com.haruhi.jmcomic.feature.api.ReleaseChecker by lazy {
+        com.haruhi.jmcomic.feature.api.ReleaseChecker(
+            com.haruhi.jmcomic.core.network.NetworkClientFactory.deriveWithTimeout(
+                base = httpClient,
+                timeoutSeconds = RELEASE_CHECK_TIMEOUT_SECONDS,
+                callTimeoutSeconds = RELEASE_CHECK_CALL_TIMEOUT_SECONDS,
+            ),
+        )
+    }
+
+    /** 「关于」页的本地存储统计：五类占用（图片库 / 封面 / zip / pdf / 阅读缓存）。 */
+    val storageStatsCollector: com.haruhi.jmcomic.feature.data.StorageStatsCollector by lazy {
+        com.haruhi.jmcomic.feature.data.StorageStatsCollector(
+            repo = jmRepository,
+            dirs = libraryDirs,
+            exports = exportPublisher,
+        )
+    }
+
     // ---------------- 退出收尾 ----------------
 
     /**
@@ -438,6 +469,14 @@ class AppContainer(private val appContext: Context) {
                 .onFailure { Timber.tag("app").w(it, "退出时清理导出任务失败") }
             runCatching { jmDownloads.pauseAllForExit() }
                 .onFailure { Timber.tag("app").w(it, "退出时暂停下载任务失败") }
+            // 新版本 APK 的更新下载：退出即取消（半成品文件由系统连记录一起清掉），
+            // **已完成的不动**——成品要留给"下次检查显示安装按钮"。
+            // 与漫画下载的"暂停"不同：DownloadManager 没有暂停/恢复，取消即从零重来。
+            runCatching {
+                appDownloadGateway.cancelIncomplete(
+                    com.haruhi.jmcomic.core.download.AppDownloadGateway.MARKER_APP_UPDATE,
+                )
+            }.onFailure { Timber.tag("app").w(it, "退出时取消更新下载失败") }
             // 评论缓存是"退出 App 即清空"的（用户要求）：正常退出时顺手清掉，
             // 免得进程还留在后台（下载/导出把进程续着）再被点开时又看到上次的评论。
             runCatching { jmCommentCache.clearAll() }
@@ -661,5 +700,9 @@ class AppContainer(private val appContext: Context) {
          */
         const val WEB_CONFIRM_TIMEOUT_SECONDS = 12
         const val WEB_CONFIRM_CALL_TIMEOUT_SECONDS = 15L
+
+        /** Gitee 版本检查的超时：响应是一份完整 JSON（含 assets 列表），比 JM 接口慢。 */
+        const val RELEASE_CHECK_TIMEOUT_SECONDS = 15
+        const val RELEASE_CHECK_CALL_TIMEOUT_SECONDS = 20L
     }
 }

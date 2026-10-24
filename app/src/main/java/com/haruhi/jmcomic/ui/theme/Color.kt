@@ -87,3 +87,21 @@ val CoverTagBackground = Color(0xFFFF7B00)
 
 /** 封面主 tag 徽标的文字色：官方用 `text-white`，恒为纯白。 */
 val CoverTagText = Color(0xFFFFFFFF)
+
+// ---------------------------------------------------------------------------
+// 「关于」页存储分段条：五类本地占用各一色
+// ---------------------------------------------------------------------------
+
+/**
+ * 存储分段条的类型色（漫画图片 / 封面缓存 / 导出 ZIP / 导出 PDF / 阅读缓存）。
+ *
+ * 五段需要同时可区分，Material 色板的语义槽位只有三个主槽，所以按
+ * [WarningOrangeLight] 的先例单独放原始色值。都选**白卡上可读的中明度**；
+ * 深色主题当前未启用（见 `Theme.kt` 的说明），将来接开关时照
+ * `WarningOrangeLight/Dark` 的先例补一组深色值、再按主题二选一。
+ */
+val StorageLibrary = Color(0xFF1E88E5) // 蓝：下载的漫画图片（通常是最大头）
+val StorageCovers = Color(0xFFF9A825) // 琥珀：封面缓存
+val StorageExportZip = Color(0xFF8E24AA) // 紫：导出 ZIP
+val StorageExportPdf = Color(0xFFE53935) // 红：导出 PDF
+val StorageReaderCache = Color(0xFF00897B) // 青：阅读缓存
