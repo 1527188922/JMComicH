@@ -84,11 +84,11 @@ class WebConfirmClient(
 
                 WebConfirmResult.Unknown -> {
                     Timber.tag("jm").d("网页版重发：%s 响应无法识别，尝试下一条线路", host)
-                    lastError = NetworkError.Business("网页版重发验证信没有返回结果，请稍后重试")
+                    lastError = NetworkError.Business("重发验证信没有返回结果，请稍后重试")
                 }
             }
         }
-        throw lastError ?: NetworkError.Business("网页版重发验证信超时，请稍后重试或到网页版操作")
+        throw lastError ?: NetworkError.Business("重发验证码超时，请检查网络后重试（重发验证码需要使用魔法哦）")
     }
 
     private fun attempt(url: String, form: FormBody): WebConfirmResult {
@@ -133,19 +133,20 @@ class WebConfirmClient(
          *
          * 不要在这里加入非官方域名——重发请求会带上账号密码。
          */
-//        val DEFAULT_HOSTS: List<String> = listOf(
-//            "18comic.vip",
-//            "comic18j-guta.quest",
-//            "www.18comic.vip",
-//            "18comic.org",
-//        )
         val DEFAULT_HOSTS: List<String> = listOf(
-            "www.cdnutc.me",
-            "www.cdngwc.club",
-            "www.cdngwc.net",
-            "www.cdngwc.cc",
-            "www.cdnhjk.net",
+            "18comic.vip",
+            "comic18j-guta.quest",
+            "www.18comic.vip",
+            "18comic.org",
         )
+
+//        val DEFAULT_HOSTS: List<String> = listOf(
+//            "www.cdnutc.me",
+//            "www.cdngwc.club",
+//            "www.cdngwc.net",
+//            "www.cdngwc.cc",
+//            "www.cdnhjk.net",
+//        )
 
         /** 整次重发（含逐 host 重试）的总预算。 */
         private const val TOTAL_BUDGET_MS = 30_000L

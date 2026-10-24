@@ -375,7 +375,8 @@ private fun VerifyForm(
     Spacer(Modifier.height(6.dp))
     Text(
         text = if (state.verifyOnly) {
-            "输入账号注册时收到的验证码，验证通过后会自动登录。"
+            "输入账号注册时收到的验证码，验证通过后会自动登录。"+
+                    "\n注意：“重新发送验证码”按钮需要魔法才能发送成功！（其他步骤都不需要）"
         } else {
             "验证码已发送到 ${state.email.ifBlank { "注册邮箱" }}。\n" +
                 "账号「${state.username}」验证通过后才能真正登录。"
