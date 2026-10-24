@@ -133,11 +133,18 @@ class WebConfirmClient(
          *
          * 不要在这里加入非官方域名——重发请求会带上账号密码。
          */
+//        val DEFAULT_HOSTS: List<String> = listOf(
+//            "18comic.vip",
+//            "comic18j-guta.quest",
+//            "www.18comic.vip",
+//            "18comic.org",
+//        )
         val DEFAULT_HOSTS: List<String> = listOf(
-            "18comic.vip",
-            "comic18j-guta.quest",
-            "www.18comic.vip",
-            "18comic.org",
+            "www.cdnutc.me",
+            "www.cdngwc.club",
+            "www.cdngwc.net",
+            "www.cdngwc.cc",
+            "www.cdnhjk.net",
         )
 
         /** 整次重发（含逐 host 重试）的总预算。 */
