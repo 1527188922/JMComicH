@@ -184,40 +184,41 @@ private fun SignUpForm(
     onResumeVerification: () -> Unit,
     onBackToLogin: () -> Unit,
 ) {
-    Text("注册 JM 账号", style = MaterialTheme.typography.titleLarge)
-    Spacer(Modifier.height(6.dp))
-    Text(
-        text = "注册后需要到邮箱完成验证，验证通过会自动登录。",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    // 重发成功时用户可能已经按返回回到了这里：提示也要能看到（仍然不弹窗）
-    state.notice?.let { notice ->
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = notice,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-
-    if (state.registered) {
-        // 注册请求已经成功、用户又按返回键回到了表单：账号已经存在，
-        // 再点一次「注册」只会收到"用户名已经存在"。所以这里只给「继续验证」，
-        // 同时把表单锁住——账号是用当时那组字段创建的，事后改这里不会同步到服务端。
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = "这个账号已经提交过注册，还需要完成邮箱验证才能登录。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
     val formEnabled = !state.submitting && !state.registered
 
-    // 「灰底白卡」：字段、勾选与主按钮在白卡内，返回登录的链接留在卡外灰底上
-    Spacer(Modifier.height(16.dp))
+    // 「灰底白卡」：标题、说明与字段、勾选、主按钮都在白卡内，返回登录的链接留在卡外灰底上
     FormCard {
+        Text("注册 JM 账号", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "注册后需要到邮箱完成验证，验证通过会自动登录。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // 重发成功时用户可能已经按返回回到了这里：提示也要能看到（仍然不弹窗）
+        state.notice?.let { notice ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        if (state.registered) {
+            // 注册请求已经成功、用户又按返回键回到了表单：账号已经存在，
+            // 再点一次「注册」只会收到"用户名已经存在"。所以这里只给「继续验证」，
+            // 同时把表单锁住——账号是用当时那组字段创建的，事后改这里不会同步到服务端。
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "这个账号已经提交过注册，还需要完成邮箱验证才能登录。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
         FormTextField(
             label = "用户名",
             value = state.form.username,
@@ -374,34 +375,34 @@ private fun VerifyForm(
     onBackToForm: () -> Unit,
     onBack: () -> Unit,
 ) {
-    Text("验证邮箱", style = MaterialTheme.typography.titleLarge)
-    Spacer(Modifier.height(6.dp))
-    Text(
-        text = if (state.verifyOnly) {
-            "输入账号注册时收到的验证码，验证通过后会自动登录。"+
-                    "\n注意：“重新发送验证码”按钮需要魔法才能发送成功！（其他步骤都不需要）"
-        } else {
-            "验证码已发送到 ${state.email.ifBlank { "注册邮箱" }}。\n" +
-                "账号「${state.username}」验证通过后才能真正登录。"
-        },
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    // 注册成功 / 验证码重发成功：保持原来的页内提示（用户明确不要弹窗）
-    state.notice?.let { notice ->
-        Spacer(Modifier.height(10.dp))
-        Text(
-            text = notice,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-
-    // 「灰底白卡」：字段与主按钮在白卡内；返回 / 重发是次级动作，留在卡外灰底上。
+    // 「灰底白卡」：标题、说明、字段与主按钮都在白卡内；返回 / 重发是次级动作，留在卡外灰底上。
     // 本地校验错误与登录 / 注册表单一致：挂在**对应输入框下方**的 supportingText。
-    Spacer(Modifier.height(16.dp))
     FormCard {
+        Text("验证邮箱", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = if (state.verifyOnly) {
+                "输入账号注册时收到的验证码，验证通过后会自动登录。"+
+                        "\n注意：“重新发送验证码”按钮需要魔法才能发送成功！（其他步骤都不需要）"
+            } else {
+                "验证码已发送到 ${state.email.ifBlank { "注册邮箱" }}。\n" +
+                    "账号「${state.username}」验证通过后才能真正登录。"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // 注册成功 / 验证码重发成功：保持原来的页内提示（用户明确不要弹窗）
+        state.notice?.let { notice ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
         // 从登录页「已有验证码」进来时，用户名与密码都还没有；重新发送验证码 / 自动登录都要它们。
         if (state.verifyOnly) {
             FormTextField(

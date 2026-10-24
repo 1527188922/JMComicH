@@ -100,17 +100,17 @@ fun AccountLoginScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp, vertical = 16.dp),
             ) {
-                Text("用 JM 账号登录", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "登录后可以把漫画收进账号收藏夹；不登录也能正常浏览、下载与阅读。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                // 「灰底白卡」：字段与主按钮在白卡内，注册 / 补验证码的链接留在卡外灰底上
-                Spacer(Modifier.height(20.dp))
+                // 「灰底白卡」：标题、说明、字段与主按钮都在白卡内，注册 / 补验证码的链接留在卡外灰底上
                 FormCard {
+                    Text("用 JM 账号登录", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "登录后可以把漫画收进账号收藏夹；不登录也能正常浏览、下载与阅读。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
                         value = state.username,
                         onValueChange = onUsernameChange,

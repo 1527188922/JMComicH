@@ -249,7 +249,7 @@ class AboutViewModel(
                 _state.update {
                     it.copy(
                         update = UpdateState.Idle,
-                        message = "已是最新版本（v${BuildConfig.VERSION_NAME.substringBefore('-')}）",
+                        message = "已是最新版本（v${BuildConfig.VERSION_NAME}）",
                     )
                 }
             }

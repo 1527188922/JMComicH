@@ -251,53 +251,62 @@ private fun AppInfoCard(
         ) {
             Text("JMComicH", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(2.dp))
-            Text(
-                // debug 的 VERSION_NAME 带 -debug 后缀，展示时去掉（比较逻辑不受影响）
-                text = "当前版本 v${BuildConfig.VERSION_NAME.substringBefore('-')}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
-            Spacer(Modifier.height(10.dp))
+            // 版本行：左边固定「当前版本 vX.Y.Z」（debug 包显示 VERSION_NAME 原样，带 -debug 后缀），
+            // 右边随更新状态给动作：检查更新 / 检查中 / 查看新版本 / 安装
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "当前版本 v${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                when (val update = state.update) {
+                    UpdateState.Idle -> TextButton(onClick = onCheckUpdate) { Text("检查更新") }
+
+                    UpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "正在检查…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "发现新版本 ${update.tag}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        TextButton(onClick = onReopenUpdateDialog) { Text("查看") }
+                    }
+
+                    is UpdateState.Ready -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "新版本 ${update.tag} 已下载",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        TextButton(onClick = { onInstallUpdate(update.id) }) { Text("安装") }
+                    }
+
+                    // 下载进度要整行进度条，这一行放不下：挪到版本行下面独占一行
+                    is UpdateState.Downloading -> Unit
+                }
+            }
+
             when (val update = state.update) {
-                UpdateState.Idle -> {
-                    TextButton(onClick = onCheckUpdate) { Text("检查更新") }
+                is UpdateState.Downloading -> {
+                    Spacer(Modifier.height(6.dp))
+                    UpdateProgressRow(update)
                 }
 
-                UpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "正在检查…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "发现新版本 ${update.tag}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = onReopenUpdateDialog) { Text("查看") }
-                }
-
-                is UpdateState.Downloading -> UpdateProgressRow(update)
-
-                is UpdateState.Ready -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "新版本 ${update.tag} 已下载",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { onInstallUpdate(update.id) }) { Text("安装") }
-                }
+                else -> Unit
             }
         }
     }
