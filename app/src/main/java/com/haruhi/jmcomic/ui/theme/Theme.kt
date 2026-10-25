@@ -72,7 +72,9 @@ private val LightColorScheme = lightColorScheme(
     outlineVariant = CardWhiteOutlineVariant,
 
     // ---- 反色表面（Snackbar 用它们）----
-    inverseSurface = Color(0xFF303030),
+    // inverseSurface 比 M3 标准 #303030 浅一档：提示框需要"略浅 + 一点透明"，
+    // 透明度在 AppSnackbar 里叠（见 ModeRoot.kt）。
+    inverseSurface = Color(0xFF424242),
     inverseOnSurface = CardWhiteSurface,
     inversePrimary = Color(0xFFA8C8FF),
 
