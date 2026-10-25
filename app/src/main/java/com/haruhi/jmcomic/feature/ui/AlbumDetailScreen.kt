@@ -2655,6 +2655,12 @@ private fun DownloadSheet(
     }
 }
 
+/**
+ * 二次确认弹窗。
+ *
+ * [loading] = true 表示确认的动作正在请求远端：确认按钮换成转圈、两颗按钮都不可点，
+ * 返回键与点击遮罩也不关闭，由调用方在请求结束后自行收起弹窗。
+ */
 @Composable
 fun ConfirmDialog(
     title: String,
@@ -2663,42 +2669,64 @@ fun ConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     confirmButtonColors: ButtonColors = ButtonDefaults.textButtonColors(),
+    loading: Boolean = false,
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!loading) onDismiss() },
         title = { Text(title) },
         text = { Text(text) },
-        confirmButton = { TextButton(onClick = onConfirm,colors = confirmButtonColors) { Text(confirmText) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {
+            TextButton(
+                onClick = { if (!loading) onConfirm() },
+                enabled = !loading,
+                colors = confirmButtonColors,
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(confirmText)
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !loading) { Text("取消") } },
     )
 }
 
+/** 名称输入弹窗；[loading] 语义同 [ConfirmDialog]。 */
 @Composable
 fun NameInputDialog(
     title: String,
     initial: String,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
+    loading: Boolean = false,
 ) {
     var value by remember { mutableStateOf(initial) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!loading) onDismiss() },
         title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = value,
                 onValueChange = { value = it },
                 singleLine = true,
+                enabled = !loading,
                 label = { Text("名称") },
             )
         },
         confirmButton = {
             TextButton(
                 onClick = { onConfirm(value) },
-                enabled = value.trim().isNotEmpty(),
-            ) { Text("确定") }
+                enabled = !loading && value.trim().isNotEmpty(),
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("确定")
+                }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !loading) { Text("取消") } },
     )
 }
 

@@ -296,6 +296,11 @@ data class AccountFavoritesUiState(
     val message: String? = null,
     /** 正在执行增删改的夹（按钮转圈用）。 */
     val busyFolderId: String? = null,
+    /**
+     * 增删改完成标记：每次操作结束（成功 / 失败 / 校验提前返回）都自增一次。
+     * 页面据此在**接口响应之后**再收起弹窗（弹窗里确认按钮转圈）。
+     */
+    val actionFinished: Long = 0,
 )
 
 /**
@@ -509,59 +514,106 @@ class AccountFavoritesViewModel(
     fun create(name: String) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) {
-            _state.update { it.copy(message = "请输入收藏夹名称") }
+            _state.update {
+                it.copy(message = "请输入收藏夹名称", actionFinished = it.actionFinished + 1)
+            }
             return
         }
         _state.update { it.copy(busyFolderId = BUSY_CREATE) }
         viewModelScope.launch {
-            runCatching { account.createFolder(trimmed) }
-                .onSuccess { folder ->
+            val result = runCatching { account.createFolder(trimmed) }
+            val failure = result.exceptionOrNull()
+            if (failure != null) {
+                if (failure is CancellationException) throw failure
+                _state.update {
+                    it.copy(
+                        message = failure.toUserMessage(),
+                        busyFolderId = null,
+                        actionFinished = it.actionFinished + 1,
+                    )
+                }
+                return@launch
+            }
+            val created = result.getOrNull()
+            _state.update {
+                it.copy(
                     // 消息里不带夹名：文字隐私下夹名只能露首字符，这里直接不显示，避免绕过遮蔽
-                    _state.update { it.copy(message = "已创建收藏夹") }
-                    fetch(silent = true)
-                }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    _state.update { it.copy(message = e.toUserMessage()) }
-                }
-            _state.update { it.copy(busyFolderId = null) }
+                    message = "已创建收藏夹",
+                    busyFolderId = null,
+                    // 先就地补进列表：弹窗关闭与提示出现的同一帧就能看到新夹，不用等静默刷新
+                    folders = created?.let { folder ->
+                        (it.folders + folder).distinctBy { f -> f.fid }
+                    } ?: it.folders,
+                    actionFinished = it.actionFinished + 1,
+                )
+            }
+            fetch(silent = true)
         }
     }
 
     fun rename(folderId: String, newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isEmpty()) {
-            _state.update { it.copy(message = "名称不能为空") }
+            _state.update {
+                it.copy(message = "名称不能为空", actionFinished = it.actionFinished + 1)
+            }
             return
         }
         _state.update { it.copy(busyFolderId = folderId) }
         viewModelScope.launch {
-            runCatching { account.renameFolder(folderId, trimmed) }
-                .onSuccess {
-                    _state.update { it.copy(message = "已重命名为「$trimmed」") }
-                    fetch(silent = true)
+            val result = runCatching { account.renameFolder(folderId, trimmed) }
+            val failure = result.exceptionOrNull()
+            if (failure != null) {
+                if (failure is CancellationException) throw failure
+                _state.update {
+                    it.copy(
+                        message = failure.toUserMessage(),
+                        busyFolderId = null,
+                        actionFinished = it.actionFinished + 1,
+                    )
                 }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    _state.update { it.copy(message = e.toUserMessage()) }
-                }
-            _state.update { it.copy(busyFolderId = null) }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    // 提示里不带夹名：与新建一致，隐私模式下不通过 snackbar 露出全名
+                    message = "已重命名收藏夹",
+                    busyFolderId = null,
+                    folders = it.folders.map { folder ->
+                        if (folder.fid == folderId) folder.copy(name = trimmed) else folder
+                    },
+                    actionFinished = it.actionFinished + 1,
+                )
+            }
+            fetch(silent = true)
         }
     }
 
     fun delete(folderId: String) {
         _state.update { it.copy(busyFolderId = folderId) }
         viewModelScope.launch {
-            runCatching { account.deleteFolder(folderId) }
-                .onSuccess {
-                    _state.update { it.copy(message = "收藏夹已删除") }
-                    fetch(silent = true)
+            val result = runCatching { account.deleteFolder(folderId) }
+            val failure = result.exceptionOrNull()
+            if (failure != null) {
+                if (failure is CancellationException) throw failure
+                _state.update {
+                    it.copy(
+                        message = failure.toUserMessage(),
+                        busyFolderId = null,
+                        actionFinished = it.actionFinished + 1,
+                    )
                 }
-                .onFailure { e ->
-                    if (e is CancellationException) throw e
-                    _state.update { it.copy(message = e.toUserMessage()) }
-                }
-            _state.update { it.copy(busyFolderId = null) }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    message = "收藏夹已删除",
+                    busyFolderId = null,
+                    folders = it.folders.filterNot { folder -> folder.fid == folderId },
+                    actionFinished = it.actionFinished + 1,
+                )
+            }
+            fetch(silent = true)
         }
     }
 
@@ -591,6 +643,8 @@ data class AccountAlbumsUiState(
     val error: String? = null,
     val message: String? = null,
     val removingId: Long? = null,
+    /** 移出操作的完成标记，语义同 [AccountFavoritesUiState.actionFinished]。 */
+    val actionFinished: Long = 0,
 ) {
     val isEmpty: Boolean get() = !loading && error == null && albums.isEmpty()
     val hasMore: Boolean get() = albums.size < total
@@ -746,7 +800,11 @@ class AccountAlbumsViewModel(
 
     /** 从收藏里移出（= 取消收藏；官方不支持"只移出夹"，见 design §4.3 L2）。 */
     fun remove(albumId: Long) {
-        if (_state.value.removingId != null) return
+        if (_state.value.removingId != null) {
+            // 已有移出在飞：立即报完成，避免页面的弹窗一直等不到响应结束的信号
+            _state.update { it.copy(actionFinished = it.actionFinished + 1) }
+            return
+        }
         _state.update { it.copy(removingId = albumId) }
         viewModelScope.launch {
             runCatching { account.toggleFavorite(albumId) }
@@ -757,6 +815,7 @@ class AccountAlbumsViewModel(
                             albums = if (result.added) s.albums else s.albums.filterNot { it.id == albumId },
                             total = if (result.added) s.total else (s.total - 1).coerceAtLeast(0),
                             message = if (result.added) "已重新加入收藏" else "已从收藏移出",
+                            actionFinished = s.actionFinished + 1,
                         )
                     }
                     // 收藏关系变了，全局夹缓存已被作废；把当前这份（已减掉那本）重新写回去，
@@ -765,7 +824,13 @@ class AccountAlbumsViewModel(
                 }
                 .onFailure { e ->
                     if (e is CancellationException) throw e
-                    _state.update { it.copy(removingId = null, message = e.toUserMessage()) }
+                    _state.update {
+                        it.copy(
+                            removingId = null,
+                            message = e.toUserMessage(),
+                            actionFinished = it.actionFinished + 1,
+                        )
+                    }
                 }
         }
     }

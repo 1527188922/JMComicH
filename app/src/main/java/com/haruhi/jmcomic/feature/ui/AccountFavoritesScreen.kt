@@ -50,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,6 +93,16 @@ fun AccountFavoritesScreen(
     var showCreate by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<AccountFolder?>(null) }
     var deleteTarget by remember { mutableStateOf<AccountFolder?>(null) }
+    // 接口在飞时弹窗不能关：确认按钮转圈，等 ViewModel 的 actionFinished 变化（成功/失败）再统一收起
+    var submitting by remember { mutableStateOf(false) }
+    LaunchedEffect(state.actionFinished) {
+        if (submitting) {
+            submitting = false
+            showCreate = false
+            renameTarget = null
+            deleteTarget = null
+        }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         TopBar(
@@ -185,22 +196,24 @@ fun AccountFavoritesScreen(
         NameInputDialog(
             title = "新建收藏夹",
             initial = "",
+            loading = submitting,
             onConfirm = { name ->
-                showCreate = false
+                submitting = true
                 onCreate(name)
             },
-            onDismiss = { showCreate = false },
+            onDismiss = { if (!submitting) showCreate = false },
         )
     }
     renameTarget?.let { target ->
         NameInputDialog(
             title = "重命名收藏夹",
             initial = target.name,
+            loading = submitting,
             onConfirm = { name ->
-                renameTarget = null
+                submitting = true
                 onRename(target.fid, name)
             },
-            onDismiss = { renameTarget = null },
+            onDismiss = { if (!submitting) renameTarget = null },
         )
     }
     deleteTarget?.let { target ->
@@ -211,11 +224,12 @@ fun AccountFavoritesScreen(
             confirmButtonColors = ButtonDefaults.textButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,
             ),
+            loading = submitting,
             onConfirm = {
-                deleteTarget = null
+                submitting = true
                 onDelete(target.fid)
             },
-            onDismiss = { deleteTarget = null },
+            onDismiss = { if (!submitting) deleteTarget = null },
         )
     }
     MessageEffect(state.message, onConsume = onConsumeMessage, onShow = onMessage)
@@ -241,6 +255,14 @@ fun AccountAlbumsScreen(
 ) {
     var orderExpanded by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<AccountAlbum?>(null) }
+    // 移出要等远端响应：弹窗留着转圈，actionFinished 变化后再收起
+    var submitting by remember { mutableStateOf(false) }
+    LaunchedEffect(state.actionFinished) {
+        if (submitting) {
+            submitting = false
+            removing = null
+        }
+    }
 
     // 数量并进标题（用户要求：`← 收藏夹1（178本）`），不再单独占一行
     // 文字隐私：收藏夹名称只保留首字符
@@ -358,11 +380,12 @@ fun AccountAlbumsScreen(
             confirmButtonColors = ButtonDefaults.textButtonColors(
                 contentColor = MaterialTheme.colorScheme.error,
             ),
+            loading = submitting,
             onConfirm = {
-                removing = null
+                submitting = true
                 onRemove(album.id)
             },
-            onDismiss = { removing = null },
+            onDismiss = { if (!submitting) removing = null },
         )
     }
     MessageEffect(state.message, onConsume = onConsumeMessage, onShow = onMessage)
