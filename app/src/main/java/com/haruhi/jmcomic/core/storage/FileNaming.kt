@@ -38,6 +38,39 @@ object FileNaming {
     }
 
     /**
+     * 系统因重名给文件追加的序号：` (1)`、` (2)`……
+     *
+     * Android 11+ 加在扩展名之前（`xxx (1).zip`）；Android 10 可能加在扩展名之后
+     * （`xxx.zip (1)`、`xxx.zip(1)`）。两种形式都要能还原。
+     */
+    private val COUNTER_SUFFIX = Regex("""\s*\(\d+\)$""")
+
+    /**
+     * 去掉系统重名追加的序号，还原成"本来要用的文件名"：
+     * `xxx (1).zip` / `xxx.zip (1)` → `xxx.zip`。
+     *
+     * 只用于**匹配**已经存在的成品（检测是否已导出、筛选书库、存储统计归属、删除），
+     * 不参与新文件名的生成——新文件名永远是 `<本子目录名>.<扩展名>`。
+     *
+     * 序号来自 MediaStore 落盘时的重名处理：物理目录里已有同名文件时（可能是
+     * 上一次安装留下的、当前应用既看不到也删不掉的），系统会把新文件改名。
+     */
+    fun normalizeExportName(fileName: String): String {
+        // 序号在扩展名之后（Android 10）：直接砍掉尾巴
+        COUNTER_SUFFIX.find(fileName)
+            ?.takeIf { it.range.last == fileName.lastIndex }
+            ?.let { return fileName.substring(0, it.range.first) }
+        // 序号在扩展名前（Android 11+）：砍掉基名尾巴后重新拼扩展名
+        val extension = extension(fileName) ?: return fileName
+        val base = baseName(fileName).replace(COUNTER_SUFFIX, "")
+        return "$base.$extension"
+    }
+
+    /** 文件名是否就是 [expected]（把系统追加的重名序号视为不存在）。 */
+    fun matchesExportName(fileName: String, expected: String): Boolean =
+        fileName == expected || normalizeExportName(fileName) == expected
+
+    /**
      * 生成同时兼容 Windows 和 Linux 的文件（夹）名。
      *
      * 处理内容：非法字符替换为 `-`、去掉控制字符、去掉首尾空白、去掉 Windows 下不能作为

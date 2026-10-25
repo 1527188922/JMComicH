@@ -7,6 +7,7 @@ import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.core.storage.ExportPublisher
+import com.haruhi.jmcomic.core.storage.FileNaming
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import com.haruhi.jmcomic.feature.api.ApiJson
 import kotlinx.coroutines.CancellationException
@@ -257,7 +258,8 @@ class ExportManager(
     /**
      * 这个成品现在还在不在（导出确认框用它提示"会覆盖已有文件"）。
      *
-     * MediaStore 查询是 IO，所以放到 IO 线程上。
+     * MediaStore 查询是 IO，所以放到 IO 线程上。名字被系统加了 ` (1)` 的也算
+     * （见 [ExportPublisher.infoOf]）：这说明确实要覆盖。
      */
     suspend fun outputExists(album: AlbumEntity, format: ExportFormat): Boolean =
         withContext(Dispatchers.IO) {
@@ -289,7 +291,13 @@ class ExportManager(
     suspend fun presentFormats(albums: List<AlbumEntity>): Map<Long, Set<ExportFormat>> =
         withContext(Dispatchers.IO) {
             if (albums.isEmpty()) return@withContext emptyMap()
-            val names = publisher.listAll().mapTo(mutableSetOf()) { it.displayName }
+            // 原名和"去掉系统重名序号"的名字都收进来：旧安装留下的同名文件会把
+            // 本安装的成品挤成 `xxx (1).zip`，只按原名比对会误判成"没有成品"。
+            val names = HashSet<String>()
+            publisher.listAll().forEach { file ->
+                names += file.displayName
+                names += FileNaming.normalizeExportName(file.displayName)
+            }
             albums.associate { album ->
                 val folder = album.albumFolderName
                 album.id to if (folder == null) {
@@ -318,11 +326,17 @@ class ExportManager(
      * @return 删掉的文件个数
      */
     suspend fun deleteOutputs(album: AlbumEntity): Int = withContext(Dispatchers.IO) {
-        ExportFormat.entries.count { format ->
-            val name = outputNameOf(album, format) ?: return@count false
-            // delete 本身对"文件不在"返回 false，不用先查一次
-            publisher.delete(name)
-        }
+        val folder = album.albumFolderName ?: return@withContext 0
+        // 一次列全再按"忽略系统重名序号"的名字过滤：带 ` (1)` 的成品也要一起删，
+        // 否则"删除本地文件 / 移出书库"会留下一份同内容的大文件。
+        publisher.listAll()
+            .filter { file ->
+                ExportFormat.entries.any { format ->
+                    FileNaming.matchesExportName(file.displayName, "$folder.${format.extension}")
+                }
+            }
+            // 按真实文件名删（带 ` (1)` 的那份也能删掉）
+            .count { publisher.delete(it.displayName) }
     }
 
     /**

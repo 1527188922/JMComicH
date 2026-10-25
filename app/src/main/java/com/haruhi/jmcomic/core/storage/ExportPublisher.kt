@@ -31,7 +31,13 @@ import java.io.File
  */
 interface ExportPublisher {
     data class Published(
-        /** 系统里的文件名。 */
+        /**
+         * 系统里的**实际**文件名。
+         *
+         * 不一定等于请求的名字：下载目录里若已有同名文件（典型来源是上一次安装
+         * 留下的、当前应用看不到也删不掉的文件），MediaStore 会在落盘时改名成
+         * `xxx (1).zip`，这里回读到的就是那个真实名字。
+         */
         val displayName: String,
         /** 给用户看的位置说明（"下载/JMComicH"之类）。 */
         val location: String,
@@ -135,14 +141,17 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
         mimeType: String,
     ): ExportPublisher.Published {
         val resolver = context.contentResolver
-        // **先删同名旧文件**：MediaStore 遇到重名会自动改名成"xxx (1).zip"，
-        // 那会留下两份内容不同的同名成品，而且按确切文件名查只能查到一条，
-        // 之后"打开至 / 删除文件"就会指向旧的那一份。
-        // 用户已经在密码框里被告知"再次生成会覆盖"，所以这里就是覆盖。
-        findRows(displayName).firstOrNull()?.uri?.let { old ->
-            runCatching { resolver.delete(old, null, null) }
-                .onFailure { Timber.tag("export").w(it, "覆盖旧成品失败：%s", displayName) }
-        }
+        // **先删同类旧文件**：MediaStore 遇到重名会自动改名成"xxx (1).zip"。
+        // 除了本安装上一次写出的成品，带系统序号的那些也要一起算进来——否则
+        // "旧安装留下的同名文件"占住原名后，每次导出都会变成 (1)、(2)……
+        // （旧安装的文件当前应用看不到也删不掉，只能保证序号不再往上加。）
+        findRows(displayName = null)
+            .filter { FileNaming.matchesExportName(it.displayName, displayName) }
+            .mapNotNull { it.uri }
+            .forEach { old ->
+                runCatching { resolver.delete(old, null, null) }
+                    .onFailure { Timber.tag("export").w(it, "覆盖旧成品失败：%s", old) }
+            }
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
             put(MediaStore.Downloads.MIME_TYPE, mimeType)
@@ -164,9 +173,20 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
             throw e
         }
 
-        Timber.tag("export").i("已导出到下载目录：%s", displayName)
+        // 回读系统最终落盘的文件名：物理目录里若有旧安装留下的同名文件，
+        // MediaStore 会改名成 "xxx (1).zip"，必须把真实名字传出去（检测、统计、
+        // 打开/删除都按这个真实名字走）。
+        val actualName = displayNameOf(uri) ?: displayName
+        if (actualName != displayName) {
+            Timber.tag("export").w(
+                "成品被系统改名：%s → %s（下载目录里有旧安装留下的同名文件，当前应用无法覆盖）",
+                displayName,
+                actualName,
+            )
+        }
+        Timber.tag("export").i("已导出到下载目录：%s", actualName)
         return ExportPublisher.Published(
-            displayName = displayName,
+            displayName = actualName,
             location = "下载/$SUBFOLDER",
             uri = uri,
         )
@@ -187,9 +207,18 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
         )
     }
 
+    /**
+     * 查一个成品，不存在返回 null。
+     *
+     * 先按确切文件名查；查不到再忽略系统重名序号找一次（`xxx (1).zip` 也算
+     * `xxx.zip`），这样"旧安装留下的同名文件"把名字挤走之后，仍然认得出
+     * "这一本已经有成品了"。
+     */
     override fun infoOf(displayName: String): ExportPublisher.ExportFile? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             findRows(displayName).firstOrNull()
+                ?: findRows(displayName = null)
+                    .firstOrNull { FileNaming.matchesExportName(it.displayName, displayName) }
         } else {
             fileOf(displayName)
         }
@@ -211,11 +240,23 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
             File(externalDir(), displayName).delete()
         }
 
+    /** 回读某一行在系统里的真实文件名（MediaStore 重名时会自动改名）。 */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun displayNameOf(uri: Uri): String? = runCatching {
+        context.contentResolver.query(
+            uri,
+            arrayOf(MediaStore.Downloads.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    }.getOrNull()
+
     /**
      * 在下载目录里查成品。
      *
-     * 同名文件只会有一条（导出时先删旧的再写新的），所以按名字查最多命中一条；
-     * `displayName` 传 null 就是"列出全部"（书库筛选用）。
+     * `displayName` 传 null 就是"列出全部"（书库筛选、存储统计用）；
+     * 传名字则按**确切**文件名查——需要容忍系统重名序号的调用方用 [FileNaming.matchesExportName]。
      */
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun findRows(displayName: String?): List<ExportPublisher.ExportFile> = runCatching {

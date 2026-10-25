@@ -61,7 +61,8 @@ data class StorageStats(val segments: List<SegmentStats>) {
  * 每类内容都能落到"某一本"上，靠的是统一命名约定：
  * - 漫画图片目录名 = `<清洗后的标题>_JM<aid>`（[FileNaming.albumFolderName]）；
  * - reader-cache 目录名 = `<aid>`；
- * - 导出成品文件名 = `<本子目录名>.zip|pdf`。
+ * - 导出成品文件名 = `<本子目录名>.zip|pdf`（系统重名时可能被追加 ` (1)`，
+ *   匹配前先用 [FileNaming.normalizeExportName] 还原）。
  *
  * 先按**目录名 / 文件基名**精确配 `t_jm_album.album_folder_name`；
  * 配不上再从名字尾缀 `_JM<aid>` 解析 aid 配 `t_jm_album.id`（覆盖标题清洗规则
@@ -165,9 +166,13 @@ class StorageStatsCollector(
         for (file in exports.listAll()) {
             val size = file.sizeBytes.coerceAtLeast(0L)
             if (size <= 0L) continue
-            val extension = FileNaming.extension(file.displayName) ?: continue
+            // 先去掉系统重名追加的序号再解析：旧安装留下的同名文件会把本安装的
+            // 成品挤成 `xxx (1).zip`（Android 10 是 `xxx.zip (1)`），直接按原名
+            // 解析既认不出扩展名，也解析不出 `_JM<aid>`，整行会掉进"无法归属"。
+            val normalized = FileNaming.normalizeExportName(file.displayName)
+            val extension = FileNaming.extension(normalized) ?: continue
             if (extension != "zip" && extension != "pdf") continue
-            val base = FileNaming.baseName(file.displayName)
+            val base = FileNaming.baseName(normalized)
             val aid = aidFromFolderName(base)
             val album = byFolder[base] ?: aid?.let { byId[it] }
             val usage = AlbumUsage(
