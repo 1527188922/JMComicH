@@ -53,11 +53,13 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.haruhi.jmcomic.core.di.AppContainer
+import com.haruhi.jmcomic.core.download.AppDownloadGateway
 import com.haruhi.jmcomic.core.protocol.SearchSort
 import com.haruhi.jmcomic.feature.api.ReleaseChecker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import timber.log.Timber
 
 /**
  * 带任务角标的底栏图标。
@@ -965,7 +967,6 @@ fun ModeRoot(
                         onOpenAlbum = { navController.navigate(Routes.detail(it)) },
                         onCheckUpdate = vm::checkUpdate,
                         onRetryScan = vm::rescan,
-                        onReopenUpdateDialog = vm::reopenUpdateDialog,
                         onDownloadUpdate = vm::downloadUpdate,
                         onInstallUpdate = { downloadId ->
                             launchApkInstall(context, container.appDownloadGateway, downloadId, showMessage)
@@ -1337,7 +1338,7 @@ private fun openExportFolder(
  */
 private fun launchApkInstall(
     context: Context,
-    downloads: com.haruhi.jmcomic.core.download.AppDownloadGateway,
+    downloads: AppDownloadGateway,
     downloadId: Long,
     showMessage: (String) -> Unit,
 ) {
@@ -1356,11 +1357,14 @@ private fun launchApkInstall(
         return
     }
     val install = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, "application/vnd.android-package-archive")
+        setDataAndType(uri, AppDownloadGateway.APK_MIME)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching { context.startActivity(install) }
-        .onFailure { showMessage("无法启动安装") }
+        .onFailure {
+            Timber.tag("update").w(it, "启动安装器失败")
+            showMessage("无法启动安装")
+        }
 }
 
 /** 浏览器打开一个链接（发行版没带 APK 资产时的兜底入口）。 */

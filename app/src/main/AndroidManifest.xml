@@ -53,10 +53,10 @@
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="application/pdf" />
         </intent>
-        <!-- 「关于」页安装新版本 APK（系统包安装器） -->
+        <!-- 「关于」页安装新版本 APK（系统包安装器）。注意 MIME 是 android.package -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
-            <data android:mimeType="application/vnd.android-package-archive" />
+            <data android:mimeType="application/vnd.android.package-archive" />
         </intent>
     </queries>
 

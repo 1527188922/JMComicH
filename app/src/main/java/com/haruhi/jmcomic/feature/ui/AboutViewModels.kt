@@ -29,38 +29,39 @@ import timber.log.Timber
  * 检查更新 → 下载 → 安装的状态机（「关于」页）。
  *
  * ```
- * Idle ──检查──> Checking ──接口失败──> Idle（Snackbar）
- *                 │
- *                 ├─ 无新版 ──> Idle（Snackbar：已是最新，顺带清掉陈旧下载记录）
- *                 └─ 有新版 ──> Available（弹框）
- *                                  │ 点击[下载]（DownloadManager 系统级后台下载）
- *                                  v
- *                              Downloading ──[取消]──> Available（半成品自动清理）
- *                                  │        └─[后台]──>（关弹框，页面卡片看进度）
- *                                  └──完成──> Ready ──弹框还开着就直接唤起安装
- *                                             └─用户取消安装─┘
- *                                                （弹框/卡片上的按钮一直是[安装]，
- *                                                  下次检查也直接显示[安装]）
+ * 点击[检查更新]（每次都重新请求 Gitee）
+ *   ├─ 接口失败 / 无新版 ──> 不进弹框，只给 Snackbar
+ *   └─ 有新版 ──> 弹框
+ *        ├─ 该版本有未完成下载 ──> Downloading（进度条）
+ *        ├─ 该版本已下载且可读 ──> Available(downloadedId != null)（按钮[安装]）
+ *        └─ 其余               ──> Available(downloadedId = null)（按钮[下载]）
  * ```
+ *
+ * 页面卡片**不展示**“发现新版本 / 已下载”，外部动作只有「检查更新」；
+ * 已下载的安装包只在弹框里以「安装」按钮出现。
  *
  * 下载**不做本地持久化**：DownloadManager 的记录在系统侧跨进程存活，
  * `records(MARKER_APP_UPDATE)` 按用途标记找回（见 `AppDownloadGateway`）。
+ * 进入页面时也不恢复上次记录——未安装的包等下一次「检查更新」时再按 tag 找回。
  */
 sealed interface UpdateState {
 
     /** 没有进行中的更新事务。 */
     data object Idle : UpdateState
 
-    /** 正在请求 Gitee。 */
-    data object Checking : UpdateState
-
-    /** 有新版本，弹框数据齐了（`apkUrl` 为空时界面退回「打开发布页」）。 */
+    /**
+     * 有新版本，弹框数据齐了。
+     *
+     * [downloadedId] 非空表示该版本的安装包已下载且可读，弹框按钮显示「安装」；
+     * 为空时显示「下载」（`apkUrl` 也为空则退回「打开发布页」）。
+     */
     data class Available(
         val tag: String,
         val name: String,
         val body: String,
         val prerelease: Boolean,
         val apkUrl: String?,
+        val downloadedId: Long? = null,
     ) : UpdateState
 
     /** APK 下载中（`percent` 为 null 表示还不知道总大小）。 */
@@ -71,9 +72,6 @@ sealed interface UpdateState {
         val bytesSoFar: Long,
         val totalBytes: Long,
     ) : UpdateState
-
-    /** 新版 APK 已就绪，等用户点「安装」。 */
-    data class Ready(val id: Long, val tag: String) : UpdateState
 }
 
 data class AboutUiState(
@@ -83,6 +81,8 @@ data class AboutUiState(
     /** 选中的分段（null = 只看总量）；点同一个段再点一次收起。 */
     val selected: StorageKind? = null,
     val update: UpdateState = UpdateState.Idle,
+    /** 正在请求 Gitee；页面只显示“正在检查…”，不改变当前 [update]。 */
+    val checking: Boolean = false,
     /** 更新弹框是否展示（Downloading 时关掉 = 后台下载，页面卡片继续看进度）。 */
     val showUpdateDialog: Boolean = false,
     /** 一次性提示（Snackbar，走 `MessageEffect`）。 */
@@ -109,7 +109,6 @@ class AboutViewModel(
 
     init {
         rescan()
-        restoreUpdateState()
     }
 
     // ------------------------------------------------------------------
@@ -192,7 +191,8 @@ class AboutViewModel(
     // ------------------------------------------------------------------
 
     /**
-     * 手动检查（页面唯一的触发点）。
+     * 手动检查（页面唯一的触发点）。**每次点击都会重新请求 Gitee**，
+     * 即使本地已有下载好的安装包也不例外（弹框里的按钮才据此切换「下载 / 安装」）。
      *
      * **debug 包直接无反应**（用户拍板）：debug 的 `VERSION_NAME` 带 `-debug` 后缀、
      * 也不该去比正式发行版。guard 放在 ViewModel 而不是 UI 层，
@@ -200,15 +200,13 @@ class AboutViewModel(
      */
     fun checkUpdate() {
         if (BuildConfig.DEBUG) return
-        when (_state.value.update) {
-            is UpdateState.Checking, is UpdateState.Downloading -> return
-            else -> Unit
-        }
-        _state.update { it.copy(update = UpdateState.Checking) }
+        if (_state.value.checking) return
+        // 不清掉 update：下载中点击检查时，进度要继续走，结果回来后再按记录校正
+        _state.update { it.copy(checking = true) }
         viewModelScope.launch {
             when (val result = releaseChecker.latest()) {
                 is ReleaseCheckResult.Unavailable -> _state.update {
-                    it.copy(update = UpdateState.Idle, message = "检查更新失败，请稍后再试")
+                    it.copy(checking = false, message = "检查更新失败，请稍后再试")
                 }
 
                 is ReleaseCheckResult.Ok -> onReleaseFetched(result.release)
@@ -221,24 +219,33 @@ class AboutViewModel(
         lastApkUrl = ReleaseChecker.apkUrlOf(release)
         when (ReleaseChecker.isNewer(release.tagName, BuildConfig.VERSION_NAME)) {
             true -> {
-                // 清掉旧版本的下载记录（连旧 APK 文件一起删），再找当前 tag 的已下载记录
+                // 清掉旧版本的下载记录（连旧 APK 文件一起删），再找当前 tag 的下载记录
                 sweepStaleRecords(keepTag = release.tagName)
-                val ready = findReadyRecord(release.tagName)
-                _state.update {
-                    it.copy(
-                        update = if (ready != null) {
-                            UpdateState.Ready(ready.id, release.tagName)
-                        } else {
-                            UpdateState.Available(
-                                tag = release.tagName,
-                                name = release.name,
-                                body = release.body,
-                                prerelease = release.prerelease,
-                                apkUrl = lastApkUrl,
-                            )
-                        },
-                        showUpdateDialog = true,
+                val active = findActiveRecord(release.tagName)
+                val ready = if (active == null) findReadyRecord(release.tagName) else null
+                val update = when {
+                    active != null -> UpdateState.Downloading(
+                        id = active.id,
+                        tag = release.tagName,
+                        percent = percentOf(active),
+                        bytesSoFar = active.bytesSoFar,
+                        totalBytes = active.totalBytes,
                     )
+
+                    else -> UpdateState.Available(
+                        tag = release.tagName,
+                        name = release.name,
+                        body = release.body,
+                        prerelease = release.prerelease,
+                        apkUrl = lastApkUrl,
+                        downloadedId = ready?.id,
+                    )
+                }
+                _state.update {
+                    it.copy(checking = false, update = update, showUpdateDialog = true)
+                }
+                if (active != null) {
+                    watchDownload(active.id, release.tagName)
                 }
             }
 
@@ -248,6 +255,7 @@ class AboutViewModel(
                 clearReleaseCache()
                 _state.update {
                     it.copy(
+                        checking = false,
                         update = UpdateState.Idle,
                         message = "已是最新版本（v${BuildConfig.VERSION_NAME}）",
                     )
@@ -258,7 +266,10 @@ class AboutViewModel(
                 // tag 不符合 v*.*.*：按"无法判断"处理，绝不误报新版本
                 clearReleaseCache()
                 _state.update {
-                    it.copy(update = UpdateState.Idle, message = "无法识别最新版本号（${release.tagName}）")
+                    it.copy(
+                        checking = false,
+                        message = "无法识别最新版本号（${release.tagName}）",
+                    )
                 }
             }
         }
@@ -270,8 +281,9 @@ class AboutViewModel(
 
     /** 弹框的「下载」：交给 DownloadManager（系统级后台，App 进程死了也继续）。 */
     fun downloadUpdate() {
-        // 状态机保证只有 Available 时才有「下载」按钮，这里再收一次口
+        // 状态机保证只有 Available 时才可能有「下载」按钮，这里再收一次口
         val available = _state.value.update as? UpdateState.Available ?: return
+        if (available.downloadedId != null) return
         val url = available.apkUrl?.takeIf { it.isNotBlank() } ?: return
         viewModelScope.launch {
             val id = runCatching {
@@ -281,7 +293,7 @@ class AboutViewModel(
                         subPath = "apk/JMComicH-${available.tag}.apk",
                         title = ReleaseChecker.downloadTitleOf(available.tag),
                         marker = AppDownloadGateway.MARKER_APP_UPDATE,
-                        mimeType = APK_MIME,
+                        mimeType = AppDownloadGateway.APK_MIME,
                     )
                 }
             }.getOrElse {
@@ -314,17 +326,6 @@ class AboutViewModel(
     /** 弹框「以后再说」。下载中等于后台下载，其余只是收起弹框。 */
     fun dismissUpdateDialog() {
         _state.update { it.copy(showUpdateDialog = false) }
-    }
-
-    /** 卡片上的「查看」：已有 Available / Ready 时重新打开弹框（不重新请求接口）。 */
-    fun reopenUpdateDialog() {
-        _state.update { state ->
-            if (state.update is UpdateState.Available || state.update is UpdateState.Ready) {
-                state.copy(showUpdateDialog = true)
-            } else {
-                state
-            }
-        }
     }
 
     fun consumeMessage() {
@@ -384,7 +385,21 @@ class AboutViewModel(
                     record == null -> break
 
                     record.status == DownloadManager.STATUS_SUCCESSFUL -> {
-                        _state.update { it.copy(update = UpdateState.Ready(id, tag)) }
+                        // 下载完成不自动唤起安装器：弹框里的按钮从「下载」变成「安装」，
+                        // 由用户自己决定什么时候装
+                        val release = lastRelease
+                        _state.update {
+                            it.copy(
+                                update = UpdateState.Available(
+                                    tag = tag,
+                                    name = release?.name.orEmpty(),
+                                    body = release?.body.orEmpty(),
+                                    prerelease = release?.prerelease ?: false,
+                                    apkUrl = lastApkUrl,
+                                    downloadedId = id,
+                                ),
+                            )
+                        }
                         break
                     }
 
@@ -415,64 +430,15 @@ class AboutViewModel(
         }
     }
 
-    /**
-     * 进页面时找回上次没装完的更新（记录在 DownloadManager 里，跨进程存活）：
-     * - 已下载完成且比当前版本新 → 直接 `Ready`（卡片显示「安装」）；
-     * - 还在下载（进程被杀后系统侧继续跑）→ 恢复 `Downloading` 并续上进度轮询；
-     * - 其余（旧版本残留、失败残留）→ 连文件一起清掉。
-     */
-    private fun restoreUpdateState() {
-        if (BuildConfig.DEBUG) return
-        viewModelScope.launch {
-            val records = withContext(Dispatchers.IO) {
-                runCatching { downloads.records(AppDownloadGateway.MARKER_APP_UPDATE) }
-                    .getOrDefault(emptyList())
-            }
-            if (records.isEmpty()) return@launch
-
-            val active = records.firstOrNull { !it.finished }
-            if (active != null) {
-                val tag = ReleaseChecker.tagFromTitle(active.title)
-                if (tag == null) {
-                    withContext(Dispatchers.IO) { downloads.remove(active.id) }
-                    return@launch
-                }
-                _state.update {
-                    it.copy(
-                        update = UpdateState.Downloading(
-                            id = active.id,
-                            tag = tag,
-                            percent = percentOf(active),
-                            bytesSoFar = active.bytesSoFar,
-                            totalBytes = active.totalBytes,
-                        ),
-                    )
-                }
-                watchDownload(active.id, tag)
-                return@launch
-            }
-
-            val ready = records.firstOrNull { record ->
-                val tag = ReleaseChecker.tagFromTitle(record.title)
-                tag != null && ReleaseChecker.isNewer(tag, BuildConfig.VERSION_NAME) == true
-            }
-            if (ready != null) {
-                val tag = ReleaseChecker.tagFromTitle(ready.title) ?: return@launch
-                _state.update { it.copy(update = UpdateState.Ready(ready.id, tag)) }
-            } else {
-                withContext(Dispatchers.IO) {
-                    downloads.remove(*records.map { it.id }.toLongArray())
-                }
-            }
-        }
-    }
-
     /** 清掉与目标版本无关的记录（`keepTag = null` 表示全清；连旧 APK 文件一起删）。 */
     private suspend fun sweepStaleRecords(keepTag: String?) {
         withContext(Dispatchers.IO) {
             runCatching {
-                val stale = downloads.records(AppDownloadGateway.MARKER_APP_UPDATE)
-                    .filter { ReleaseChecker.tagFromTitle(it.title) != keepTag }
+                val stale = downloads.records(AppDownloadGateway.MARKER_APP_UPDATE).filter { record ->
+                    // 失败记录即使 tag 相同也不保留：重新下载会撞上残留文件
+                    val tag = ReleaseChecker.tagFromTitle(record.title)
+                    tag != keepTag || (record.finished && !record.successful)
+                }
                 if (stale.isNotEmpty()) {
                     downloads.remove(*stale.map { it.id }.toLongArray())
                 }
@@ -480,12 +446,31 @@ class AboutViewModel(
         }
     }
 
-    /** 当前版本 tag 的已完成下载记录（有就直接显示「安装」）。 */
-    private suspend fun findReadyRecord(tag: String): AppDownloadGateway.Record? =
+    /** 当前版本 tag 的未完成下载记录（进程重启 / 后台下载继续时找回进度）。 */
+    private suspend fun findActiveRecord(tag: String): AppDownloadGateway.Record? =
         withContext(Dispatchers.IO) {
             runCatching {
                 downloads.records(AppDownloadGateway.MARKER_APP_UPDATE)
-                    .firstOrNull { it.successful && ReleaseChecker.tagFromTitle(it.title) == tag }
+                    .firstOrNull { !it.finished && ReleaseChecker.tagFromTitle(it.title) == tag }
+            }.getOrNull()
+        }
+
+    /**
+     * 当前版本 tag 的已完成且**仍可读**的下载记录（有就显示「安装」）。
+     * 记录成功但文件被删 / 清数据后 URI 失效的，一并清掉，按未下载处理。
+     */
+    private suspend fun findReadyRecord(tag: String): AppDownloadGateway.Record? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val records = downloads.records(AppDownloadGateway.MARKER_APP_UPDATE).filter {
+                    it.successful && ReleaseChecker.tagFromTitle(it.title) == tag
+                }
+                val ready = records.firstOrNull { downloads.isDownloadedFileReadable(it.id) }
+                val broken = records.filter { it.id != ready?.id }
+                if (broken.isNotEmpty()) {
+                    downloads.remove(*broken.map { it.id }.toLongArray())
+                }
+                ready
             }.getOrNull()
         }
 
@@ -499,7 +484,5 @@ class AboutViewModel(
     private companion object {
         /** 进度轮询间隔：ContentProvider 查询很轻，800ms 足够跟手。 */
         const val POLL_INTERVAL_MS = 800L
-
-        const val APK_MIME = "application/vnd.android-package-archive"
     }
 }

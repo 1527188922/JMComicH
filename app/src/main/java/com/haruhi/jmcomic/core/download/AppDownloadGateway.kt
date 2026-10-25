@@ -34,6 +34,7 @@ import timber.log.Timber
  */
 class AppDownloadGateway(context: Context) {
 
+    private val context = context.applicationContext
     private val manager = context.getSystemService(DownloadManager::class.java)
 
     /** 一条本应用发起的下载记录（[records] 的返回形态）。 */
@@ -127,8 +128,23 @@ class AppDownloadGateway(context: Context) {
         runCatching { manager.getUriForDownloadedFile(id) }.getOrNull()
 
     /**
+     * 已完成的下载是否**真的还能读**：记录成功但文件被用户在文件管理器删掉，
+     * 或清除应用数据后 URI 权限失效时返回 false。
+     *
+     * 自更新用它决定弹框显示「安装」还是退回「下载」，避免出现点了必报
+     * “无法启动安装”的死按钮。调用方应放在 IO 线程。
+     */
+    fun isDownloadedFileReadable(id: Long): Boolean {
+        val uri = downloadedFileUri(id) ?: return false
+        return runCatching {
+            // 长度为 UNKNOWN_LENGTH(-1) 也视为可用，只有 0 字节的坏包不算
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length != 0L } == true
+        }.getOrDefault(false)
+    }
+
+    /**
      * 退出应用时的收尾：取消**未完成**的下载（半成品文件随之清理），
-     * **保留已完成**的——成品要留给"下次检查显示安装按钮"。
+     * **保留已完成**的——成品要留给下次检查时在弹框里显示「安装」。
      */
     fun cancelIncomplete(marker: String) {
         val ids = records(marker).filter { !it.finished }.map { it.id }
@@ -144,5 +160,11 @@ class AppDownloadGateway(context: Context) {
          * 并沿用"enqueue 打标记、records 按标记找回"的约定。
          */
         const val MARKER_APP_UPDATE = "app-update"
+
+        /**
+         * APK 的标准 MIME。注意是 `android.package`（点号），
+         * 写成 `android-package` 会匹配不到系统安装器，表现为“无法启动安装”。
+         */
+        const val APK_MIME = "application/vnd.android.package-archive"
     }
 }

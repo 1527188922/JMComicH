@@ -38,7 +38,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -90,7 +89,6 @@ fun AboutScreen(
     onOpenAlbum: (Long) -> Unit,
     onCheckUpdate: () -> Unit,
     onRetryScan: () -> Unit,
-    onReopenUpdateDialog: () -> Unit,
     onDownloadUpdate: () -> Unit,
     onInstallUpdate: (Long) -> Unit,
     onCancelUpdateDownload: () -> Unit,
@@ -133,7 +131,7 @@ fun AboutScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                item { AppInfoCard(state, onCheckUpdate, onReopenUpdateDialog, onInstallUpdate) }
+                item { AppInfoCard(state, onCheckUpdate) }
                 item { StorageCard(state, onRetryScan, onSelectSegment) }
 
                 state.selected?.let { kind ->
@@ -240,18 +238,6 @@ fun AboutScreen(
             onDismiss = { pendingDelete = null },
         )
     }
-
-    // 下载完成且弹框还开着 → 直接唤起安装。只认「Downloading → Ready」这一次迁移：
-    // 用户取消安装后弹框停在 Ready，重新打开弹框（查看说明）不再自动弹安装器。
-    var previousUpdate by remember { mutableStateOf<UpdateState?>(null) }
-    LaunchedEffect(state.update) {
-        val previous = previousUpdate
-        previousUpdate = state.update
-        val ready = state.update as? UpdateState.Ready
-        if (ready != null && previous is UpdateState.Downloading && state.showUpdateDialog) {
-            onInstallUpdate(ready.id)
-        }
-    }
 }
 
 // ======================================================================
@@ -262,8 +248,6 @@ fun AboutScreen(
 private fun AppInfoCard(
     state: AboutUiState,
     onCheckUpdate: () -> Unit,
-    onReopenUpdateDialog: () -> Unit,
-    onInstallUpdate: (Long) -> Unit,
 ) {
     Card(
         shape = MaterialTheme.shapes.medium,
@@ -280,8 +264,9 @@ private fun AppInfoCard(
             Text("JMComicH", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(2.dp))
 
-            // 版本行：左边固定「当前版本 vX.Y.Z」（debug 包显示 VERSION_NAME 原样，带 -debug 后缀），
-            // 右边随更新状态给动作：检查更新 / 检查中 / 查看新版本 / 安装
+            // 版本行：外部动作永远只有「检查更新」（检查中换成转圈文案）。
+            // 「发现新版本 / 已下载 / 安装」都只出现在检查后的弹框里，
+            // 避免下载完不装时页面长期挂着一个安装入口。
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "当前版本 v${BuildConfig.VERSION_NAME}",
@@ -289,10 +274,8 @@ private fun AppInfoCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                when (val update = state.update) {
-                    UpdateState.Idle -> TextButton(onClick = onCheckUpdate) { Text("检查更新") }
-
-                    UpdateState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.checking) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
                             strokeWidth = 2.dp,
@@ -304,37 +287,17 @@ private fun AppInfoCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-
-                    is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "发现新版本 ${update.tag}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        TextButton(onClick = onReopenUpdateDialog) { Text("查看") }
-                    }
-
-                    is UpdateState.Ready -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "新版本 ${update.tag} 已下载",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        TextButton(onClick = { onInstallUpdate(update.id) }) { Text("安装") }
-                    }
-
-                    // 下载进度要整行进度条，这一行放不下：挪到版本行下面独占一行
-                    is UpdateState.Downloading -> Unit
+                } else {
+                    TextButton(onClick = onCheckUpdate) { Text("检查更新") }
                 }
             }
 
-            when (val update = state.update) {
-                is UpdateState.Downloading -> {
-                    Spacer(Modifier.height(6.dp))
-                    UpdateProgressRow(update)
-                }
-
-                else -> Unit
+            // 下载进度要整行进度条，这一行放不下：放到版本行下面独占一行。
+            // 进度条不是按钮，外部仍然只有「检查更新」。
+            val downloading = state.update as? UpdateState.Downloading
+            if (downloading != null) {
+                Spacer(Modifier.height(6.dp))
+                UpdateProgressRow(downloading)
             }
         }
     }
@@ -930,6 +893,14 @@ private fun UpdateDialog(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                        if (update.downloadedId != null) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                text = "安装包已下载完成，可直接安装。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
 
                     is UpdateState.Downloading -> {
@@ -938,36 +909,32 @@ private fun UpdateDialog(
                         UpdateProgressRow(update)
                     }
 
-                    is UpdateState.Ready -> {
-                        Text("新版本 ${update.tag}", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = "安装包已下载完成。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    // Checking / Idle 不会开着弹框，防御性留空
+                    // Idle 不会开着弹框，防御性留空
                     else -> Unit
                 }
             }
         },
         confirmButton = {
             when (val update = state.update) {
-                is UpdateState.Available ->
-                    if (update.apkUrl != null) {
-                        TextButton(onClick = onDownload) { Text("下载") }
-                    } else {
-                        // 发行版没带 APK 资产：退回浏览器打开发布页
-                        TextButton(onClick = onOpenReleasesPage) { Text("打开发布页") }
+                is UpdateState.Available -> {
+                    // 同一次检查结果里，按钮按“安装包是否已下载”切换：下载 → 安装
+                    val downloadedId = update.downloadedId
+                    val apkUrl = update.apkUrl
+                    when {
+                        downloadedId != null ->
+                            TextButton(onClick = { onInstall(downloadedId) }) { Text("安装") }
+
+                        apkUrl != null ->
+                            TextButton(onClick = onDownload) { Text("下载") }
+
+                        else ->
+                            // 发行版没带 APK 资产：退回浏览器打开发布页
+                            TextButton(onClick = onOpenReleasesPage) { Text("打开发布页") }
                     }
+                }
 
                 is UpdateState.Downloading ->
                     TextButton(onClick = onBackground) { Text("后台") }
-
-                is UpdateState.Ready ->
-                    TextButton(onClick = { onInstall(update.id) }) { Text("安装") }
 
                 else -> Unit
             }
@@ -978,7 +945,7 @@ private fun UpdateDialog(
                 is UpdateState.Downloading ->
                     TextButton(onClick = onCancelDownload) { Text("取消") }
 
-                is UpdateState.Available, is UpdateState.Ready ->
+                is UpdateState.Available ->
                     TextButton(onClick = onDismiss) { Text("以后再说") }
 
                 else -> Unit
