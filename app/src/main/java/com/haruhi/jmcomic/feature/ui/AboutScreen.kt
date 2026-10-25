@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -72,8 +74,10 @@ import com.haruhi.jmcomic.ui.theme.StorageReaderCache
  * 两块内容：
  * 1. **应用信息卡**——当前版本 + 检查更新（Gitee 最新发行版 → 应用内下载 → 唤起安装，
  *    状态机见 [UpdateState]；debug 包点击检查无反应）；
- * 2. **存储统计卡**——五类本地占用的分段条（引线指向中文名），点段看按本明细
- *    （大小降序）；封面缓存只有总量不钻取（Coil 磁盘缓存按 URL 哈希命名，无法按本归属）。
+ * 2. **存储统计卡**——五类本地占用的分段条（**每一类都画引线 + 名字 + 大小**，
+ *    含只占百分之几的 zip / pdf），点段看按本明细（大小降序，明细是一张带分隔线的
+ *    白卡，操作按钮在每一行里）；封面缓存只有总量不钻取
+ *    （Coil 磁盘缓存按 URL 哈希命名，无法按本归属）。
  *
  * 布局上整页是**一个 LazyColumn**：明细行可能有几百条，交给 Lazy 复用，
  * 也避免 LazyColumn 嵌 verticalScroll 的滚动冲突。
@@ -134,34 +138,58 @@ fun AboutScreen(
 
                 state.selected?.let { kind ->
                     val segment = state.storage?.segment(kind)
-                    item(key = "usage-header") {
-                        UsageHeader(kind, segment, loading = state.storage == null)
-                    }
                     val usages = segment?.items
+
+                    // 明细是一张白卡：表头 + 若干行，行间画分隔线。
+                    // 行数可能上百，只能一行一个 Lazy item（见 UsageCardItem 的注释），
+                    // 所以卡片的圆角按"第一行圆上角、最后一行圆下角"拼出来。
+                    item(key = "usage-header") {
+                        UsageCardItem(
+                            top = true,
+                            divider = true,
+                            modifier = Modifier.padding(top = 20.dp),
+                        ) {
+                            UsageSectionHeader(
+                                kind = kind,
+                                segment = segment,
+                                loading = state.storage == null,
+                            )
+                        }
+                    }
+
                     when {
                         // 封面缓存：不按本钻取（用户拍板）
                         usages == null -> item(key = "usage-covers") {
-                            CoversNote(segment?.totalBytes ?: 0L)
+                            UsageCardItem(bottom = true) {
+                                UsageNote(
+                                    text = if (segment == null) {
+                                        "统计中…"
+                                    } else {
+                                        "封面缓存共 ${formatBytes(segment.totalBytes)}，由图片加载器统一管理" +
+                                            "（含头像等图片），不区分单本漫画。"
+                                    },
+                                )
+                            }
                         }
 
                         usages.isEmpty() -> item(key = "usage-empty") {
-                            Text(
-                                text = "这一类暂时没有内容",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            )
+                            UsageCardItem(bottom = true) {
+                                UsageNote("这一类暂时没有内容")
+                            }
                         }
 
-                        else -> items(usages) { usage ->
-                            UsageRow(
-                                usage = usage,
-                                kind = kind,
-                                onOpenAlbum = onOpenAlbum,
-                                onOpenOutput = onOpenOutput,
-                                onSendOutput = onSendOutput,
-                                onRequestDelete = { pendingDelete = kind to usage },
-                            )
+                        else -> itemsIndexed(usages) { index, usage ->
+                            val last = index == usages.lastIndex
+                            UsageCardItem(bottom = last, divider = !last) {
+                                UsageRow(
+                                    usage = usage,
+                                    kind = kind,
+                                    onOpenAlbum = onOpenAlbum,
+                                    onOpenOutput = onOpenOutput,
+                                    onSendOutput = onSendOutput,
+                                    onRequestDelete = { pendingDelete = kind to usage },
+                                )
+                            }
                         }
                     }
                 }
@@ -441,14 +469,17 @@ private val CORRIDOR_HEIGHT = 16.dp
 /** 标签行的最小高度（两行文字）。 */
 private val LABEL_MIN_HEIGHT = 34.dp
 
-/** 占比小于这个值的段不画引线标签（窄屏会挤成一团）；段本身仍可点。 */
-private const val MIN_LABEL_FRACTION = 0.06f
+/** 同一侧（上 / 下）多条引线的水平段彼此错开的量：全叠在同一个 Y 上会糊成一条线。 */
+private val LINE_STAGGER = 4.dp
 
 /** 未选中的段降透明度，衬托当前选中段。 */
 private const val UNSELECTED_ALPHA = 0.4f
 
 /**
  * 存储分段条：各段宽度按字节占比分配，引线上下交错指向中文名标签。
+ *
+ * **每一段都有标签**（不按占比过滤）：zip / pdf 这类小段常常只占几个百分点，
+ * 早先按阈值过滤掉之后，用户只看得到一截色段、看不到它是什么、有多大。
  *
  * 实现上全是常规组件 + 一个画线 Canvas：段和标签各自用 `onGloballyPositioned`
  * 把 `boundsInRoot()` 记进 SnapshotStateMap，Canvas 覆盖全区（matchParentSize）
@@ -461,7 +492,6 @@ private fun SegmentedStorageBar(
     onSelect: (StorageKind) -> Unit,
 ) {
     val visible = segments.filter { it.totalBytes > 0 }
-    val total = visible.sumOf { it.totalBytes }.coerceAtLeast(1L)
     if (visible.isEmpty()) {
         // 统计中：先画占位空条，数据回来只是变宽（不做整页结构交换）
         Box(
@@ -474,7 +504,10 @@ private fun SegmentedStorageBar(
         return
     }
 
-    val labeled = visible.filter { it.totalBytes.toFloat() / total >= MIN_LABEL_FRACTION }
+    // **每一段都要引线标签**：zip / pdf 这类小段常常只占百分之几，
+    // 早先按"占比 < 6% 不画"过滤掉，结果用户只看到那一小截色段、
+    // 既没有名字也没有大小。宽度不再参与过滤，挤不挤由 LabelsRow 的等分布局兜着。
+    val labeled = visible
     // 上/下交错：序号偶数在上、奇数在下；只有一两个标签时全放上面，不留空行
     val topKinds = labeled.mapIndexedNotNull { index, segment ->
         if (index % 2 == 0 || labeled.size <= 2) segment.kind else null
@@ -560,7 +593,13 @@ private fun BarRow(
     }
 }
 
-/** 一排引线标签（名字 + 大小，都可点，与点段等价）。 */
+/**
+ * 一排引线标签（名字 + 大小，都可点，与点段等价）。
+ *
+ * 每个标签**等分整行宽度**（不是按文字宽度顺次摆）：一侧最多挂 3 个标签，
+ * 文字宽度累加在窄屏上会顶出右边；等分之后标签必然放得下，
+ * 引线端点（标签中心）也均匀分布，几条线不会挤在一起。
+ */
 @Composable
 private fun LabelsRow(
     segments: List<SegmentStats>,
@@ -574,7 +613,6 @@ private fun LabelsRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = LABEL_MIN_HEIGHT),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = alignment,
     ) {
         segments.forEach { segment ->
@@ -582,20 +620,25 @@ private fun LabelsRow(
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
+                    .weight(1f)
                     .onGloballyPositioned { bounds[segment.kind] = it.boundsInRoot() }
                     .clip(RoundedCornerShape(6.dp))
                     .clickable { onSelect(segment.kind) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
             ) {
                 Text(
                     text = segment.kind.label,
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isSelected) storageColorOf(segment.kind) else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = formatBytes(segment.totalBytes),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -615,18 +658,29 @@ private fun DrawScope.drawLeaderLines(
     val idleStroke = Stroke(width = 1.dp.toPx())
     val activeStroke = Stroke(width = 2.dp.toPx())
     val dotRadius = 2.5.dp.toPx()
+    val stagger = LINE_STAGGER.toPx()
+
+    // 同一侧的引线都从条的同一条边出发、也都在同一条标签边收口，拐弯的 Y 也就一样高；
+    // 五段全画之后，几条水平段会完全重合叠成一条。按这一侧的顺序把拐弯高度错开，
+    // 看起来才像一把扇形引线（每个标签仍在走廊范围内，不会压到段或标签）。
+    val topOrder = labeled.filter { it.kind in topKinds }.map { it.kind }
+    val bottomOrder = labeled.filterNot { it.kind in topKinds }.map { it.kind }
 
     labeled.forEach { segment ->
         val segmentRect = segmentBounds[segment.kind] ?: return@forEach
         val labelRect = labelBounds[segment.kind] ?: return@forEach
         val isTop = segment.kind in topKinds
         val isSelected = selected == segment.kind
+        val sideOrder = if (isTop) topOrder else bottomOrder
+        val sideIndex = sideOrder.indexOf(segment.kind).coerceAtLeast(0)
 
         val segmentCenterX = segmentRect.center.x - boxOrigin.x
         val segmentEdgeY = (if (isTop) segmentRect.top else segmentRect.bottom) - boxOrigin.y
         val labelCenterX = labelRect.center.x - boxOrigin.x
         val labelEdgeY = (if (isTop) labelRect.bottom else labelRect.top) - boxOrigin.y
-        val corridorMidY = (segmentEdgeY + labelEdgeY) / 2f
+        // 以这一侧的中位序号为 0 向两边铺开，整组引线仍然落在走廊中间
+        val staggerY = (sideIndex - (sideOrder.size - 1) / 2f) * stagger
+        val corridorMidY = (segmentEdgeY + labelEdgeY) / 2f + staggerY
 
         val color = if (isSelected) storageColorOf(segment.kind) else idleLineColor
         val path = Path().apply {
@@ -653,41 +707,92 @@ private fun storageColorOf(kind: StorageKind): Color = when (kind) {
 // 明细列表（钻取）
 // ======================================================================
 
+/** 明细卡片的圆角（与 `MaterialTheme.shapes.medium` 的 12dp 一致）。 */
+private val CARD_CORNER = 12.dp
+
+/**
+ * 明细列表的白卡片段。
+ *
+ * 明细多的时候有几百行，只能是 LazyColumn 里的独立 item，没法用一张 `Card` 把整段包住；
+ * 于是每一行自己画白底，只让**第一行圆上角、最后一行圆下角**，拼起来仍是一张完整的卡。
+ * [divider] 在行底部画一条分隔线（卡片最后一行不画）。
+ */
 @Composable
-private fun UsageHeader(kind: StorageKind, segment: SegmentStats?, loading: Boolean) {
+private fun UsageCardItem(
+    top: Boolean = false,
+    bottom: Boolean = false,
+    divider: Boolean = false,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(
+        topStart = if (top) CARD_CORNER else 0.dp,
+        topEnd = if (top) CARD_CORNER else 0.dp,
+        bottomStart = if (bottom) CARD_CORNER else 0.dp,
+        bottomEnd = if (bottom) CARD_CORNER else 0.dp,
+    )
     Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .background(color = MaterialTheme.colorScheme.surface, shape = shape),
+    ) {
+        content()
+        if (divider) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+    }
+}
+
+/** 明细卡片表头：类型色点 + 类型名 + 总量（排版与「存储占用」卡的标题行一致）。 */
+@Composable
+private fun UsageSectionHeader(kind: StorageKind, segment: SegmentStats?, loading: Boolean) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 色点取分段条里那一段的颜色，一眼能对上刚才点的是哪一块
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(storageColorOf(kind)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(kind.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
         Text(
-            text = when {
-                loading -> "${kind.label} · 统计中…"
-                else -> "${kind.label} · 共 ${formatBytes(segment?.totalBytes ?: 0L)}"
-            },
-            style = MaterialTheme.typography.titleSmall,
+            text = if (loading) "统计中…" else "共 ${formatBytes(segment?.totalBytes ?: 0L)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
 
-/** 封面缓存不支持钻取时的说明（代替明细列表）。 */
+/** 明细卡里的一行纯文字（封面缓存的说明、空态）：不再单独划一个区域出来。 */
 @Composable
-private fun CoversNote(totalBytes: Long) {
+private fun UsageNote(text: String) {
     Text(
-        text = "封面缓存共 ${formatBytes(totalBytes)}，由图片加载器统一管理" +
-            "（含头像等图片），不区分单本漫画。",
+        text = text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
     )
 }
 
 /**
- * 明细里的一行：内容行（封面 + 标题/文件名 + 大小，可点进详情）+ 右对齐的操作按钮行。
+ * 明细里的一行：封面 + 标题 / 文件名 / 大小 + 右侧操作按钮，全在同一张白卡的一条里。
  *
- * 操作按段给（与详情页「导出文件」区块同一款按钮）：
- * - zip / pdf：打开至 / 发送至 / 删除；
- * - 漫画图片 / 阅读缓存：只有删除（每行只删它代表的那一块，删除前弹确认框）。
+ * 排版要点：
+ * - **顶部对齐**（`Alignment.Top`）：标题贴着封面顶边走，不再相对封面上下居中——
+ *   省出来的垂直空间正好放操作按钮，按钮因此落在这一行的范围内
+ *   （以前是内容行 + 行下面另起一排按钮，按钮看着像挂在别的行上）；
+ * - 大小挪到标题同一行的右端，跟标题基线对齐，不再单独占一块；
+ * - 操作按段给（与详情页「导出文件」区块同一款按钮）：zip / pdf 是打开至 / 发送至 / 删除；
+ *   漫画图片 / 阅读缓存只有删除（每行只删它代表的那一块，删除前弹确认框）。
  */
 @Composable
 private fun UsageRow(
@@ -708,88 +813,87 @@ private fun UsageRow(
     val detail = usage.detail?.let { privacyExportName(it, usage.albumId) }
     val exportRow = kind == StorageKind.EXPORT_ZIP || kind == StorageKind.EXPORT_PDF
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                // enabled 已经挡掉了不可点的行，`?.let` 只是把 Long? 收成 Long
-                .clickable(enabled = navigable) { usage.albumId?.let(onOpenAlbum) }
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (usage.albumId != null) {
-                Cover(
-                    albumId = usage.albumId,
-                    contentDescription = title,
-                    modifier = Modifier
-                        .size(width = 44.dp, height = 60.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                )
-            } else {
-                // 无法归属的"其他"行：同尺寸占位块，保持列表对齐
-                Box(
-                    modifier = Modifier
-                        .size(width = 44.dp, height = 60.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            // enabled 已经挡掉了不可点的行，`?.let` 只是把 Long? 收成 Long
+            .clickable(enabled = navigable) { usage.albumId?.let(onOpenAlbum) }
+            .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (usage.albumId != null) {
+            Cover(
+                albumId = usage.albumId,
+                contentDescription = title,
                 modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-            ) {
+                    .size(width = 44.dp, height = 60.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    // 白卡上的封面占位：outlineVariant 是浅灰，surfaceVariant 在浅色主题里就是白
+                    .background(MaterialTheme.colorScheme.outlineVariant),
+            )
+        } else {
+            // 无法归属的"其他"行：同尺寸占位块，保持列表对齐
+            Box(
+                modifier = Modifier
+                    .size(width = 44.dp, height = 60.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.outlineVariant),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
-                if (detail != null) {
-                    Text(
-                        text = detail,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = formatBytes(usage.sizeBytes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // TextButton 自带 12dp 内容左/右内边距：补上这 12dp，大小才和下面
+                    // 按钮的文字右边缘对齐（否则会往外多出 12dp，看着像没对齐）
+                    modifier = Modifier.padding(end = 12.dp),
+                )
             }
-            Text(
-                text = formatBytes(usage.sizeBytes),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // 操作行：右对齐，样式与详情页「导出文件」区块一致
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(end = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-        ) {
-            if (exportRow) {
-                // 打开/发送要传**真实文件名**（privacyExportName 只换显示，不动操作）
-                usage.detail?.let { fileName ->
-                    TextButton(onClick = { onOpenOutput(fileName) }) { Text("打开至") }
-                    TextButton(onClick = { onSendOutput(fileName) }) { Text("发送至") }
-                }
+            if (detail != null) {
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            TextButton(
-                onClick = onRequestDelete,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
+            // 操作按钮：右对齐、就在这一行里，样式与详情页「导出文件」区块一致
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
             ) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = null,
-                    modifier = Modifier.size(ButtonDefaults.IconSize),
-                )
-                Text("删除")
+                if (exportRow) {
+                    // 打开/发送要传**真实文件名**（privacyExportName 只换显示，不动操作）
+                    usage.detail?.let { fileName ->
+                        TextButton(onClick = { onOpenOutput(fileName) }) { Text("打开至") }
+                        TextButton(onClick = { onSendOutput(fileName) }) { Text("发送至") }
+                    }
+                }
+                TextButton(
+                    onClick = onRequestDelete,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                    )
+                    Text("删除")
+                }
             }
         }
     }
