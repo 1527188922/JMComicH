@@ -597,6 +597,27 @@ class ApiClient(
             decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
         )
 
+    /**
+     * `POST /forgot`：忘记密码（`docs/official-api-manga.md` §7.5，2026-10-25 实测）。
+     *
+     * 参数只有 `email`（**注册邮箱**，不是用户名——传用户名会回
+     * `請輸入有效的電子EMAIL地址！`）。成功时服务端把「用户名 + 系统生成的新密码」
+     * 发到该邮箱，并**当场作废旧密码**（实测：成功调用后原密码登录返回 401
+     * `無效的用戶名和/或密碼！`）。
+     *
+     * 两条硬约束：
+     * - **绝不重试**：每成功一次就再生成一个新密码，重放会把用户刚收到的那个也作废；
+     * - 业务失败与 `/register` 同构：HTTP 200 + 信封 200，`data` 里是
+     *   `{status:"fail", msg, errors:[…]}`，由 `AccountRepository` 按 `status` 判定。
+     *
+     * 成功形态（实测）：`{"type":"","msg":"用戶名和新密碼已通過電子EMAIL發送給您！","status":"ok","errors":""}`。
+     */
+    suspend fun forgotPassword(email: String): EditResultDto = postDecrypted(
+        path = "/forgot",
+        fields = listOf("email" to email.trim()),
+        decode = { json -> ApiJson.decodeFromString(EditResultDto.serializer(), json) },
+    )
+
     // ------------------------------------------------------------------
     // 内部实现
     // ------------------------------------------------------------------

@@ -160,6 +160,25 @@ class AccountRepository(
     suspend fun resendSignUpCode(username: String, password: String): String =
         webConfirm.resend(username = username, password = password)
 
+    /**
+     * 忘记密码（`POST /forgot {email}`）。
+     *
+     * 不需要登录态，所以**不走 [guarded]**；也**不自动重试**——服务端每成功一次
+     * 就生成一个新密码并作废旧密码，重放会连用户刚收到的那个一起作废。
+     *
+     * 返回可展示的服务端文案（实测成功是 `用戶名和新密碼已通過電子EMAIL發送給您！`）。
+     * 失败抛 [NetworkError.Business]，`message` 是服务端 `errors`/`msg` 原文
+     * （实测：`請輸入您的電子EMAIL，您第一次註冊。` / `請輸入有效的電子EMAIL地址！` /
+     * `沒有任何用戶使用此電子EMAIL！`）。
+     */
+    suspend fun requestPasswordReset(email: String): String {
+        val dto: EditResultDto = api().forgotPassword(email)
+        return dto.requireSuccess(
+            fallback = "发送失败，请稍后重试",
+            successFallback = "新密码已发送到注册邮箱，请查收",
+        )
+    }
+
     // ------------------------------------------------------------------
     // 收藏
     // ------------------------------------------------------------------

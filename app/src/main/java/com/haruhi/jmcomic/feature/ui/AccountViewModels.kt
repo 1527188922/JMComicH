@@ -14,6 +14,8 @@ import com.haruhi.jmcomic.feature.data.AlbumsSnapshot
 import com.haruhi.jmcomic.feature.data.CommentCache
 import com.haruhi.jmcomic.feature.data.CommentRow
 import com.haruhi.jmcomic.feature.data.FavoritesSnapshot
+import com.haruhi.jmcomic.feature.data.FORGOT_EMAIL_MAX
+import com.haruhi.jmcomic.feature.data.ForgotPasswordForm
 import com.haruhi.jmcomic.feature.data.Repository
 import com.haruhi.jmcomic.feature.data.SIGN_UP_CODE_MAX
 import com.haruhi.jmcomic.feature.data.SignUpForm
@@ -22,6 +24,7 @@ import com.haruhi.jmcomic.feature.data.UserProfileForm
 import com.haruhi.jmcomic.feature.data.limitCodePoints
 import com.haruhi.jmcomic.feature.data.mergeComments
 import com.haruhi.jmcomic.feature.data.toProfileForm
+import com.haruhi.jmcomic.feature.data.validateForgotPassword
 import com.haruhi.jmcomic.feature.data.validatePasswordChange
 import com.haruhi.jmcomic.feature.data.validateSignUp
 import com.haruhi.jmcomic.feature.data.validateSignUpCode
@@ -1694,4 +1697,100 @@ class AccountProfileEditViewModel(
 
     /** 关掉保存失败的对话框（错误正文在弹窗里，不再用占位的横幅把表单顶下去）。 */
     fun consumeSaveError() = _state.update { it.copy(saveError = null) }
+}
+
+// ======================================================================
+// 忘记密码（把新密码发到注册邮箱）
+// ======================================================================
+
+/**
+ * 忘记密码页状态。
+ *
+ * 只有两个阶段：填邮箱（[sent] = false）→「新密码已发送」结果面板（[sent] = true）。
+ * 服务端**没有**"验证码 / 自己设新密码"的环节：`POST /forgot` 成功之后，
+ * 用户名与系统生成的新密码直接发到注册邮箱，旧密码当场失效
+ * （2026-10-25 实测，见 `docs/official-api-manga.md` §7.5）。
+ */
+data class ForgotPasswordUiState(
+    val email: String = "",
+    /** 邮箱字段的**本地**校验错误（显示在输入框下方，不弹窗）。 */
+    val emailError: String? = null,
+    val submitting: Boolean = false,
+    /** 服务端 / 网络错误（弹窗正文）。 */
+    val error: String? = null,
+    /** 错误弹窗标题。 */
+    val errorTitle: String = "发送失败",
+    /** 服务端成功文案（结果面板上原样展示，不自造文案）。 */
+    val notice: String? = null,
+    /** 已经发送成功：界面切到结果面板。 */
+    val sent: Boolean = false,
+) {
+    val canSubmit: Boolean get() = !submitting
+}
+
+/**
+ * 忘记密码页 ViewModel（`docs/account-design.md` §8 + `docs/official-api-manga.md` §7.5）。
+ *
+ * 请求纪律与注册 / 登录页一致：**本地校验不过不发请求**、提交中重复点击忽略、
+ * 服务端文案原样展示（错误翻译只在账号层）。
+ *
+ * 为什么结果面板只给「去登录」而不给「重新发送」：服务端每成功一次就会**再生成一个新密码**
+ * 并把上一个作废，所以重发必须由用户显式点「换个邮箱重试」再走一遍表单，
+ * 不能在结果页放一颗随手可点的按钮。
+ */
+class AccountForgotViewModel(private val account: AccountRepository) : ViewModel() {
+
+    private val _state = MutableStateFlow(ForgotPasswordUiState())
+    val state: StateFlow<ForgotPasswordUiState> = _state.asStateFlow()
+
+    fun setEmail(value: String) = _state.update {
+        // 输入即清掉旧错误：用户已经在改了，红框该收起来
+        it.copy(email = limitCodePoints(value, FORGOT_EMAIL_MAX), emailError = null, error = null)
+    }
+
+    fun consumeError() = _state.update { it.copy(error = null) }
+
+    /** 结果面板 →「换个邮箱重试」：回到表单（保留已填的邮箱，方便改错字）。 */
+    fun editAgain() = _state.update {
+        it.copy(sent = false, notice = null, error = null, emailError = null)
+    }
+
+    /** 提交：`POST /forgot {email}`。成功切结果面板，失败弹服务端原文。 */
+    fun submit() {
+        val current = _state.value
+        if (current.submitting) return
+        val form = ForgotPasswordForm(current.email).limited()
+        val localError = validateForgotPassword(form)
+        if (localError != null) {
+            // 本地校验 → 输入框下方提示（与登录 / 注册页一致，不弹窗）
+            _state.update { it.copy(emailError = localError, error = null) }
+            return
+        }
+        _state.update { it.copy(submitting = true, emailError = null, error = null) }
+        viewModelScope.launch {
+            runCatching { account.requestPasswordReset(form.email.trim()) }
+                .onSuccess { message ->
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            sent = true,
+                            notice = message,
+                            emailError = null,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _state.update {
+                        it.copy(
+                            submitting = false,
+                            errorTitle = "发送失败",
+                            error = e.toUserMessage(),
+                            emailError = null,
+                        )
+                    }
+                }
+        }
+    }
 }

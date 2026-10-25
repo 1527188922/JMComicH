@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -36,14 +37,21 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /**
  * 登录页（`docs/account-design.md` §8）。
  *
  * 注册走独立的 [AccountSignUpScreen]（注册 → 邮箱验证码 → 自动登录）；
- * 「找回密码」仍然提示去官方网页版——本 App 没有自己的邮件系统，重置密码只能在网页侧完成。
+ * 「忘记密码」走独立的 [AccountForgotScreen]（`POST /forgot`：把用户名 + 新密码发到注册邮箱，
+ * 旧密码当场失效）。
+ *
+ * 入口位置（2026-10-25 方案 B）：
+ * - 「忘记密码？ →」放在**密码框右下方**（登录页的经典位置，用户会主动去这里找）；
+ * - 卡外灰底只留一行两个与注册相关的入口，**左右贴边**：左边「注册新账号」，右边「继续验证」。
+ * 这样底部不再是三行同构的"疑问句 + 链接"，也不是把三个动作塞进同一行。
+ * 两个疑问句标签（还没有账号？/ 注册后没验证？）没有保留：一行里贴边放两段"标签 + 链接"
+ * 在 360dp 上就放不下了；「继续验证」的语境由点进去之后的验证页说明（那里写着"验证码是注册时收到的"）。
  *
  * 独立页面而不是底部面板：表单要键盘、要滚动、要能放长错误文案。
  */
@@ -58,8 +66,10 @@ fun AccountLoginScreen(
     onConsumeError: () -> Unit,
     /** 底部「注册新账号」：进注册页（`next` 由导航层带过去）。 */
     onOpenSignUp: () -> Unit,
-    /** 底部「已有验证码」：账号已创建但没验证完时，回来补验证码。 */
+    /** 底部「继续验证」：账号已创建但没验证完时，回来补邮箱验证码。 */
     onOpenVerify: () -> Unit,
+    /** 密码框右下方的「忘记密码？ →」：`POST /forgot` 把用户名 + 新密码发到注册邮箱。 */
+    onOpenForgot: () -> Unit,
     /** 登录成功（由调用方决定关页面 / 回跳）。 */
     onLoggedIn: () -> Unit,
     modifier: Modifier = Modifier,
@@ -158,7 +168,23 @@ fun AccountLoginScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    Spacer(Modifier.height(16.dp))
+                    // 忘记密码：紧跟密码框、右对齐（登录页最经典的位置）。
+                    // 底部只留「注册 / 继续验证」两条与注册相关的入口，三行同构的问题就没了。
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        TextButton(
+                            onClick = onOpenForgot,
+                            enabled = !state.submitting,
+                            // 右内边距收到 0，文字与输入框右边缘对齐（默认 12dp 会缩进一截）
+                            contentPadding = PaddingValues(start = 12.dp, end = 0.dp),
+                        ) {
+                            Text("忘记密码？ →")
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = onSubmit,
                         enabled = !state.submitting,
@@ -179,42 +205,30 @@ fun AccountLoginScreen(
                 }
 
                 Spacer(Modifier.height(16.dp))
+                // 注册 / 继续验证：**同一行、左右贴边**。一行里并排放两段"疑问句标签 + 链接"
+                // 在 360dp 上就放不下，所以标签去掉，只留两个动作；「继续验证」的语境由
+                // 点进去之后的验证页说明（那里写着"验证码是注册时收到的"）。
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "还没有账号？",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = onOpenSignUp, enabled = !state.submitting) {
+                    TextButton(
+                        onClick = onOpenSignUp,
+                        enabled = !state.submitting,
+                        // 左右内边距收到 0：文字与卡片 / 输入框落在同一条边线上（默认 12dp 会缩进去）
+                        contentPadding = PaddingValues(horizontal = 0.dp),
+                    ) {
                         Text("注册新账号")
                     }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "注册了但没验证？",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = onOpenVerify, enabled = !state.submitting) {
-                        Text("输入验证码")
+                    TextButton(
+                        onClick = onOpenVerify,
+                        enabled = !state.submitting,
+                        contentPadding = PaddingValues(horizontal = 0.dp),
+                    ) {
+                        Text("继续验证")
                     }
                 }
-
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "忘记密码请到官方网页版（18comic.vip）重置。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Start,
-                )
                 Spacer(Modifier.height(24.dp))
             }
         }

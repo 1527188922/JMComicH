@@ -859,9 +859,40 @@ submit_confirm=发送邮件      ← 表单提交按钮的 name/value，服务�
   服务端实际在网页版提示"请十分钟后再试"。
 
 
-### 7.5 `POST /forgot` ⚠ 未实测
+### 7.5 `POST /forgot` — 忘记密码（2026-10-25 实测）
 
-`email` → 返回 `{status,msg}`（发重置邮件）。
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `email` | 是 | **注册邮箱**（不是用户名）。传用户名会回 `請輸入有效的電子EMAIL地址！` |
+
+**行为**：服务端把「用户名 + 系统生成的新密码」发到该邮箱，并**当场作废旧密码**。
+实测：成功调用之后，用原密码 `POST /login` 立刻变成 **HTTP 401 + `無效的用戶名和/或密碼！`**。
+所以客户端**绝不能重试**（每成功一次就再生成一个新密码），也不要在发送后让用户继续用旧密码。
+
+**成功形态**（真实响应，`errors` 又是空字符串，与 §7.3 同一坑）
+
+```json
+{ "type": "", "msg": "用戶名和新密碼已通過電子EMAIL發送給您！", "status": "ok", "errors": "" }
+```
+
+**失败形态**：与 `/register` 同构 —— `HTTP 200 + 信封 code 200`，`data` 解密后是
+`{status:"fail", msg, errors:[…]}`，顶层再带一个明文 `errorMsg`（= `errors` 第一条）。
+实测三种文案（原样展示即可，不要自造"账号不存在"之类的说法）：
+
+| 入参 | `msg` / `errors[0]` |
+|---|---|
+| 不传 / `email=""` | `請輸入您的電子EMAIL，您第一次註冊。` |
+| 传用户名 / 非法邮箱 | `請輸入有效的電子EMAIL地址！` |
+| 合法但没注册过的邮箱 | `沒有任何用戶使用此電子EMAIL！` |
+
+```json
+// 例：email=1527188922（用户名当邮箱传）
+{ "type": "", "msg": "請輸入有效的電子EMAIL地址！", "status": "fail",
+  "errors": ["請輸入有效的電子EMAIL地址！"] }
+```
+
+> 本工程实现：`ApiClient.forgotPassword` + `AccountRepository.requestPasswordReset`；
+> 界面在登录页底部「找回密码」→ `Routes.FORGOT`（`feature/ui/AccountForgotScreen.kt`）。
 
 ### 7.6 `GET /useredit/{uid}` — 读个人资料
 

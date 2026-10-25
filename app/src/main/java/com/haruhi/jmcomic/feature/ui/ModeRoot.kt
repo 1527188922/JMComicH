@@ -133,6 +133,15 @@ object Routes {
      */
     const val SIGNUP = "jm/account/signup?next={next}&verify={verify}"
 
+    /**
+     * 忘记密码页（`POST /forgot`，`docs/official-api-manga.md` §7.5）。
+     *
+     * 只要一个**注册邮箱**：服务端把「用户名 + 新密码」发到该邮箱，并**当场作废旧密码**
+     * （2026-10-25 实测）。所以没有参数、没有验证码，也没有"设置新密码"这一步。
+     * 入口在登录页底部的「找回密码」。
+     */
+    const val FORGOT = "jm/account/forgot"
+
     /** 账号收藏夹列表。 */
     const val ACCOUNT_FAVORITES = "jm/account/favorites"
 
@@ -545,6 +554,9 @@ fun ModeRoot(
                             onConsumeError = vm::consumeError,
                             onOpenSignUp = { navController.navigate(Routes.signup(next)) },
                             onOpenVerify = { navController.navigate(Routes.signup(next, verifyOnly = true)) },
+                            onOpenForgot = {
+                                navController.navigate(Routes.FORGOT) { launchSingleTop = true }
+                            },
                             onLoggedIn = {
                                 // 一次性把登录页从栈里摘掉，再落到 next（没有 next 就留在「我的」）。
                                 // 不用"先 pop 再 navigate"：两次导航挨着调用时，第二次可能基于旧栈。
@@ -616,6 +628,22 @@ fun ModeRoot(
                                     popUpTo(Routes.LOGIN) { inclusive = true }
                                 }
                             },
+                        )
+                    }
+
+                    // 忘记密码：填注册邮箱 → `POST /forgot` → 「新密码已发送」面板。
+                    // 服务端把用户名 + 新密码发到邮箱并作废旧密码；「去登录」回到栈里的登录页。
+                    composable(Routes.FORGOT) { entry ->
+                        val vm: AccountForgotViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+                        val state by vm.state.collectAsStateWithLifecycle()
+                        AccountForgotScreen(
+                            state = state,
+                            onBack = { navController.popBackStack() },
+                            onEmailChange = vm::setEmail,
+                            onSubmit = vm::submit,
+                            onConsumeError = vm::consumeError,
+                            onEditAgain = vm::editAgain,
+                            onGoLogin = { navController.popBackStack() },
                         )
                     }
 
@@ -1500,6 +1528,9 @@ class ViewModelFactory(
                 account = container.accountRepository,
                 verifyOnly = signUpVerifyOnly,
             ) as T
+
+        modelClass.isAssignableFrom(AccountForgotViewModel::class.java) ->
+            AccountForgotViewModel(container.accountRepository) as T
 
         modelClass.isAssignableFrom(AccountFavoritesViewModel::class.java) ->
             AccountFavoritesViewModel(

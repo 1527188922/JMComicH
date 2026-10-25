@@ -2688,3 +2688,74 @@ Snackbar 报释放字节数。`AlbumUsage` 新增 `folderName` 作为图片库/�
 明细是一张白卡、行间有分隔线，每行的按钮都在自己那一行里；浅色主题下封面占位块可见；
 debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
 
+## 功能：忘记密码（2026-10-25）
+
+登录页原来那行「忘记密码请到官方网页版重置」换成真正可用的入口：
+`POST /forgot {email}` → 服务端把「用户名 + 系统生成的新密码」发到**注册邮箱**，
+并**当场作废旧密码**。所以界面上没有验证码、也没有"设置新密码"这一步。
+
+### 1. 接口实测（补上 `docs/official-api-manga.md` §7.5 的"未实测"）
+
+用真实账号（`uid=6404735`）在 `www.cdnutc.me` 上跑通，真实响应：
+
+| 入参 | 结果 |
+|---|---|
+| `email=1527188922`（用户名当邮箱） | 失败：`請輸入有效的電子EMAIL地址！` |
+| `email=` 空 / 不带字段 | 失败：`請輸入您的電子EMAIL，您第一次註冊。` |
+| `email=<不存在的邮箱>` | 失败：`沒有任何用戶使用此電子EMAIL！` |
+| `email=<该账号真实邮箱>` | 成功：`{"type":"","msg":"用戶名和新密碼已通過電子EMAIL發送給您！","status":"ok","errors":""}` |
+
+三条实测结论直接决定实现：
+
+1. **不是发"重置链接"，而是直接生成新密码**发到邮箱——成功文案里写着"用戶名和新密碼"。
+2. **旧密码立即失效**：成功调用之后原密码 `POST /login` 立刻返回
+   `HTTP 401 + 無效的用戶名和/或密碼！`（本次实测确认）。所以界面上必须提前警告，
+   并且**绝不能重试**这个接口（每成功一次就再生成一个新密码，重放连刚收到的那个也会作废）。
+3. 失败形态与 `/register` 同构：**HTTP 200 + 信封 `code` 200**，
+   `data` 里 `{status:"fail", msg, errors:[…]}`；成功时 `errors` 又是**空字符串**，
+   沿用的 `LooseStringListSerializer` 正好能读。
+
+### 2. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `feature/api/ApiClient.kt` | +`forgotPassword(email)`（`postDecrypted`，不重试） |
+| `feature/data/ForgotPassword.kt`（新） | `ForgotPasswordForm` / `validateForgotPassword` / 邮箱 50 字上限（复用注册的官方正则） |
+| `feature/data/AccountRepository.kt` | +`requestPasswordReset(email)`：`status=="ok"` 才算成功，文案原样返回 |
+| `feature/ui/AccountViewModels.kt` | +`ForgotPasswordUiState` / `AccountForgotViewModel`（填邮箱 → 发送 → 结果面板） |
+| `feature/ui/AccountForgotScreen.kt`（新） | 「灰底白卡」两屏：填邮箱 →「新密码已发送」结果面板（服务端文案原样 + 去登录 / 换个邮箱重试） |
+| `feature/ui/AccountLoginScreen.kt` | 底部那行"去网页版"说明换成「忘记密码？/ 找回密码」入口（`onOpenForgot`） |
+| `feature/ui/ModeRoot.kt` | `Routes.FORGOT` + composable + Factory 分支 |
+| `test/.../ForgotPasswordLogicTest.kt`（新） | 本地校验 + 四种真实响应形态的解析 / 文案 |
+| `docs/official-api-manga.md` §7.5、`docs/account-design.md` | 补实测与实现状态 |
+
+### 3. 交互与错误展示（沿用注册页定稿的两条规则）
+
+- **本地能判断的错误**（邮箱空 / 格式不对）→ 输入框下方 `supportingText`，不弹窗、不发请求；
+- **服务端 / 网络错误** → `AlertDialog` 弹窗、正文可滚动，文案是服务端原文；
+- 提交中禁用按钮与返回键（请求不可重试，中途退出会让"到底重置没重置"变得不确定）；
+- 结果面板只给「去登录」+「换个邮箱重试」，不放随手可点的"重新发送"——
+  每成功一次都会再生成一个密码，旧密码随之作废。
+
+### 4. 验证状态（如实记录）
+
+- `:app:testDebugUnitTest --tests "*ForgotPasswordLogicTest"` ✅（只跑新增的这一组，不跑全量）
+- `:app:assembleDebug` ✅
+- 真机流程未跑：用户在真实账号上自行验收（注意：**发送成功即改密码**，旧密码不能再登录）。
+
+### 5. 登录页底部入口改版（方案 B，2026-10-25）
+
+登录页原来是三行同构的「疑问句 + 链接」（注册新账号 / 输入验证码 / 找回密码），
+三行权重相同、一路往下排；而且「输入验证码」是裸动作，容易被当成"登录要填的验证码"，
+它真正的语境是"注册流程没走完、回来补邮箱验证码"。按用户选定的方案 B 重排：
+
+| 改动 | 之前 | 之后 |
+|---|---|---|
+| 忘记密码 | 卡外第三行「忘记密码？ 找回密码」 | 卡内、**密码框右下方的「忘记密码？ →」**（右对齐，`contentPadding` 的 end 收到 0 与输入框右缘对齐） |
+| 卡外入口 | 三行 | **一行、左右贴边**：左边「注册新账号」，右边「继续验证」（`Arrangement.SpaceBetween` + `contentPadding` 左右收到 0） |
+| 文案 | `输入验证码` / `注册了但没验证？` | `继续验证`；两个疑问句标签（`还没有账号？` / `注册后没验证？`）**不保留**——一行里并排放两段"标签 + 链接"在 360dp 上放不下；「继续验证」的语境由点进去之后的验证页说明 |
+
+只改 `feature/ui/AccountLoginScreen.kt`（顶部注释、密码框后的链接、卡外一行），
+路由 / ViewModel / 接口一行未动。`:app:assembleDebug` ✅；
+按用户要求**本次未执行任何测试用例**，视觉由真机验收。
+
