@@ -8,6 +8,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -338,26 +339,28 @@ fun AccountAlbumsScreen(
                     }
 
                     else -> Column(modifier = Modifier.fillMaxSize()) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
-                            contentPadding = PaddingValues(GRID_CONTENT_PADDING),
-                            horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-                            verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            items(state.albums, key = { it.id }) { album ->
-                                AccountAlbumCard(
-                                    album = album,
-                                    onOpen = { onOpenAlbum(album.id) },
-                                    onLongPress = { removing = album },
-                                )
-                            }
-                            item(key = "__more__", span = { GridItemSpan(maxLineSpan) }) {
-                                AccountGridFooter(
-                                    loadingMore = state.loadingMore,
-                                    hasMore = state.hasMore,
-                                    onLoadMore = onLoadMore,
-                                )
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(adaptiveGridColumns(maxWidth)),
+                                contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+                                horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                                verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                items(state.albums, key = { it.id }) { album ->
+                                    AccountAlbumCard(
+                                        album = album,
+                                        onOpen = { onOpenAlbum(album.id) },
+                                        onLongPress = { removing = album },
+                                    )
+                                }
+                                item(key = "__more__", span = { GridItemSpan(maxLineSpan) }) {
+                                    AccountGridFooter(
+                                        loadingMore = state.loadingMore,
+                                        hasMore = state.hasMore,
+                                        onLoadMore = onLoadMore,
+                                    )
+                                }
                             }
                         }
                         // 一页可能只有几条：列表不满一屏时自动续一页（与书库同一套做法）

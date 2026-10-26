@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -118,81 +119,152 @@ fun CategoryScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var sortExpanded by remember { mutableStateOf(false) }
+    // 平板上把分类树常驻在左侧（真正的平板：短边 >= 600dp 且宽度 >= 840dp）。
+    // 手机仍是原来的 ModalNavigationDrawer，所有交互保持不变。
+    val permanentDrawer = isWideWindow() && windowWidthDp() >= PERMANENT_DRAWER_MIN_WIDTH
 
     // 抽屉不跟着页面走：切到别的页面（底栏切 tab / 进详情页 / App 退到后台）时要自己收起来（用户要求）。
     // 不这么做会有两个后果：切走时抽屉跟着旧页面一起滑出去；而 `rememberDrawerState` 内部是
     // `rememberSaveable`，会把"展开"存进这个 tab 的存档里，下次切回分类页抽屉又自己弹开。
     // 用 `snapTo` 而不是 `close()`：切页动画一开始就把状态落定，收起动作不依赖动画跑完
     // （旧页面的组合在退场动画结束时就销毁，这里的协程也会被取消）。
-    OnPauseEffect {
-        if (drawerState.isOpen) scope.launch { drawerState.snapTo(DrawerValue.Closed) }
+    // 常驻抽屉没有"收起"概念，不挂这个效果。
+    if (!permanentDrawer) {
+        OnPauseEffect {
+            if (drawerState.isOpen) scope.launch { drawerState.snapTo(DrawerValue.Closed) }
+        }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
+    if (permanentDrawer) {
+        Row(modifier = modifier.fillMaxSize()) {
             CategoryDrawer(
                 state = state,
                 drawerState = drawerState,
-                onSelectMain = { group ->
-                    onSelectMain(group)
-                    // 只有「全部」一项的主分类：没有第二层可挑，选完直接收起
-                    if (!group.hasRealSubs) scope.launch { drawerState.close() }
-                },
-                onSelectSub = { sub ->
-                    onSelectSub(sub)
-                    scope.launch { drawerState.close() }
-                },
+                onSelectMain = onSelectMain,
+                onSelectSub = onSelectSub,
                 onRetry = onRetry,
-                onClose = { scope.launch { drawerState.close() } },
+                onClose = {},
+                permanent = true,
             )
-        },
-    ) {
-        Column(modifier = modifier.fillMaxSize()) {
-            // 标题下的那一行才是操作行（用户要求：排序菜单与分类按钮**同一行**）
-            Text(
-                text = "分类",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CategorySelectorButton(
-                    label = state.selectorLabel,
-                    onClick = { scope.launch { drawerState.open() } },
-                    modifier = Modifier.weight(1f),
-                )
-                CategorySortMenu(
-                    selected = state.sort,
-                    options = state.sorts,
-                    expanded = sortExpanded,
-                    onExpandedChange = { sortExpanded = it },
-                    onSelect = onSortChange,
-                )
-            }
-
-            // 正文区铺灰色底；标题 / 操作行留在根部 Scaffold 的白底上（全 App 统一）
+            // 常驻面板与正文都是白/灰拼色，靠这条 1dp 竖线把边界画出来
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(MaterialTheme.colorScheme.background),
-            ) {
-                CategoryBody(
+                    .fillMaxHeight()
+                    .width(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant),
+            )
+            CategoryPageContent(
+                state = state,
+                permanentDrawer = true,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+                onOpenDrawer = {},
+                onSortChange = onSortChange,
+                onRefresh = onRefresh,
+                onLoadMore = onLoadMore,
+                onRetry = onRetry,
+                onToggleViewMode = onToggleViewMode,
+                onOpenAlbum = onOpenAlbum,
+            )
+        }
+    } else {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                CategoryDrawer(
                     state = state,
-                    onRefresh = onRefresh,
-                    onLoadMore = onLoadMore,
+                    drawerState = drawerState,
+                    onSelectMain = { group ->
+                        onSelectMain(group)
+                        // 只有「全部」一项的主分类：没有第二层可挑，选完直接收起
+                        if (!group.hasRealSubs) scope.launch { drawerState.close() }
+                    },
+                    onSelectSub = { sub ->
+                        onSelectSub(sub)
+                        scope.launch { drawerState.close() }
+                    },
                     onRetry = onRetry,
-                    onToggleViewMode = onToggleViewMode,
-                    onOpenAlbum = onOpenAlbum,
+                    onClose = { scope.launch { drawerState.close() } },
+                )
+            },
+        ) {
+            CategoryPageContent(
+                state = state,
+                permanentDrawer = false,
+                modifier = modifier,
+                onOpenDrawer = { scope.launch { drawerState.open() } },
+                onSortChange = onSortChange,
+                onRefresh = onRefresh,
+                onLoadMore = onLoadMore,
+                onRetry = onRetry,
+                onToggleViewMode = onToggleViewMode,
+                onOpenAlbum = onOpenAlbum,
+            )
+        }
+    }
+}
+
+/** 分类页正文（标题 / 操作行 / 灰色内容区），抽屉与常驻抽屉两种外壳共用。 */
+@Composable
+private fun CategoryPageContent(
+    state: CategoryUiState,
+    permanentDrawer: Boolean,
+    modifier: Modifier = Modifier,
+    onOpenDrawer: () -> Unit,
+    onSortChange: (CategorySort) -> Unit,
+    onRefresh: () -> Unit,
+    onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
+    onToggleViewMode: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    var sortExpanded by remember { mutableStateOf(false) }
+    Column(modifier = modifier.fillMaxSize()) {
+        // 标题下的那一行才是操作行（用户要求：排序菜单与分类按钮**同一行**）
+        Text(
+            text = "分类",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 8.dp, end = 4.dp),
+            // 常驻抽屉已经显示了当前分类，选择器按钮隐藏，排序菜单靠右
+            horizontalArrangement = if (permanentDrawer) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (!permanentDrawer) {
+                CategorySelectorButton(
+                    label = state.selectorLabel,
+                    onClick = onOpenDrawer,
+                    modifier = Modifier.weight(1f),
                 )
             }
+            CategorySortMenu(
+                selected = state.sort,
+                options = state.sorts,
+                expanded = sortExpanded,
+                onExpandedChange = { sortExpanded = it },
+                onSelect = onSortChange,
+            )
+        }
+
+        // 正文区铺灰色底；标题 / 操作行留在根部 Scaffold 的白底上（全 App 统一）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(MaterialTheme.colorScheme.background),
+        ) {
+            CategoryBody(
+                state = state,
+                onRefresh = onRefresh,
+                onLoadMore = onLoadMore,
+                onRetry = onRetry,
+                onToggleViewMode = onToggleViewMode,
+                onOpenAlbum = onOpenAlbum,
+            )
         }
     }
 }
@@ -419,25 +491,27 @@ private fun CategoryAlbumGrid(
     val gridState = rememberLazyGridState()
     SelectionChangeEffect(state.selection.cacheKey) { gridState.scrollToItem(0) }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
-        state = gridState,
-        // 与书库 / 最近浏览 / 搜索结果页共用同一组间距（用户要求卡片之间更紧、卡片更大）
-        contentPadding = PaddingValues(GRID_CONTENT_PADDING),
-        horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-        verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            CategoryCountBar(state = state, onToggleViewMode = onToggleViewMode)
-        }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(adaptiveGridColumns(maxWidth, minColumns = ONLINE_GRID_COLUMNS)),
+            state = gridState,
+            // 与书库 / 最近浏览 / 搜索结果页共用同一组间距（用户要求卡片之间更紧、卡片更大）
+            contentPadding = PaddingValues(GRID_CONTENT_PADDING),
+            horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+            verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                CategoryCountBar(state = state, onToggleViewMode = onToggleViewMode)
+            }
 
-        items(state.albums, key = { it.id }) { item ->
-            OnlineGridCard(item = item, onOpen = { onOpenAlbum(item.id) })
-        }
+            items(state.albums, key = { it.id }) { item ->
+                OnlineGridCard(item = item, onOpen = { onOpenAlbum(item.id) })
+            }
 
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            CategoryFooter(state = state, onLoadMore = onLoadMore)
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                CategoryFooter(state = state, onLoadMore = onLoadMore)
+            }
         }
     }
 }
@@ -534,12 +608,12 @@ private val MAIN_PANE_WIDTH: Dp = 140.dp
 /**
  * 左侧双层抽屉。
  *
- * 用 Material3 的 [ModalNavigationDrawer] + [ModalDrawerSheet]，而不是自己画一层遮罩：
- * 返回键关闭、点遮罩关闭、左边缘滑开、系统手势的 predictive back 都是它自带的，
- * 自己实现这些细节只会漏掉其中一两条。
+ * 手机（默认）：用 Material3 的 [ModalNavigationDrawer] + [ModalDrawerSheet]，从边缘滑进，
+ * 返回键关闭、点遮罩关闭，宽度按窗口的 88% 算、上限 360dp，与原来完全一致。
  *
- * 宽度按窗口宽度的 88% 算、上限 [MAX_DRAWER_WIDTH]（Material 自己也是 360dp 封顶）：
- * 手机上两层都够宽，平板上不会被拉成一整屏。**抽屉本体不带圆角**（用户要求）。
+ * 平板常驻（permanent=true）：不套 ModalDrawerSheet，纯一个占 [PERMANENT_DRAWER_WIDTH] 的面板，
+ * 永远展开，没有关闭/收起动画，图标栏隐藏「选择分类」标题行与关闭按钮。
+ * 分类树直接钉在左侧，不用每次点「☰ 同人 · 漢化」再弹一遍。
  */
 @Composable
 private fun CategoryDrawer(
@@ -549,24 +623,61 @@ private fun CategoryDrawer(
     onSelectSub: (CategorySub) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
+    permanent: Boolean = false,
 ) {
-    // 抽屉宽度按**窗口**宽度算（不是 `Configuration.screenWidthDp`：分屏 / 小窗下后者是整块屏幕，
-    // 抽屉会比窗口还宽，lint 的 ConfigurationScreenWidthHeight 也是这个原因）
-    val density = LocalDensity.current
-    val windowWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
-    val drawerWidth = (windowWidth * 0.88f).coerceAtMost(MAX_DRAWER_WIDTH)
+    if (permanent) {
+        // 平板常驻模式：纯面板，不套 ModalDrawerSheet，宽度固定为 PERMANENT_DRAWER_WIDTH
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(PERMANENT_DRAWER_WIDTH)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            CategoryDrawerContent(
+                state = state,
+                showTitleBar = false,
+                onSelectMain = onSelectMain,
+                onSelectSub = onSelectSub,
+                onRetry = onRetry,
+                onClose = onClose,
+            )
+        }
+    } else {
+        // 手机 Modal 模式：原逻辑完全不动
+        val density = LocalDensity.current
+        val windowWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
+        val drawerWidth = (windowWidth * 0.88f).coerceAtMost(MAX_DRAWER_WIDTH)
 
-    ModalDrawerSheet(
-        drawerState = drawerState,
-        modifier = Modifier.width(drawerWidth),
-        // 用户要求：右上角 / 右下角不要圆角（默认是 16dp 的 large 形状）
-        drawerShape = RectangleShape,
-        // **不再加一遍系统栏内边距**：外层 `ModeRoot` 的 Scaffold 已经把状态栏那块让出来了
-        // （NavHost 带 `padding`），面板自己再加一层会把「选择分类」顶到屏幕中间
-        // （详情页的 TopAppBar 踩过同一件事）。底部由外层底栏挡住，也不需要面板再避让。
-        windowInsets = WindowInsets(0, 0, 0, 0),
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        ModalDrawerSheet(
+            drawerState = drawerState,
+            modifier = Modifier.width(drawerWidth),
+            drawerShape = RectangleShape,
+            windowInsets = WindowInsets(0, 0, 0, 0),
+        ) {
+            CategoryDrawerContent(
+                state = state,
+                showTitleBar = true,
+                onSelectMain = onSelectMain,
+                onSelectSub = onSelectSub,
+                onRetry = onRetry,
+                onClose = onClose,
+            )
+        }
+    }
+}
+
+/** 抽屉内部内容（手机 Modal 与平板常驻共用）。 */
+@Composable
+private fun CategoryDrawerContent(
+    state: CategoryUiState,
+    showTitleBar: Boolean,
+    onSelectMain: (CategoryGroup) -> Unit,
+    onSelectSub: (CategorySub) -> Unit,
+    onRetry: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (showTitleBar) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -580,38 +691,38 @@ private fun CategoryDrawer(
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
 
-            when {
-                state.groups.isEmpty() && state.catalogError != null -> CategoryDrawerError(
-                    message = state.catalogError,
-                    onRetry = onRetry,
+        when {
+            state.groups.isEmpty() && state.catalogError != null -> CategoryDrawerError(
+                message = state.catalogError,
+                onRetry = onRetry,
+            )
+
+            state.groups.isEmpty() -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator() }
+
+            else -> Row(modifier = Modifier.fillMaxSize()) {
+                CategoryMainPane(
+                    groups = state.groups,
+                    selectedSlug = state.mainSlug,
+                    onSelect = onSelectMain,
                 )
-
-                state.groups.isEmpty() -> Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
-
-                else -> Row(modifier = Modifier.fillMaxSize()) {
-                    CategoryMainPane(
-                        groups = state.groups,
-                        selectedSlug = state.mainSlug,
-                        onSelect = onSelectMain,
-                    )
-                    // 两级之间的分隔线：两栏都是白底，靠这条 1dp 的线分界
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant),
-                    )
-                    CategorySubPane(
-                        subs = state.main?.subs.orEmpty(),
-                        selectedSlug = state.subSlug,
-                        mainSlug = state.mainSlug,
-                        onSelect = onSelectSub,
-                    )
-                }
+                // 两级之间的分隔线：两栏都是白底，靠这条 1dp 的线分界
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant),
+                )
+                CategorySubPane(
+                    subs = state.main?.subs.orEmpty(),
+                    selectedSlug = state.subSlug,
+                    mainSlug = state.mainSlug,
+                    onSelect = onSelectSub,
+                )
             }
         }
     }

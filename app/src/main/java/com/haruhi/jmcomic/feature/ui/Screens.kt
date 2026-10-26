@@ -275,8 +275,9 @@ fun LibraryScreen(
                         "去「发现」搜索并加入书库"
                     },
                 )
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(columns),
+                else -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    LazyVerticalGrid(
+                    columns = GridCells.Fixed(adaptiveGridColumns(maxWidth, minColumns = columns)),
                     state = rememberLazyGridState(),
                     contentPadding = PaddingValues(GRID_CONTENT_PADDING),
                     horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
@@ -331,6 +332,7 @@ fun LibraryScreen(
                                     .padding(vertical = 12.dp),
                             )
                         }
+                    }
                     }
                 }
             }
@@ -770,8 +772,9 @@ fun RecentScreen(
                     title = "还没有浏览记录",
                     hint = "点开任意漫画详情后会出现在这里",
                 )
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(columns),
+                else -> BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    LazyVerticalGrid(
+                    columns = GridCells.Fixed(adaptiveGridColumns(maxWidth, minColumns = columns)),
                     contentPadding = PaddingValues(GRID_CONTENT_PADDING),
                     horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
                     verticalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
@@ -790,6 +793,7 @@ fun RecentScreen(
                             onToggleCollected = null,
                         )
                     }
+                }
                 }
             }
         }
@@ -1674,8 +1678,9 @@ private fun SearchResultGrid(
         gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
     }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(ONLINE_GRID_COLUMNS),
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+        columns = GridCells.Fixed(adaptiveGridColumns(maxWidth, minColumns = ONLINE_GRID_COLUMNS)),
         state = gridState,
         contentPadding = PaddingValues(GRID_CONTENT_PADDING),
         horizontalArrangement = Arrangement.spacedBy(GRID_CARD_SPACING),
@@ -1696,6 +1701,7 @@ private fun SearchResultGrid(
         item(span = { GridItemSpan(maxLineSpan) }) {
             SearchResultFooter(state = state, result = result, onLoadMore = onLoadMore)
         }
+    }
     }
 }
 

@@ -4,12 +4,16 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.animation.AnimatedContentScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,6 +35,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -53,6 +59,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NamedNavArgument
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -86,6 +95,16 @@ private fun TaskBadgeIcon(badgeCount: Int, hasFailure: Boolean, icon: ImageVecto
         badgeCount > 0 -> BadgedBox(badge = { Badge { Text(badgeCount.toString()) } }) { content() }
         hasFailure -> BadgedBox(badge = { Badge {} }) { content() }
         else -> content()
+    }
+}
+
+/** 底栏与侧栏共用的 tab 图标（「我的」带任务角标）。 */
+@Composable
+private fun TabIcon(tab: Tab, badgeCount: Int, hasFailure: Boolean) {
+    if (tab == Tab.MINE) {
+        TaskBadgeIcon(badgeCount = badgeCount, hasFailure = hasFailure, icon = tab.icon)
+    } else {
+        Icon(tab.icon, contentDescription = tab.label)
     }
 }
 
@@ -313,6 +332,19 @@ fun ModeRoot(
     val currentRoute = backStackEntry?.destination?.route
     // 详情页与阅读器隐藏底部导航（计划 §9 第 2 条）
     val showBottomBar = currentRoute in Tab.entries.map { it.route }
+    // 平板（窗口短边 >= 600dp）用侧栏替代底栏；手机横屏的短边仍只有 300~400dp，
+    // 因此不会被误判成平板，底栏保持原样。
+    val wideShell = isWideWindow()
+    // 底栏/侧栏共用同一套切换逻辑：各 tab 保留独立滚动位置与筛选（§9 第 2 条）
+    val switchTab: (Tab) -> Unit = { tab ->
+        if (currentRoute != tab.route) {
+            navController.navigate(tab.route) {
+                popUpTo(Routes.LIBRARY) { saveState = true }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -378,31 +410,18 @@ fun ModeRoot(
                 // 各页真正的**滚动内容区**由各 Screen 自己铺 `background` 灰底。
                 containerColor = MaterialTheme.colorScheme.surface,
                 bottomBar = {
-                    if (showBottomBar) {
+                    if (showBottomBar && !wideShell) {
                         NavigationBar {
                             Tab.entries.forEach { tab ->
                                 NavigationBarItem(
                                     selected = currentRoute == tab.route,
-                                    onClick = {
-                                        if (currentRoute != tab.route) {
-                                            // 各 tab 保留独立滚动位置与筛选（§9 第 2 条）
-                                            navController.navigate(tab.route) {
-                                                popUpTo(Routes.LIBRARY) { saveState = true }
-                                                launchSingleTop = true
-                                                restoreState = true
-                                            }
-                                        }
-                                    },
+                                    onClick = { switchTab(tab) },
                                     icon = {
-                                        if (tab == Tab.MINE) {
-                                            TaskBadgeIcon(
-                                                badgeCount = taskState.badgeCount,
-                                                hasFailure = taskState.failedCount > 0,
-                                                icon = tab.icon,
-                                            )
-                                        } else {
-                                            Icon(tab.icon, contentDescription = tab.label)
-                                        }
+                                        TabIcon(
+                                            tab = tab,
+                                            badgeCount = taskState.badgeCount,
+                                            hasFailure = taskState.failedCount > 0,
+                                        )
                                     },
                                     label = { Text(tab.label) },
                                 )
@@ -411,10 +430,34 @@ fun ModeRoot(
                     }
                 },
             ) { padding ->
-                NavHost(
-                    navController = navController,
-                    startDestination = Routes.LIBRARY,
-                    modifier = Modifier.padding(padding),
+                Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    // 平板上底栏换成左侧导航栏；详情/阅读器/二级页与手机一样隐藏
+                    if (showBottomBar && wideShell) {
+                        NavigationRail(
+                            modifier = Modifier.fillMaxHeight(),
+                            // 系统栏内边距已经由外层 Scaffold 的 padding 让出，这里不再叠加
+                            windowInsets = WindowInsets(0, 0, 0, 0),
+                        ) {
+                            Tab.entries.forEach { tab ->
+                                NavigationRailItem(
+                                    selected = currentRoute == tab.route,
+                                    onClick = { switchTab(tab) },
+                                    icon = {
+                                        TabIcon(
+                                            tab = tab,
+                                            badgeCount = taskState.badgeCount,
+                                            hasFailure = taskState.failedCount > 0,
+                                        )
+                                    },
+                                    label = { Text(tab.label) },
+                                )
+                            }
+                        }
+                    }
+                    NavHost(
+                        navController = navController,
+                        startDestination = Routes.LIBRARY,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                     // 页面切换动画。三种情形分开处理：
                     // 1. **底栏 tab 之间**：按目标 tab 在底栏里的位置决定方向——
                     //    往右边的 tab 切就从右侧滑入、往左边切就从左侧滑入，
@@ -480,7 +523,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.MINE) { entry ->
+                    centeredComposable(Routes.MINE) { entry ->
                         val vm: MyViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         // 进页面/从别处回来**不联网**：只读本地缓存的夹数量，避免副标题跳动；
@@ -524,7 +567,7 @@ fun ModeRoot(
                     }
 
                     // 登录页：成功后关掉自己，有 next 就去 next（否则留在「我的」）
-                    composable(
+                    centeredComposable(
                         route = Routes.LOGIN,
                         arguments = listOf(
                             navArgument("next") { type = NavType.StringType; defaultValue = "" },
@@ -574,7 +617,7 @@ fun ModeRoot(
 
                     // 注册页：注册 → 邮箱验证码 → 自动登录。返回键三级语义（验证码 → 表单 → 上一页）
                     // 由 `AccountSignUpScreen` 自己接管；这里只负责成功后的落点。
-                    composable(
+                    centeredComposable(
                         route = Routes.SIGNUP,
                         arguments = listOf(
                             navArgument("next") { type = NavType.StringType; defaultValue = "" },
@@ -633,7 +676,7 @@ fun ModeRoot(
 
                     // 忘记密码：填注册邮箱 → `POST /forgot` → 「新密码已发送」面板。
                     // 服务端把用户名 + 新密码发到邮箱并作废旧密码；「去登录」回到栈里的登录页。
-                    composable(Routes.FORGOT) { entry ->
+                    centeredComposable(Routes.FORGOT) { entry ->
                         val vm: AccountForgotViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         AccountForgotScreen(
@@ -647,7 +690,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.ACCOUNT_FAVORITES) { entry ->
+                    centeredComposable(Routes.ACCOUNT_FAVORITES) { entry ->
                         val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         // 从夹内页 / 详情页回来时先按内存快照同步：取消收藏已就地减掉总数，
@@ -704,7 +747,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.ACCOUNT_PROFILE) { entry ->
+                    centeredComposable(Routes.ACCOUNT_PROFILE) { entry ->
                         val vm: AccountProfileViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         // 从编辑页返回：保存成功后新资料已写进账号缓存，这里把它同步到界面上
@@ -724,7 +767,7 @@ fun ModeRoot(
                     }
 
                     // 个人资料编辑：进页面先 GET 最新资料，加载完再渲染表单（避免官方 App 的回显 bug）
-                    composable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
+                    centeredComposable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
                         val vm: AccountProfileEditViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         AccountProfileEditScreen(
@@ -741,7 +784,7 @@ fun ModeRoot(
                     }
 
                     // 留言记录：我发过的留言（10/页）。删一条就地消失，点一行跳那本的评论 tab。
-                    composable(Routes.ACCOUNT_COMMENTS) { entry ->
+                    centeredComposable(Routes.ACCOUNT_COMMENTS) { entry ->
                         val vm: AccountCommentsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         AccountCommentsScreen(
@@ -761,7 +804,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.RECENT) { entry ->
+                    centeredComposable(Routes.RECENT) { entry ->
                         val vm: RecentViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         RecentScreen(
@@ -794,7 +837,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.DISCOVER) { entry ->
+                    centeredComposable(Routes.DISCOVER) { entry ->
                         val vm: OnlineSearchViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         OnlineSearchScreen(
@@ -903,7 +946,7 @@ fun ModeRoot(
                     }
                     */
 
-                    composable(Routes.TASKS) {
+                    centeredComposable(Routes.TASKS) {
                         MessageEffect(
                             taskState.message,
                             onConsume = taskViewModel::consumeMessage,
@@ -937,7 +980,7 @@ fun ModeRoot(
                         )
                     }
 
-                    composable(Routes.SETTINGS) { entry ->
+                    centeredComposable(Routes.SETTINGS) { entry ->
                         val vm: SettingsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
@@ -990,7 +1033,7 @@ fun ModeRoot(
                     // 更新下载由系统 DownloadManager 承担（进程被杀也继续），
                     // 这里只负责状态接线与"发安装 Intent / 开设置页"这类 Context 动作
                     //（与导出成品的 launchOutputIntent 同一模式）。
-                    composable(Routes.ABOUT) { entry ->
+                    centeredComposable(Routes.ABOUT) { entry ->
                         val vm: AboutViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
                         val state by vm.state.collectAsStateWithLifecycle()
                         // 从详情页（删文件/下载）或别的页面回来时重扫存储，数字跟着变
@@ -1075,7 +1118,7 @@ fun ModeRoot(
                     }
                     */
 
-                    composable(
+                    centeredComposable(
                         route = Routes.DETAIL,
                         arguments = listOf(
                             navArgument("albumId") { type = NavType.LongType },
@@ -1265,6 +1308,7 @@ fun ModeRoot(
                             onSetKeepScreenOn = vm::setKeepScreenOn,
                         )
                     }
+                    }
                 }
             }
 
@@ -1331,6 +1375,22 @@ internal fun tabShift(fromRoute: String?, toRoute: String?): Int {
     val to = Tab.indexOfRoute(toRoute)
     if (from < 0 || to < 0) return 1
     return to - from
+}
+
+/**
+ * 与 [composable] 相同，只是把页面内容套进 [CenteredContent]。
+ *
+ * 平板横屏时阅读型页面（设置、账号、我的、详情等）保持 840dp 的内容列；
+ * 手机窗口比 840dp 窄，套与不套的布局完全一致。
+ */
+private fun NavGraphBuilder.centeredComposable(
+    route: String,
+    arguments: List<NamedNavArgument> = emptyList(),
+    content: @Composable AnimatedContentScope.(NavBackStackEntry) -> Unit,
+) {
+    composable(route = route, arguments = arguments) { entry ->
+        CenteredContent { content(entry) }
+    }
 }
 
 /**
