@@ -878,15 +878,48 @@ private fun UpdateDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("发现新版本") },
+        title = {
+            val tag = when (val update = state.update) {
+                is UpdateState.Available -> update.tag
+                is UpdateState.Downloading -> update.tag
+                else -> null
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (tag.isNullOrBlank()) "发现新版本" else "发现新版本 $tag",
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if ((state.update as? UpdateState.Available)?.prerelease == true) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "预览版",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 when (val update = state.update) {
                     is UpdateState.Available -> {
-                        UpdateHeaderRow(update.tag, update.name, update.prerelease)
+                        if (update.name.isNotBlank()) {
+                            Text(
+                                text = update.name,
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                        }
                         if (update.body.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            if (update.name.isNotBlank()) {
+                                Spacer(Modifier.height(10.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
                             Spacer(Modifier.height(10.dp))
                             Text(
                                 text = update.body.replace("\r\n", "\n"),
@@ -904,8 +937,6 @@ private fun UpdateDialog(
                     }
 
                     is UpdateState.Downloading -> {
-                        Text("新版本 ${update.tag}", style = MaterialTheme.typography.titleSmall)
-                        Spacer(Modifier.height(12.dp))
                         UpdateProgressRow(update)
                     }
 
@@ -954,34 +985,3 @@ private fun UpdateDialog(
     )
 }
 
-/** 弹框内容头部：发行版标题（name）+ 预览版徽标 + 版本号（tag）。 */
-@Composable
-private fun UpdateHeaderRow(tag: String, name: String, prerelease: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = name.ifBlank { tag },
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        if (prerelease) {
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "预览版",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier
-                    .background(
-                        MaterialTheme.colorScheme.secondaryContainer,
-                        RoundedCornerShape(4.dp),
-                    )
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            )
-        }
-    }
-    Spacer(Modifier.height(2.dp))
-    Text(
-        text = tag,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
