@@ -119,86 +119,91 @@ fun CategoryScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    // 平板上把分类树常驻在左侧（真正的平板：短边 >= 600dp 且宽度 >= 840dp）。
-    // 手机仍是原来的 ModalNavigationDrawer，所有交互保持不变。
-    val permanentDrawer = isWideWindow() && windowWidthDp() >= PERMANENT_DRAWER_MIN_WIDTH
 
-    // 抽屉不跟着页面走：切到别的页面（底栏切 tab / 进详情页 / App 退到后台）时要自己收起来（用户要求）。
-    // 不这么做会有两个后果：切走时抽屉跟着旧页面一起滑出去；而 `rememberDrawerState` 内部是
-    // `rememberSaveable`，会把"展开"存进这个 tab 的存档里，下次切回分类页抽屉又自己弹开。
-    // 用 `snapTo` 而不是 `close()`：切页动画一开始就把状态落定，收起动作不依赖动画跑完
-    // （旧页面的组合在退场动画结束时就销毁，这里的协程也会被取消）。
-    // 常驻抽屉没有"收起"概念，不挂这个效果。
-    if (!permanentDrawer) {
-        OnPauseEffect {
-            if (drawerState.isOpen) scope.launch { drawerState.snapTo(DrawerValue.Closed) }
-        }
-    }
+    // 用**本页实际可用宽度**判断，而不是整窗宽度：平板双栏时分类页只占左栏 420dp，
+    // 那时再塞一个 320dp 的常驻抽屉，正文就只剩几十 dp 了。
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        // 平板上把分类树常驻在左侧（真正的平板：短边 >= 600dp 且本页宽度 >= 840dp）。
+        // 手机仍是原来的 ModalNavigationDrawer，所有交互保持不变。
+        val permanentDrawer = isWideWindow() && maxWidth >= PERMANENT_DRAWER_MIN_WIDTH
 
-    if (permanentDrawer) {
-        Row(modifier = modifier.fillMaxSize()) {
-            CategoryDrawer(
-                state = state,
-                drawerState = drawerState,
-                onSelectMain = onSelectMain,
-                onSelectSub = onSelectSub,
-                onRetry = onRetry,
-                onClose = {},
-                permanent = true,
-            )
-            // 常驻面板与正文都是白/灰拼色，靠这条 1dp 竖线把边界画出来
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(1.dp)
-                    .background(MaterialTheme.colorScheme.outlineVariant),
-            )
-            CategoryPageContent(
-                state = state,
-                permanentDrawer = true,
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                onOpenDrawer = {},
-                onSortChange = onSortChange,
-                onRefresh = onRefresh,
-                onLoadMore = onLoadMore,
-                onRetry = onRetry,
-                onToggleViewMode = onToggleViewMode,
-                onOpenAlbum = onOpenAlbum,
-            )
+        // 抽屉不跟着页面走：切到别的页面（底栏切 tab / 进详情页 / App 退到后台）时要自己收起来（用户要求）。
+        // 不这么做会有两个后果：切走时抽屉跟着旧页面一起滑出去；而 `rememberDrawerState` 内部是
+        // `rememberSaveable`，会把"展开"存进这个 tab 的存档里，下次切回分类页抽屉又自己弹开。
+        // 用 `snapTo` 而不是 `close()`：切页动画一开始就把状态落定，收起动作不依赖动画跑完
+        // （旧页面的组合在退场动画结束时就销毁，这里的协程也会被取消）。
+        // 常驻抽屉没有"收起"概念，不挂这个效果。
+        if (!permanentDrawer) {
+            OnPauseEffect {
+                if (drawerState.isOpen) scope.launch { drawerState.snapTo(DrawerValue.Closed) }
+            }
         }
-    } else {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
+
+        if (permanentDrawer) {
+            Row(modifier = Modifier.fillMaxSize()) {
                 CategoryDrawer(
                     state = state,
                     drawerState = drawerState,
-                    onSelectMain = { group ->
-                        onSelectMain(group)
-                        // 只有「全部」一项的主分类：没有第二层可挑，选完直接收起
-                        if (!group.hasRealSubs) scope.launch { drawerState.close() }
-                    },
-                    onSelectSub = { sub ->
-                        onSelectSub(sub)
-                        scope.launch { drawerState.close() }
-                    },
+                    onSelectMain = onSelectMain,
+                    onSelectSub = onSelectSub,
                     onRetry = onRetry,
-                    onClose = { scope.launch { drawerState.close() } },
+                    onClose = {},
+                    permanent = true,
                 )
-            },
-        ) {
-            CategoryPageContent(
-                state = state,
-                permanentDrawer = false,
-                modifier = modifier,
-                onOpenDrawer = { scope.launch { drawerState.open() } },
-                onSortChange = onSortChange,
-                onRefresh = onRefresh,
-                onLoadMore = onLoadMore,
-                onRetry = onRetry,
-                onToggleViewMode = onToggleViewMode,
-                onOpenAlbum = onOpenAlbum,
-            )
+                // 常驻面板与正文都是白/灰拼色，靠这条 1dp 竖线把边界画出来
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant),
+                )
+                CategoryPageContent(
+                    state = state,
+                    permanentDrawer = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    onOpenDrawer = {},
+                    onSortChange = onSortChange,
+                    onRefresh = onRefresh,
+                    onLoadMore = onLoadMore,
+                    onRetry = onRetry,
+                    onToggleViewMode = onToggleViewMode,
+                    onOpenAlbum = onOpenAlbum,
+                )
+            }
+        } else {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    CategoryDrawer(
+                        state = state,
+                        drawerState = drawerState,
+                        onSelectMain = { group ->
+                            onSelectMain(group)
+                            // 只有「全部」一项的主分类：没有第二层可挑，选完直接收起
+                            if (!group.hasRealSubs) scope.launch { drawerState.close() }
+                        },
+                        onSelectSub = { sub ->
+                            onSelectSub(sub)
+                            scope.launch { drawerState.close() }
+                        },
+                        onRetry = onRetry,
+                        onClose = { scope.launch { drawerState.close() } },
+                    )
+                },
+            ) {
+                CategoryPageContent(
+                    state = state,
+                    permanentDrawer = false,
+                    modifier = Modifier,
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                    onSortChange = onSortChange,
+                    onRefresh = onRefresh,
+                    onLoadMore = onLoadMore,
+                    onRetry = onRetry,
+                    onToggleViewMode = onToggleViewMode,
+                    onOpenAlbum = onOpenAlbum,
+                )
+            }
         }
     }
 }

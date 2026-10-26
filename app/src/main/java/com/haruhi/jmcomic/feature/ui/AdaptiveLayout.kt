@@ -22,12 +22,36 @@ internal val CONTENT_MAX_WIDTH: Dp = 840.dp
 internal val PERMANENT_DRAWER_MIN_WIDTH: Dp = 840.dp
 internal val PERMANENT_DRAWER_WIDTH: Dp = 320.dp
 
+/**
+ * 双栏（左列表 + 右详情）的触发宽度与左侧列表列宽。
+ *
+ * 比 [isWideWindow] 更严：左栏固定占 420dp 后，右栏还要放得下详情页。
+ */
+internal val SPLIT_MIN_WIDTH: Dp = 840.dp
+internal val SPLIT_LIST_WIDTH: Dp = 420.dp
+
 /** 当前窗口宽度（dp）。分屏/小窗下按实际窗口算，不读整块屏幕宽度。 */
 @Composable
 internal fun windowWidthDp(): Dp {
     val density = LocalDensity.current
     return with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
 }
+
+/** 当前窗口高度（dp）。 */
+@Composable
+internal fun windowHeightDp(): Dp {
+    val density = LocalDensity.current
+    return with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
+}
+
+/**
+ * 宽屏横放（真平板横屏）。
+ *
+ * 阅读器并排两页只在这种窗口下启用：手机横屏短边不足 600dp，不算数；
+ * 平板竖放时左右两页会挤成窄条，也不并页。
+ */
+@Composable
+internal fun isWideLandscape(): Boolean = isWideWindow() && windowWidthDp() > windowHeightDp()
 
 /**
  * 是否使用平板外壳（侧栏、常驻抽屉）。

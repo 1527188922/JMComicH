@@ -354,30 +354,77 @@ private fun HorizontalReader(
     onRequestPage: (Int) -> Unit,
     onTapRetry: (Int) -> Unit,
 ) {
+    // 平板横屏并排两页（方案 B）：只在**横向分页 + 真平板 + 窗口横放**时启用。
+    // 手机横屏短边不足 600dp，仍旧一页一张，行为与改动前完全一致。
+    val twoPage = isWideLandscape()
+    val pageCount = if (twoPage) (state.pages.size + 1) / 2 else state.pages.size
     val pagerState = rememberPagerState(
-        initialPage = state.startPage.coerceIn(0, (state.pages.size - 1).coerceAtLeast(0)),
-        pageCount = { state.pages.size },
+        // 恢复位置：双页时按"张"换算成跨页序号（第 5 张 → 第 3 个跨页）
+        initialPage = (if (twoPage) state.startPage / 2 else state.startPage)
+            .coerceIn(0, (pageCount - 1).coerceAtLeast(0)),
+        pageCount = { if (twoPage) (state.pages.size + 1) / 2 else state.pages.size },
     )
 
+    // 进入双页（转屏 / 分屏变宽 / 从上下翻页切过来）时，把当前进度换算到跨页单位，
+    // 避免手机上的第 5 页在平板上被当成第 5 个跨页（会跳到第 9 张）。
+    // 单页模式不做这一步：手机上的既有行为（首帧按 startPage 定位）完全保留。
+    LaunchedEffect(twoPage) {
+        if (!twoPage) return@LaunchedEffect
+        val target = state.currentPage / 2
+        val maxIndex = ((state.pages.size + 1) / 2 - 1).coerceAtLeast(0)
+        if (target in 0..maxIndex && pagerState.currentPage != target) {
+            pagerState.scrollToPage(target)
+        }
+    }
+
     val currentOnPositionChanged by rememberUpdatedState(onPositionChanged)
-    LaunchedEffect(pagerState, state.currentChapter?.chapterId) {
+    LaunchedEffect(pagerState, state.currentChapter?.chapterId, twoPage) {
         snapshotFlow { pagerState.currentPage }
             .distinctUntilChanged()
-            .collect { page -> currentOnPositionChanged(page, 0f) }
+            .collect { page ->
+                // 双页时上报**这一跨页的第一张**：与手机的逐页进度共用同一个存储，
+                // 转屏 / 切回手机后位置不会丢（第 5 张回来仍落在第 5 张附近）。
+                currentOnPositionChanged(if (twoPage) page * 2 else page, 0f)
+            }
     }
 
     HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize(),
         pageSpacing = 4.dp,
-    ) { pageIndex ->
-        val page = state.pages.getOrNull(pageIndex) ?: return@HorizontalPager
-        ReaderPageItem(
-            page = page,
-            onRequest = { onRequestPage(page.index) },
-            onRetry = { onTapRetry(page.index) },
-            fillHeight = true,
-        )
+    ) { spreadIndex ->
+        if (!twoPage) {
+            val page = state.pages.getOrNull(spreadIndex) ?: return@HorizontalPager
+            ReaderPageItem(
+                page = page,
+                onRequest = { onRequestPage(page.index) },
+                onRetry = { onTapRetry(page.index) },
+                fillHeight = true,
+            )
+        } else {
+            // 并排两页：RTL 由外层 CompositionLocalProvider(LocalLayoutDirection) 处理——
+            // Row 在 Rtl 下从右往左排，天然就是"第 2i 张在右、第 2i+1 张在左"。
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                repeat(2) { offset ->
+                    val page = state.pages.getOrNull(spreadIndex * 2 + offset)
+                    if (page == null) {
+                        Spacer(Modifier.weight(1f))
+                    } else {
+                        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            ReaderPageItem(
+                                page = page,
+                                onRequest = { onRequestPage(page.index) },
+                                onRetry = { onTapRetry(page.index) },
+                                fillHeight = true,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
