@@ -95,7 +95,7 @@ fun AccountProfileEditScreen(
     }
     // 保存中不允许退出（请求挂在页面的 viewModelScope 上，一 pop 就会被取消）；
     // 保存成功那一帧也不允许再手动退，避免和下面的 `onSaved()` 一起 pop 两次。
-    BackHandler(enabled = state.saved || state.updating || state.dirty) {
+    PageBackHandler(enabled = state.saved || state.updating || state.dirty) {
         if (!state.updating && !state.saved) showDiscardDialog = true
     }
 

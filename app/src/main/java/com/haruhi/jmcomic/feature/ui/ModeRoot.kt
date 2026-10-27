@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,9 +58,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -334,8 +343,9 @@ fun ModeRoot(
     navController: NavHostController = rememberNavController(),
 ) {
     val factory = remember(container) { ViewModelFactory(container) }
-    val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
+    // 主栈：四个 tab、登录/注册，以及换到右栏之前的所有页面都在这里。
+    val primaryEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = primaryEntry?.destination?.route
     // 平板（窗口短边 >= 600dp）用侧栏替代底栏；手机横屏的短边仍只有 300~400dp，
     // 因此不会被误判成平板，底栏保持原样。
     val wideShell = isWideWindow()
@@ -344,127 +354,75 @@ fun ModeRoot(
     val splitCapable = wideShell && windowWidthDp() >= SPLIT_MIN_WIDTH
     // 阅读器的左右分栏只在**横屏**启用：pad 竖起来时（用户要求）阅读页占满屏幕。
     val landscape = windowWidthDp() > windowHeightDp()
-    // 右栏是**独立**的导航栈：详情 / 搜索结果 / 「我的」二级页都在右栏里进出，
-    // 系统返回键先退右栏，不会把左栏的页面一起退掉。
+    // 辅栈：第二个独立的 NavHost。两个栈轮流出任"左栏（上一页）" / "右栏（当前页）"。
+    // 这样从右栏再点进下一页时，当前页只是**换到左边**，不会被销毁重建——
+    // 详情 / 搜索结果 / 收藏夹 / 阅读位置都能原样保留（用户 2026-10-27 要求）。
     val paneNavController = rememberNavController()
     val paneEntry by paneNavController.currentBackStackEntryAsState()
-    val paneRoute = paneEntry?.destination?.route
-    // 底栏里的四个 tab（左栏的根页面）
-    val tabRoutes = remember { Tab.entries.map { it.route }.toSet() }
-    val leftRouteIsTab = currentRoute in tabRoutes
-    // 登录 / 注册 / 找回密码：这三个页面永远整页显示，登录成功后按落点回到左栏或右栏。
-    var authReturnRoute by rememberSaveable { mutableStateOf<String?>(null) }
-    // 阅读时左栏临时变成"这一本的详情"，右栏放阅读器（用户 2026-10-27 要求）
-    val readingSplit = splitCapable && landscape &&
-        currentRoute == Routes.DETAIL && paneRoute == Routes.READER
-    // 阅读中把 pad 竖起来（或窗口被缩到不再横屏分栏）：阅读器**整屏覆盖**（用户要求）。
-    // 不把它挪回主栈：挪回去会换一个 ViewModel，当前章节 / 阅读位置都会丢；
-    // 这里只是把右栏的宿主铺满整块内容区，旋转回横屏又会自然回到左右分栏。
-    val readerFullscreen = paneRoute == Routes.READER && !(splitCapable && landscape)
-    // 右栏有内容、但窗口已经窄到分不了栏（分屏 / 小窗）时：让右栏里的页面整屏接管，
-    // 与手机上"二级页整页显示"的观感一致；左栏保持 0 宽但**不退出组合**，返回栈不丢。
-    val paneHasContent = paneRoute != null && paneRoute != SPLIT_PANE_EMPTY
-    // 只有左栏是 tab 时才允许右栏整屏接管：根栈在登录页 / 详情页时不能把右栏盖上去。
-    val paneExpanded = readerFullscreen ||
-        (!splitCapable && paneHasContent && leftRouteIsTab)
-    // 只有两栏都有意义时才真的分栏：
-    // - 左栏是 tab（书库 / 分类 / 发现 / 我的），右栏可以是详情、结果或二级页；
-    // - 或者左栏是阅读中的详情、右栏是阅读器。
-    // 其余情况（登录页、设置里的二级页在手机上等）仍然整页显示，手机 UI 完全不变。
-    val splitActive = splitCapable && (leftRouteIsTab || readingSplit)
-    // 右栏当前是否露出来（分栏，或整屏接管）。
-    val paneVisible = splitActive || paneExpanded
-    // 底栏/侧栏：分栏时侧栏一直保留（即使左栏临时变成了详情），手机行为不变。
-    // 阅读器 / 右栏页面整屏接管时不显示底栏/侧栏，保证它真正占满屏幕。
-    // 详情 / 阅读器 / 二级页在非分栏时仍然隐藏底部导航（计划 §9 第 2 条）。
-    val showBottomBar = !paneExpanded && (leftRouteIsTab || splitActive)
+    // 两个栈的左右站位；存进 rememberSaveable，配置变更后仍能还原
+    val primaryOnLeftState = rememberSaveable { mutableStateOf(true) }
+    val activeTabState = rememberSaveable { mutableStateOf(Routes.LIBRARY) }
+    val navigator = remember(navController, paneNavController) {
+        CarouselNavigator(
+            primaryNav = navController,
+            secondaryNav = paneNavController,
+            primaryOnLeftState = primaryOnLeftState,
+            activeTabState = activeTabState,
+        )
+    }
+    // 主栈的动作：tab / 登录页 / 换到右栏后的页面都用它
+    val primaryActions = remember(navigator) {
+        PaneNavActions(
+            openChild = { route -> navigator.openChild(CarouselHost.Primary, route) },
+            back = { navigator.back() },
+            openLogin = { next -> navigator.openLogin(next) },
+            openReadingFromTab = { albumId, chapterId ->
+                navigator.openReadingFromTab(albumId, chapterId)
+            },
+        )
+    }
+    // 辅栈的动作：详情 / 结果 / 二级页 / 阅读器
+    val secondaryActions = remember(navigator) {
+        PaneNavActions(
+            openChild = { route -> navigator.openChild(CarouselHost.Secondary, route) },
+            back = { navigator.back() },
+            openLogin = { next -> navigator.openLogin(next) },
+            openReadingFromTab = { albumId, chapterId ->
+                navigator.openChild(CarouselHost.Secondary, Routes.reader(albumId, chapterId))
+            },
+        )
+    }
+    // 左右两栏当前各显示什么（主栈/辅栈按站位换边）
+    val primaryOnLeft = primaryOnLeftState.value
+    val leftRoute = if (primaryOnLeft) currentRoute else paneEntry?.destination?.route
+    val rightRoute = if (primaryOnLeft) paneEntry?.destination?.route else currentRoute
+    val rightHasPage = rightRoute != null && rightRoute != SPLIT_PANE_EMPTY
+    val leftIsTab = leftRoute != null && Tab.entries.any { it.route == leftRoute }
+    // 登录/注册/找回密码永远整页：压在主栈上，布局临时只显示主栈
+    val authOpen = isAuthRoute(currentRoute)
+    // 阅读器挂在右侧（当前页）时：竖屏 / 窄窗整屏，横屏平板保留"左详情 + 右阅读器"
+    val readerFullscreen = rightRoute == Routes.READER && !(splitCapable && landscape)
+    val readerOnScreen = !authOpen &&
+        (leftRoute == Routes.READER || rightRoute == Routes.READER)
+    val mode = when {
+        authOpen -> CarouselMode.OnlyPrimary
+        readerFullscreen -> CarouselMode.OnlyRight
+        splitCapable -> CarouselMode.Split
+        rightHasPage -> CarouselMode.OnlyRight
+        else -> CarouselMode.OnlyLeft
+    }
+    // 侧栏：分栏时一直显示（阅读中也保留，方便切 tab）；左栏是 tab 的单栏布局也显示
+    val showRail = wideShell &&
+        (mode == CarouselMode.Split || (mode == CarouselMode.OnlyLeft && leftIsTab))
+    // 手机底栏：只有"当前页就是 tab 本身"时才显示
+    val showBottomBar = !wideShell && mode == CarouselMode.OnlyLeft && leftIsTab
     // 底栏/侧栏共用同一套切换逻辑：各 tab 保留独立滚动位置与筛选（§9 第 2 条）
-    val switchTab: (Tab) -> Unit = { tab ->
-        if (currentRoute != tab.route) {
-            // 详情/二级页不属于任何 tab：切 tab 时把右栏退回空态，免得切回来还残留上一本
-            paneNavController.popBackStack(SPLIT_PANE_EMPTY, inclusive = false)
-            navController.navigate(tab.route) {
-                popUpTo(Routes.LIBRARY) { saveState = true }
-                launchSingleTop = true
-                restoreState = true
-            }
-        }
-    }
-    // 打开一个二级页：分栏时进右栏，其余情况（手机）与以前一样整页入栈。
-    // 右栏里只保留**当前这一个**二级页（点另一项是替换，不是往栈上叠）：
-    // 否则「收藏 → 最近浏览」按返回会先回收藏，与「我的」的直觉不符。
-    val openChildRoute: (String) -> Unit = { route ->
-        if (splitCapable) {
-            if (paneRoute != route) {
-                paneNavController.navigate(route) {
-                    popUpTo(SPLIT_PANE_EMPTY)
-                }
-            }
-        } else {
-            navController.navigate(route)
-        }
-    }
-    // 左栏列表点一本：分栏时进右栏（右栏只留这一本），手机整页打开详情。
-    val openAlbumFromLeft: (Long) -> Unit = { albumId ->
-        if (splitCapable) {
-            paneNavController.navigate(Routes.detail(albumId)) {
-                popUpTo(SPLIT_PANE_EMPTY)
-            }
-        } else {
-            navController.navigate(Routes.detail(albumId))
-        }
-    }
-    // 搜索结果页：分栏时进右栏（发现页留在左栏），每次搜索都换一个新的结果页
-    // （不能带 `launchSingleTop`：同一个 destination 命中后会复用旧 entry 与旧 ViewModel，
-    // 新关键字被忽略，用户会看到上一次的结果）；手机保持原来的整页入栈。
-    val openSearchResults: (String) -> Unit = { route ->
-        if (splitCapable) {
-            paneNavController.navigate(route) {
-                popUpTo(SPLIT_PANE_EMPTY)
-            }
-        } else {
-            navController.navigate(route) { launchSingleTop = true }
-        }
-    }
-    // 点「阅读」/ 点章节：
-    // - 横屏分栏：左栏变成这一本的详情、右栏变成阅读器（用户 2026-10-27 要求）；
-    // - 竖屏 / 手机：整页进入阅读器（与以前完全一致）。
-    val openReader: (Long, Long) -> Unit = { albumId, chapterId ->
-        if (splitCapable && landscape) {
-            if (currentRoute != Routes.DETAIL) {
-                navController.navigate(Routes.detail(albumId))
-            }
-            paneNavController.navigate(Routes.reader(albumId, chapterId)) {
-                popUpTo(SPLIT_PANE_EMPTY)
-            }
-        } else {
-            navController.navigate(Routes.reader(albumId, chapterId))
-        }
-    }
-    // 登录/注册页始终整页（表单不适合塞进右栏）。落点由 finishAuthTo 决定。
-    val openLogin: (String) -> Unit = { next ->
-        if (!isAuthRoute(currentRoute)) authReturnRoute = currentRoute
-        navController.navigate(Routes.login(next))
-    }
-    // 登录 / 注册成功后：把登录页（注册时还压着一层登录页）一起摘掉，
-    // 再按落点把页面放回右栏或整页。手机上的观感与改动前一致。
-    val finishAuthTo: (String) -> Unit = { next ->
-        var guard = 0
-        while (isAuthRoute(navController.currentBackStackEntry?.destination?.route) && guard++ < 4) {
-            navController.popBackStack()
-        }
-        val under = authReturnRoute
-        authReturnRoute = null
-        if (next.isNotBlank()) {
-            when {
-                // 从详情页点的收藏：登录完直接回详情（详情 VM 自己订阅账号状态）
-                under == Routes.DETAIL -> Unit
-                // 平板：落点大多是右栏的二级页
-                splitCapable -> paneNavController.navigate(next) { launchSingleTop = true }
-                else -> navController.navigate(next) { launchSingleTop = true }
-            }
-        }
-    }
+    val switchTab: (Tab) -> Unit = { tab -> navigator.switchTab(tab) }
+    // 页面内部的返回拦截表（多选退出、编辑页未保存、注册验证码步骤……）。
+    // 真正的系统返回键处理挂在两个 NavHost **之后**（见 CarouselPanes 下方）：
+    // NavHost 内部也会注册返回回调，只有比它更晚注册才不会被它抢走——抢走的结果
+    // 是退掉"背后那一栏"的页面。页面自己的拦截则通过这张表优先处理。
+    val backInterceptors = remember { BackInterceptors() }
 
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -508,6 +466,7 @@ fun ModeRoot(
         LocalImageDomain provides imageDomain,
         LocalPrivacyMode provides privacyMode,
         LocalTextPrivacy provides (privacyMode && textPrivacy),
+        LocalBackInterceptors provides backInterceptors,
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
@@ -521,7 +480,7 @@ fun ModeRoot(
                     // 阅读器内禁用：它的双指缩小/还原会跨过同样的阈值，造成误触发。
                     // 阅读器也可能挂在右栏（阅读时左详情 + 右阅读器），所以两个路由都要判。
                     .privacyPinchGesture(
-                        enabled = currentRoute != Routes.READER && paneRoute != Routes.READER,
+                        enabled = !readerOnScreen,
                         onPinchIn = { setPrivacyMode(true) },
                         onPinchOut = { setPrivacyMode(false) },
                     ),
@@ -531,11 +490,11 @@ fun ModeRoot(
                 // 各页真正的**滚动内容区**由各 Screen 自己铺 `background` 灰底。
                 containerColor = MaterialTheme.colorScheme.surface,
                 bottomBar = {
-                    if (showBottomBar && !wideShell) {
+                    if (showBottomBar) {
                         NavigationBar {
                             Tab.entries.forEach { tab ->
                                 NavigationBarItem(
-                                    selected = currentRoute == tab.route,
+                                    selected = activeTabState.value == tab.route,
                                     onClick = { switchTab(tab) },
                                     icon = {
                                         TabIcon(
@@ -551,9 +510,9 @@ fun ModeRoot(
                     }
                 },
             ) { padding ->
-                    Row(modifier = Modifier.fillMaxSize().padding(padding)) {
-                    // 平板上底栏换成左侧导航栏；详情/阅读器/二级页与手机一样隐藏
-                    if (showBottomBar && wideShell) {
+                Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    // 平板上底栏换成左侧导航栏
+                    if (showRail) {
                         NavigationRail(
                             modifier = Modifier.fillMaxHeight(),
                             // 系统栏内边距已经由外层 Scaffold 的 padding 让出，这里不再叠加
@@ -561,7 +520,7 @@ fun ModeRoot(
                         ) {
                             Tab.entries.forEach { tab ->
                                 NavigationRailItem(
-                                    selected = currentRoute == tab.route,
+                                    selected = activeTabState.value == tab.route,
                                     onClick = { switchTab(tab) },
                                     icon = {
                                         TabIcon(
@@ -575,31 +534,19 @@ fun ModeRoot(
                             }
                         }
                     }
-                    // 手机 / 非分栏：NavHost 占满剩余宽度；
-                    // 平板双栏：左栏固定 420dp，右栏另挂一个独立的详情栈；
-                    // 阅读器 / 右栏页面整屏时左栏收成 0 宽——**不把它移出组合**，
-                    // 否则 NavHost 重新挂载会把主栈/右栏的返回栈重建，状态全丢。
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .then(
-                                when {
-                                    paneExpanded -> Modifier.width(0.dp)
-                                    splitActive -> Modifier.width(SPLIT_LIST_WIDTH)
-                                    else -> Modifier.weight(1f)
-                                }
-                            )
-                            // 必须裁到本栏范围内：分类页的 `ModalNavigationDrawer`
-                            // 即使**关着**也把抽屉画在自己的左边界外（Compose 默认不裁剪），
-                            // 平板分栏时左栏左边就是导航栏，抽屉会整块盖住导航栏，
-                            // 只剩关闭 ✕ 和二级分类的 ✓ 两个图标露在栏里
-                            // ——用户看到的"最左侧分类侧栏文字消失"。手机全屏时裁不裁一样。
-                            .clipToBounds(),
-                    ) {
+                    // 两个 NavHost 始终留在组合里，只在"左栏 / 右栏 / 整屏"之间换宽度和位置。
+                    // 这样换栏只是布局变化，页面实例（ViewModel、滚动位置、阅读进度）全都保留。
+                    CarouselPanes(
+                        mode = mode,
+                        primaryOnLeft = primaryOnLeft,
+                        leftWidth = SPLIT_LIST_WIDTH,
+                        dividerColor = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        primary = {
                     NavHost(
                         navController = navController,
                         startDestination = Routes.LIBRARY,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().clipToBounds(),
                     // 页面切换动画。三种情形分开处理：
                     // 1. **底栏 tab 之间**：按目标 tab 在底栏里的位置决定方向——
                     //    往右边的 tab 切就从右侧滑入、往左边切就从左侧滑入，
@@ -646,11 +593,15 @@ fun ModeRoot(
                             columns = 3,
                             onFilterChange = vm::updateFilter,
                             onClearFilter = vm::clearFilter,
-                            onOpenAlbum = openAlbumFromLeft,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                             onToggleCollected = vm::setCollected,
                             // 「继续阅读」卡片（§9 第 4 条）：直接回到保存的位置。
-                            // 平板横屏时同样走"左详情 + 右阅读器"（用户 2026-10-27 要求）。
-                            onContinueReading = { albumId -> openReader(albumId, 0L) },
+                            // 先开这一本的详情、再开阅读器，于是左栏是详情、右栏是阅读器。
+                            onContinueReading = { albumId ->
+                                primaryActions.openReadingFromTab(albumId, 0L)
+                            },
                             // 卡片右上角 ✕：清掉「继续阅读」指针，卡片消失
                             onDismissContinueReading = vm::dismissContinueReading,
                             // 长按多选（用户要求第 1 点）
@@ -682,30 +633,30 @@ fun ModeRoot(
                             // 平板分栏时二级页一律进右栏，左栏仍是「我的」（用户 2026-10-27 要求）
                             onOpenFavorites = {
                                 if (accountState.isSignedIn) {
-                                    openChildRoute(Routes.ACCOUNT_FAVORITES)
+                                    primaryActions.openChild(Routes.ACCOUNT_FAVORITES)
                                 } else {
-                                    openLogin(Routes.ACCOUNT_FAVORITES)
+                                    primaryActions.openLogin(Routes.ACCOUNT_FAVORITES)
                                 }
                             },
-                            onOpenRecent = { openChildRoute(Routes.RECENT) },
+                            onOpenRecent = { primaryActions.openChild(Routes.RECENT) },
                             onOpenComments = {
                                 if (accountState.isSignedIn) {
-                                    openChildRoute(Routes.ACCOUNT_COMMENTS)
+                                    primaryActions.openChild(Routes.ACCOUNT_COMMENTS)
                                 } else {
-                                    openLogin(Routes.ACCOUNT_COMMENTS)
+                                    primaryActions.openLogin(Routes.ACCOUNT_COMMENTS)
                                 }
                             },
-                            onOpenTasks = { openChildRoute(Routes.TASKS) },
-                            onOpenSettings = { openChildRoute(Routes.SETTINGS) },
-                            onOpenAbout = { openChildRoute(Routes.ABOUT) },
+                            onOpenTasks = { primaryActions.openChild(Routes.TASKS) },
+                            onOpenSettings = { primaryActions.openChild(Routes.SETTINGS) },
+                            onOpenAbout = { primaryActions.openChild(Routes.ABOUT) },
                             onOpenProfile = {
                                 if (accountState.isSignedIn) {
-                                    openChildRoute(Routes.ACCOUNT_PROFILE)
+                                    primaryActions.openChild(Routes.ACCOUNT_PROFILE)
                                 } else {
-                                    openLogin(Routes.ACCOUNT_PROFILE)
+                                    primaryActions.openLogin(Routes.ACCOUNT_PROFILE)
                                 }
                             },
-                            onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
+                            onLogin = { primaryActions.openLogin(Routes.ACCOUNT_FAVORITES) },
                             onLogout = vm::logout,
                         )
                     }
@@ -746,7 +697,7 @@ fun ModeRoot(
                             },
                             onLoggedIn = {
                                 // 登录成功：摘掉登录页，按落点回到左栏或右栏（手机行为不变）
-                                finishAuthTo(next)
+                                navigator.finishAuthTo(next)
                             },
                         )
                     }
@@ -790,7 +741,7 @@ fun ModeRoot(
                             onResumeVerification = vm::resumeVerification,
                             onSignedUp = {
                                 // 注册成功即已登录：登录/注册页一起摘掉，再按落点回到左栏或右栏
-                                finishAuthTo(next)
+                                navigator.finishAuthTo(next)
                             },
                             onGoLogin = { username ->
                                 // 账号已创建但自动登录失败：去登录页，预填用户名（密码让用户自己输）。
@@ -824,11 +775,13 @@ fun ModeRoot(
                             entry = entry,
                             factory = factory,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
+                            onBack = primaryActions.back,
                             onOpenFolder = { folderId, name ->
-                                navController.navigate(Routes.accountFavoriteAlbums(folderId, name))
+                                primaryActions.openChild(
+                                    Routes.accountFavoriteAlbums(folderId, name),
+                                )
                             },
-                            onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
+                            onLogin = { primaryActions.openLogin(Routes.ACCOUNT_FAVORITES) },
                         )
                     }
 
@@ -840,8 +793,10 @@ fun ModeRoot(
                             entry = entry,
                             container = container,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromLeft,
+                            onBack = primaryActions.back,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                         )
                     }
 
@@ -849,12 +804,9 @@ fun ModeRoot(
                         AccountProfileDestination(
                             entry = entry,
                             factory = factory,
-                            onBack = { navController.popBackStack() },
+                            onBack = primaryActions.back,
                             onEdit = {
-                                // 连点两下不要压两个编辑页（这条路由没有参数，复用同一个 entry 是安全的）
-                                navController.navigate(Routes.ACCOUNT_PROFILE_EDIT) {
-                                    launchSingleTop = true
-                                }
+                                primaryActions.openChild(Routes.ACCOUNT_PROFILE_EDIT)
                             },
                         )
                     }
@@ -865,8 +817,8 @@ fun ModeRoot(
                             entry = entry,
                             factory = factory,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
-                            onSaved = { navController.popBackStack() },
+                            onBack = primaryActions.back,
+                            onSaved = primaryActions.back,
                         )
                     }
 
@@ -876,11 +828,13 @@ fun ModeRoot(
                             entry = entry,
                             factory = factory,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
+                            onBack = primaryActions.back,
                             onOpenAlbum = { albumId ->
-                                navController.navigate(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
+                                primaryActions.openChild(
+                                    Routes.detail(albumId, AlbumDetailTab.COMMENTS),
+                                )
                             },
-                            onLogin = { openLogin(Routes.ACCOUNT_COMMENTS) },
+                            onLogin = { primaryActions.openLogin(Routes.ACCOUNT_COMMENTS) },
                         )
                     }
 
@@ -888,8 +842,10 @@ fun ModeRoot(
                         RecentDestination(
                             entry = entry,
                             factory = factory,
-                            onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromLeft,
+                            onBack = primaryActions.back,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                         )
                     }
 
@@ -907,7 +863,9 @@ fun ModeRoot(
                             onRefresh = vm::refresh,
                             onLoadMore = vm::loadMore,
                             onRetry = vm::retry,
-                            onOpenAlbum = openAlbumFromLeft,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                             onMessage = showMessage,
                             onConsumeMessage = vm::consumeMessage,
                         )
@@ -922,18 +880,20 @@ fun ModeRoot(
                             onSortChange = vm::onSortChange,
                             // 点「搜索」：**先跳结果页，由结果页自己发请求**（用户要求）。
                             // 关键字为空就不跳、原地提示——结果页没有输入框，空关键字跳过去没法改。
-                            // 平板分栏时**右栏**打开结果页，左栏仍停在发现页（用户 2026-10-27 要求）。
+                            // 结果页进右栏，发现页（含搜索历史）留在左栏。
                             onSearch = {
                                 val keyword = state.keyword.trim()
                                 if (keyword.isEmpty()) {
                                     showMessage("请输入搜索关键字")
                                 } else {
-                                    openSearchResults(Routes.searchResults(keyword, state.sort))
+                                    primaryActions.openChild(
+                                        Routes.searchResults(keyword, state.sort),
+                                    )
                                 }
                             },
                             // 点历史记录：带 historyId 进结果页，那边**只回显快照、不重搜**（用户要求）
                             onOpenHistory = { history ->
-                                openSearchResults(
+                                primaryActions.openChild(
                                     Routes.searchResults(
                                         keyword = history.keyword,
                                         sort = SearchSort.fromCode(history.sort),
@@ -958,8 +918,10 @@ fun ModeRoot(
                             container = container,
                             factory = factory,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromLeft,
+                            onBack = primaryActions.back,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                         )
                     }
 
@@ -990,8 +952,10 @@ fun ModeRoot(
                             context = context,
                             scope = scope,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromLeft,
+                            onBack = primaryActions.back,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                         )
                     }
 
@@ -1004,7 +968,7 @@ fun ModeRoot(
                             textPrivacy = textPrivacy,
                             onSetPrivacyMode = setPrivacyMode,
                             onSetTextPrivacy = setTextPrivacy,
-                            onBack = { navController.popBackStack() },
+                            onBack = primaryActions.back,
                         )
                     }
 
@@ -1020,8 +984,10 @@ fun ModeRoot(
                             context = context,
                             scope = scope,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromLeft,
+                            onBack = primaryActions.back,
+                            onOpenAlbum = { albumId ->
+                                primaryActions.openChild(Routes.detail(albumId))
+                            },
                         )
                     }
 
@@ -1072,9 +1038,8 @@ fun ModeRoot(
                     }
                     */
 
-                    // 详情页：手机 / 非分栏时整页入栈（主栈）。
-                    // 平板双栏时同一份实现也挂在右栏（见 SplitDetailPane），
-                    // 阅读时主栈会把它推到左栏（右栏换成阅读器）。
+                    // 详情页：主栈与辅栈共用同一份实现；点阅读 / 点章节时由外层
+                    // 把详情换到左栏、阅读器放到右栏（用户 2026-10-27 要求）。
                     centeredComposable(
                         route = Routes.DETAIL,
                         arguments = detailArguments(),
@@ -1082,21 +1047,7 @@ fun ModeRoot(
                         AlbumDetailDestination(
                             entry = entry,
                             container = container,
-                            detailNavController = navController,
-                            // 平板分栏时登录完直接回到详情（详情 VM 自己订阅账号状态）；
-                            // 手机保持原来的"登录成功后重新打开详情页"。
-                            loginNext = if (splitCapable) {
-                                ""
-                            } else {
-                                Routes.detail(entry.arguments?.getLong("albumId") ?: 0L)
-                            },
-                            openReader = openReader,
-                            openLogin = openLogin,
-                            onSearchAuthor = { author ->
-                                navController.navigate(Routes.searchResults(author)) {
-                                    launchSingleTop = true
-                                }
-                            },
+                            actions = primaryActions,
                             context = context,
                             showMessage = showMessage,
                             scope = scope,
@@ -1112,48 +1063,41 @@ fun ModeRoot(
                             container = container,
                             factory = factory,
                             showMessage = showMessage,
-                            onBack = { navController.popBackStack() },
+                            onBack = primaryActions.back,
+                            windowEffectsEnabled = !authOpen,
                         )
                     }
                     }
-                    }
-
-                    // 右栏：平板双栏 / 阅读器或右栏页面整屏时都挂在这里。
-                    // **只有一个调用点**：旋转 / 登录页压栈时只改宽度、不把 NavHost 挪走，
-                    // 否则重建 NavHost 会重置右栏（阅读器 / 详情）与主栈的返回栈。
-                    // 不可见但有内容时仍以 0 宽留在组合里，登录回来内容还在。
-                    if (paneVisible || paneHasContent) {
-                        // 1dp 分隔线（与分类页常驻抽屉同一种画法）；整屏时不需要
-                        if (paneVisible && !paneExpanded) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxHeight()
-                                    .width(1.dp)
-                                    .background(MaterialTheme.colorScheme.outlineVariant),
+                        },
+                        secondary = {
+                            SecondaryPaneHost(
+                                paneNavController = paneNavController,
+                                container = container,
+                                factory = factory,
+                                taskViewModel = taskViewModel,
+                                taskState = taskState,
+                                privacyMode = privacyMode,
+                                textPrivacy = textPrivacy,
+                                setPrivacyMode = setPrivacyMode,
+                                setTextPrivacy = setTextPrivacy,
+                                context = context,
+                                showMessage = showMessage,
+                                scope = scope,
+                                actions = secondaryActions,
+                                windowEffectsEnabled = !authOpen,
+                                modifier = Modifier.fillMaxSize(),
                             )
-                        }
-                        SplitDetailPane(
-                            paneNavController = paneNavController,
-                            container = container,
-                            factory = factory,
-                            taskViewModel = taskViewModel,
-                            taskState = taskState,
-                            privacyMode = privacyMode,
-                            textPrivacy = textPrivacy,
-                            setPrivacyMode = setPrivacyMode,
-                            setTextPrivacy = setTextPrivacy,
-                            context = context,
-                            showMessage = showMessage,
-                            scope = scope,
-                            openReader = openReader,
-                            openLogin = openLogin,
-                            visible = paneVisible,
-                            modifier = if (paneVisible) {
-                                Modifier.weight(1f).fillMaxHeight()
-                            } else {
-                                Modifier.width(0.dp).fillMaxHeight()
-                            },
-                        )
+                        },
+                    )
+                    // 系统返回键：**放在两个 NavHost 之后**组合，注册顺序最靠后，
+                    // 才能赢过 NavHost 内部注册的返回回调（否则它会把背后那一栏的
+                    // 页面退掉，屏幕上留着当前页）。顺序是：
+                    // 页面自己的拦截（[PageBackHandler]，见 backInterceptors）→ 轮播逻辑。
+                    // 右栏没内容、左栏是 tab 时不禁用，交给系统退出 App（与原来一致）。
+                    BackHandler(
+                        enabled = backInterceptors.hasEnabled || navigator.canBack(),
+                    ) {
+                        if (!backInterceptors.consume()) navigator.backAction()
                     }
                 }
             }
@@ -1262,21 +1206,15 @@ private fun detailArguments(): List<NamedNavArgument> = listOf(
 )
 
 /**
- * 平板双栏的右栏：详情 / 搜索结果 / 「我的」二级页 / 阅读器。
+ * 第二个导航宿主（辅栈）。
  *
- * 它是一个**独立**的 NavHost：左栏页面（列表、发现、我的、阅读中的详情）不动，
- * 右栏自己进出；系统返回键也先退右栏（见方法末尾的 `BackHandler`）。
- * 主栈的页面切换动画与右栏无关，所以右栏直接用默认的淡入淡出。
- *
- * 交互（用户 2026-10-27 要求）：
- * - 左栏列表点一本 → 详情进右栏；
- * - 发现页搜索 / 点历史 → 搜索结果进右栏（左栏仍是发现页）；
- * - 「我的」点具体项 → 二级页进右栏（左栏仍是我的）；
- * - 详情页点「阅读」/ 点章节 → 左栏变成这一本的详情、右栏变成阅读器
- *   （竖屏 / 手机时仍整页进入阅读器，见 [ModeRoot] 的 openReader）。
+ * 两个宿主轮流出任"左栏（上一页）/ 右栏（当前页）"，所以这里不再固定叫"右栏"。
+ * - 左栏列表点一本 → 详情进这里（显示在右）；
+ * - 从右栏的页面再点进下一页时，当前页换到左边，新页进另一个宿主——页面实例保留。
+ * - 这里始终从 [SPLIT_PANE_EMPTY] 起步，空态就是平板右栏的"在左侧选择一本漫画"提示。
  */
 @Composable
-private fun SplitDetailPane(
+private fun SecondaryPaneHost(
     paneNavController: NavHostController,
     container: AppContainer,
     factory: ViewModelFactory,
@@ -1289,10 +1227,9 @@ private fun SplitDetailPane(
     context: Context,
     showMessage: (String) -> Unit,
     scope: CoroutineScope,
-    openReader: (Long, Long) -> Unit,
-    openLogin: (String) -> Unit,
-    /** 右栏是否真的露在外面。为 false 时它只是以 0 宽留在组合里保温，不能再抢返回键。 */
-    visible: Boolean,
+    actions: PaneNavActions,
+    /** 被登录页等整页盖住时传 false：阅读器仍在组合里，但不接管窗口亮度。 */
+    windowEffectsEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -1321,15 +1258,7 @@ private fun SplitDetailPane(
             AlbumDetailDestination(
                 entry = entry,
                 container = container,
-                detailNavController = paneNavController,
-                loginNext = "",
-                openReader = openReader,
-                openLogin = openLogin,
-                onSearchAuthor = { author ->
-                    paneNavController.navigate(Routes.searchResults(author)) {
-                        launchSingleTop = true
-                    }
-                },
+                actions = actions,
                 context = context,
                 showMessage = showMessage,
                 scope = scope,
@@ -1344,13 +1273,11 @@ private fun SplitDetailPane(
                 container = container,
                 factory = factory,
                 showMessage = showMessage,
-                // 关掉阅读器只退右栏：左栏的详情还在，用户可以接着挑章节
-                onBack = { paneNavController.popBackStack() },
-                // 右栏被登录页等整页藏起来时不接管窗口亮度 / 屏幕常亮
-                windowEffectsEnabled = visible,
+                onBack = actions.back,
+                windowEffectsEnabled = windowEffectsEnabled,
             )
         }
-        // ---- 发现页 → 搜索结果（右栏）----
+        // ---- 发现页 → 搜索结果 ----
         composable(
             route = Routes.SEARCH_RESULTS,
             arguments = searchResultsArguments(),
@@ -1360,23 +1287,21 @@ private fun SplitDetailPane(
                 container = container,
                 factory = factory,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
-                onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId))
-                },
+                onBack = actions.back,
+                onOpenAlbum = { albumId -> actions.openChild(Routes.detail(albumId)) },
             )
         }
-        // ---- 「我的」→ 各二级页（右栏）----
+        // ---- 「我的」→ 各二级页 ----
         centeredComposable(Routes.ACCOUNT_FAVORITES) { entry ->
             AccountFavoritesDestination(
                 entry = entry,
                 factory = factory,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
+                onBack = actions.back,
                 onOpenFolder = { folderId, name ->
-                    paneNavController.navigate(Routes.accountFavoriteAlbums(folderId, name))
+                    actions.openChild(Routes.accountFavoriteAlbums(folderId, name))
                 },
-                onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
+                onLogin = { actions.openLogin(Routes.ACCOUNT_FAVORITES) },
             )
         }
         composable(
@@ -1387,22 +1312,16 @@ private fun SplitDetailPane(
                 entry = entry,
                 container = container,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
-                onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId))
-                },
+                onBack = actions.back,
+                onOpenAlbum = { albumId -> actions.openChild(Routes.detail(albumId)) },
             )
         }
         centeredComposable(Routes.ACCOUNT_PROFILE) { entry ->
             AccountProfileDestination(
                 entry = entry,
                 factory = factory,
-                onBack = { paneNavController.popBackStack() },
-                onEdit = {
-                    paneNavController.navigate(Routes.ACCOUNT_PROFILE_EDIT) {
-                        launchSingleTop = true
-                    }
-                },
+                onBack = actions.back,
+                onEdit = { actions.openChild(Routes.ACCOUNT_PROFILE_EDIT) },
             )
         }
         centeredComposable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
@@ -1410,8 +1329,8 @@ private fun SplitDetailPane(
                 entry = entry,
                 factory = factory,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
-                onSaved = { paneNavController.popBackStack() },
+                onBack = actions.back,
+                onSaved = actions.back,
             )
         }
         centeredComposable(Routes.ACCOUNT_COMMENTS) { entry ->
@@ -1419,21 +1338,19 @@ private fun SplitDetailPane(
                 entry = entry,
                 factory = factory,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
+                onBack = actions.back,
                 onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
+                    actions.openChild(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
                 },
-                onLogin = { openLogin(Routes.ACCOUNT_COMMENTS) },
+                onLogin = { actions.openLogin(Routes.ACCOUNT_COMMENTS) },
             )
         }
         centeredComposable(Routes.RECENT) { entry ->
             RecentDestination(
                 entry = entry,
                 factory = factory,
-                onBack = { paneNavController.popBackStack() },
-                onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId))
-                },
+                onBack = actions.back,
+                onOpenAlbum = { albumId -> actions.openChild(Routes.detail(albumId)) },
             )
         }
         centeredComposable(Routes.TASKS) {
@@ -1443,10 +1360,8 @@ private fun SplitDetailPane(
                 context = context,
                 scope = scope,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
-                onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId))
-                },
+                onBack = actions.back,
+                onOpenAlbum = { albumId -> actions.openChild(Routes.detail(albumId)) },
             )
         }
         centeredComposable(Routes.SETTINGS) { entry ->
@@ -1458,7 +1373,7 @@ private fun SplitDetailPane(
                 textPrivacy = textPrivacy,
                 onSetPrivacyMode = setPrivacyMode,
                 onSetTextPrivacy = setTextPrivacy,
-                onBack = { paneNavController.popBackStack() },
+                onBack = actions.back,
             )
         }
         centeredComposable(Routes.ABOUT) { entry ->
@@ -1469,44 +1384,27 @@ private fun SplitDetailPane(
                 context = context,
                 scope = scope,
                 showMessage = showMessage,
-                onBack = { paneNavController.popBackStack() },
-                onOpenAlbum = { albumId ->
-                    paneNavController.navigate(Routes.detail(albumId))
-                },
+                onBack = actions.back,
+                onOpenAlbum = { albumId -> actions.openChild(Routes.detail(albumId)) },
             )
         }
-    }
-    // 放在 NavHost **之后**注册：右栏有内容时，系统返回先退右栏，而不是退掉左栏的页面。
-    // 阅读器在右栏时同样生效：返回键先关阅读器，左栏的详情保留下来。
-    val paneEntry by paneNavController.currentBackStackEntryAsState()
-    BackHandler(
-        enabled = visible &&
-            paneEntry != null &&
-            paneEntry?.destination?.route != SPLIT_PANE_EMPTY,
-    ) {
-        paneNavController.popBackStack()
     }
 }
 
 /**
- * 详情页的唯一实现：主栈（手机整页 / 平板上的全屏详情）与平板右栏共用。
+ * 详情页的唯一实现：两个导航宿主共用。
  *
- * 导航分工：
- * - 返回 → [detailNavController] 退一层（右栏退到空态，手机退回列表）；
- * - 点推荐漫画（详情 → 详情）→ [detailNavController] 入栈，返回能回到上一本；
- * - 阅读器 → [openReader]：横屏由外层安排成"左详情 + 右阅读器"，手机整页入栈；
- * - 登录 → [openLogin]（整页），登录完回落到本页；
- * - 作者搜索 → [onSearchAuthor]（在详情所在的这一栏里打开结果页）。
+ * 导航分工（全部走 [PaneNavActions]，由外层按"详情当前在左栏还是右栏"决定落点）：
+ * - 返回 → [PaneNavActions.back]：退掉当前页并把上一页换到右栏；
+ * - 点推荐漫画 → 当前详情换到左栏、新详情放右栏（返回能回到上一本）；
+ * - 阅读器 / 作者搜索 → 同样作为"当前页的子页"打开；
+ * - 登录 → 整页，登录完回落到本页。
  */
 @Composable
 private fun AlbumDetailDestination(
     entry: NavBackStackEntry,
     container: AppContainer,
-    detailNavController: NavHostController,
-    loginNext: String,
-    openReader: (Long, Long) -> Unit,
-    openLogin: (String) -> Unit,
-    onSearchAuthor: (String) -> Unit,
+    actions: PaneNavActions,
     context: Context,
     showMessage: (String) -> Unit,
     scope: CoroutineScope,
@@ -1529,7 +1427,7 @@ private fun AlbumDetailDestination(
     // ——这一点由用户掌握，不再由界面替他决定跳转。
     AlbumDetailScreen(
         state = state,
-        onBack = { detailNavController.popBackStack() },
+        onBack = actions.back,
         onRefresh = { vm.refresh() },
         onToggleReversed = vm::toggleReversed,
         onToggleDescription = vm::toggleDescription,
@@ -1544,33 +1442,33 @@ private fun AlbumDetailDestination(
             if (state.accountSignedIn) {
                 vm.openAccountFavoriteSheet()
             } else {
-                openLogin(loginNext)
+                actions.openLogin("")
             }
         },
         onDismissAccountFavoriteSheet = vm::dismissAccountFavoriteSheet,
         onChooseAccountFavorite = vm::chooseAccountFavorite,
         onCreateAccountFolderAndAdd = vm::createAccountFolderAndAdd,
         onRequireLogin = {
-            openLogin(loginNext)
+            actions.openLogin("")
         },
         // 点章节进阅读器：**先把这个本子的进度改写成这一话**，
         // 阅读器再按"从这一话第一张开始"打开（用户第十一轮要求第 1 点）。
-        // 平板横屏时由外层把左栏换成详情、右栏放阅读器（用户 2026-10-27 要求）。
+        // 外层会把当前详情换到左栏、阅读器放到右栏；手机竖屏则整页进入阅读器。
         onReadChapter = { chapterId ->
             vm.onChapterOpened(chapterId)
-            openReader(albumId, chapterId)
+            actions.openChild(Routes.reader(albumId, chapterId))
         },
         // 主按钮：有进度就按存下来的位置续读（不带章节号 = 续读），
         // 没进度才从第一话第一张开始（用户第十一轮要求第 1 点）
         onReadFromStart = {
             val position = state.progress
             if (position?.isUsable == true) {
-                openReader(albumId, 0L)
+                actions.openChild(Routes.reader(albumId, 0L))
             } else {
                 val first = state.chapters.firstOrNull()
                 if (first != null) {
                     vm.onChapterOpened(first.chapterId)
-                    openReader(albumId, first.chapterId)
+                    actions.openChild(Routes.reader(albumId, first.chapterId))
                 }
             }
         },
@@ -1613,22 +1511,15 @@ private fun AlbumDetailDestination(
             openExportFolder(context, vm.outputFolderUri(), showMessage)
         },
         // 点作者：**直接开结果页按作者名搜**（用户要求），不再绕去发现页填搜索框。
-        // 在详情所在的这一栏里打开（右栏详情 → 右栏结果页；手机 → 整页）。
-        onSearchAuthor = { author -> onSearchAuthor(author) },
+        // 作为当前详情页的子页打开（详情换到左栏、结果页在右栏）。
+        onSearchAuthor = { author ->
+            actions.openChild(Routes.searchResults(author))
+        },
         // 点评论里的「我推荐这本书 <jmid>」：打开那本漫画的详情页。
-        //
-        // ⚠ 不能带 `launchSingleTop`（用户 2026-10-22 反馈"点了跳不过去"的根因）：
-        // DETAIL 只有一个 destination，singleTop 只比 destination id，命中后走的是
-        // `NavBackStackEntry(oldEntry, newArgs)`——**复用同一个 entry id 与
-        // ViewModelStore**。参数换成新本子号、`AlbumDetailViewModel` 还是原来那本的
-        // 实例，页面看着纹丝不动。普通入栈就对了：新 entry → 新 ViewModel → 真换本子。
-        //
-        // 点的是**当前这本**（推荐评论里很常见，实测 aid=1246359 就在推荐 1246359）：
-        // 按用户要求**保持无反应**，什么都不做 —— 已经站在它的详情页上了，
-        // 再重开一次只会白丢草稿、滚动位置和 tab。
+        // 当前这本保持无反应；其它本子作为子页打开（详情换到左栏、新详情在右栏）。
         onOpenAlbum = { targetId ->
             if (targetId != albumId) {
-                detailNavController.navigate(Routes.detail(targetId))
+                actions.openChild(Routes.detail(targetId))
             }
         },
         // 提示交给根 Scaffold 弹，否则会被收藏夹底部面板挡住（用户反馈）；
@@ -2210,11 +2101,295 @@ private fun openUrl(context: Context, url: String, showMessage: (String) -> Unit
         .onFailure { showMessage("没有可以打开链接的应用") }
 }
 
+/** 两个导航宿主：主栈（tab / 登录）与辅栈（右栏的页面）。 */
+private enum class CarouselHost { Primary, Secondary }
+
+/** 双栏布局的四种形态。 */
+private enum class CarouselMode {
+    /** 左栏 + 右栏（平板分栏）。 */
+    Split,
+
+    /** 只有左栏（手机 / 窄窗，当前页是 tab 本身）。 */
+    OnlyLeft,
+
+    /** 只有右栏（手机 / 窄窗 / 竖屏阅读器，当前页是一个子页）。 */
+    OnlyRight,
+
+    /** 只有主栈（登录 / 注册等整页表单，盖住整个轮播）。 */
+    OnlyPrimary,
+}
+
+/**
+ * 页面级导航动作。
+ *
+ * 两个 NavHost 各持有一份：`openChild` 会按**当前哪一栏是当前页**决定是
+ * "替换右栏"还是"把当前页换到左边、新页放右边"，页面本身不用关心。
+ */
+private class PaneNavActions(
+    val openChild: (String) -> Unit,
+    val back: () -> Unit,
+    val openLogin: (String) -> Unit,
+    /** 从 tab（书库「继续阅读」）进阅读：先开详情、再开阅读器。 */
+    val openReadingFromTab: (Long, Long) -> Unit,
+)
+
+/**
+ * 双栏轮播的核心状态：两个 NavHost 的返回栈 + 谁在左边。
+ *
+ * 规则（用户 2026-10-27 要求）：
+ * - 左栏点进下一页：右栏已有内容就替换，没有就推进去；
+ * - **右栏（当前页）**点进下一页：先把当前页换到左边，新页放右边；
+ * - 返回：退掉右栏当前页；右栏还剩内容就左右换位，否则保持（露出左栏）。
+ *
+ * 两个 NavHost 始终留在组合里，换栏只是布局换宽度/位置，页面实例不销毁，
+ * 因此详情、搜索结果、收藏夹、阅读进度都不会因为换栏而重载。
+ */
+private class CarouselNavigator(
+    private val primaryNav: NavHostController,
+    private val secondaryNav: NavHostController,
+    private val primaryOnLeftState: MutableState<Boolean>,
+    private val activeTabState: MutableState<String>,
+) {
+    val primaryOnLeft: Boolean get() = primaryOnLeftState.value
+    val activeTabRoute: String get() = activeTabState.value
+
+    private fun navOf(host: CarouselHost): NavHostController =
+        if (host == CarouselHost.Primary) primaryNav else secondaryNav
+
+    private fun other(host: CarouselHost): CarouselHost =
+        if (host == CarouselHost.Primary) CarouselHost.Secondary else CarouselHost.Primary
+
+    private fun routeOf(host: CarouselHost): String? =
+        navOf(host).currentBackStackEntry?.destination?.route
+
+    private fun isLeft(host: CarouselHost): Boolean =
+        (host == CarouselHost.Primary) == primaryOnLeft
+
+    private fun leftHost(): CarouselHost =
+        if (primaryOnLeft) CarouselHost.Primary else CarouselHost.Secondary
+
+    private fun rightHost(): CarouselHost =
+        if (primaryOnLeft) CarouselHost.Secondary else CarouselHost.Primary
+
+    private fun isTab(route: String?): Boolean =
+        route != null && Tab.entries.any { it.route == route }
+
+    /**
+     * 从 [from] 页面打开 [route]。
+     *
+     * - [from] 是左栏：右栏有内容就替换，没有就直接推进去；
+     * - [from] 是右栏（当前页）：左右换位，再把新页推进另一个栈（此时它在右边）。
+     */
+    fun openChild(from: CarouselHost, route: String) {
+        if (isLeft(from)) {
+            val right = other(from)
+            val rightRoute = routeOf(right)
+            if (rightRoute != null && rightRoute != SPLIT_PANE_EMPTY) {
+                navOf(right).popBackStack()
+            }
+            navOf(right).navigate(route)
+        } else {
+            primaryOnLeftState.value = !primaryOnLeftState.value
+            navOf(other(from)).navigate(route)
+        }
+    }
+
+    /** 书库「继续阅读」：先开详情、再开阅读器，得到"左详情 + 右阅读器"。 */
+    fun openReadingFromTab(albumId: Long, chapterId: Long) {
+        openChild(CarouselHost.Primary, Routes.detail(albumId))
+        openChild(CarouselHost.Secondary, Routes.reader(albumId, chapterId))
+    }
+
+    /** 退掉右栏当前页；右栏还剩内容就把左右换位。 */
+    fun back(): Boolean {
+        val right = rightHost()
+        val route = routeOf(right)
+        if (route == null || route == SPLIT_PANE_EMPTY) return false
+        navOf(right).popBackStack()
+        val remaining = routeOf(right)
+        if (remaining != null && remaining != SPLIT_PANE_EMPTY) {
+            primaryOnLeftState.value = !primaryOnLeftState.value
+        }
+        return true
+    }
+
+    /** 登录页永远压在主栈上（布局临时只显示主栈）。 */
+    fun openLogin(next: String) {
+        primaryNav.navigate(Routes.login(next))
+    }
+
+    /** 登录 / 注册成功：摘掉表单页，再按落点把目标页放进右栏。 */
+    fun finishAuthTo(next: String) {
+        var guard = 0
+        while (isAuthRoute(primaryNav.currentBackStackEntry?.destination?.route) && guard++ < 4) {
+            primaryNav.popBackStack()
+        }
+        if (next.isBlank()) return
+        val right = rightHost()
+        if (routeOf(right) == routePatternOf(next)) return
+        openChild(leftHost(), next)
+    }
+
+    /** 切 tab：主栈回到该 tab，辅栈清空，左栏变回主栈。 */
+    fun switchTab(tab: Tab) {
+        activeTabState.value = tab.route
+        primaryOnLeftState.value = true
+        secondaryNav.popBackStack(SPLIT_PANE_EMPTY, inclusive = false)
+        primaryNav.navigate(tab.route) {
+            popUpTo(Routes.LIBRARY) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
+    /**
+     * 是否需要接管系统返回键。
+     *
+     * - 登录页：接管（退回上一页 / 上一个验证码步骤由页面内部先处理）；
+     * - 右栏有内容：接管（退右栏当前页）；
+     * - 右栏空、左栏是非 tab 的整页（极少见）：接管（退回 tab）；
+     * - 右栏空、左栏是 tab：不接管，交给系统退出 App。
+     */
+    fun canBack(): Boolean {
+        if (isAuthRoute(routeOf(CarouselHost.Primary))) return true
+        val rightRoute = routeOf(rightHost())
+        if (rightRoute != null && rightRoute != SPLIT_PANE_EMPTY) return true
+        val leftRoute = routeOf(leftHost())
+        return leftRoute != null && leftRoute != SPLIT_PANE_EMPTY && !isTab(leftRoute)
+    }
+
+    fun backAction() {
+        if (isAuthRoute(routeOf(CarouselHost.Primary))) {
+            primaryNav.popBackStack()
+            return
+        }
+        if (back()) return
+        navOf(leftHost()).popBackStack()
+    }
+}
+
+/**
+ * 把目标路由还原成它的 destination pattern，用来和当前右栏页比较。
+ *
+ * 只用于登录成功后的落点（账号页 / 详情页），不需要覆盖所有路由。
+ */
+private fun routePatternOf(route: String): String {
+    val path = route.substringBefore('?')
+    return when {
+        path.startsWith("jm/album/") -> Routes.DETAIL
+        path.startsWith("jm/account/favorites/") -> Routes.ACCOUNT_FAVORITE_ALBUMS
+        else -> path
+    }
+}
+
+/**
+ * 两个导航宿主的布局：始终都参与组合，只改宽度与左右位置。
+ *
+ * 这样"当前页换到左边"只是布局变化，NavHost 和页面 ViewModel 都不会重建。
+ */
+@Composable
+private fun CarouselPanes(
+    mode: CarouselMode,
+    primaryOnLeft: Boolean,
+    leftWidth: Dp,
+    dividerColor: Color,
+    modifier: Modifier = Modifier,
+    primary: @Composable () -> Unit,
+    secondary: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val leftPx = with(density) { leftWidth.roundToPx() }
+    val dividerPx = with(density) { 1.dp.roundToPx() }.coerceAtLeast(1)
+    Layout(
+        content = {
+            primary()
+            secondary()
+        },
+        modifier = modifier.drawBehind {
+            if (mode == CarouselMode.Split) {
+                drawRect(
+                    color = dividerColor,
+                    topLeft = Offset(leftPx.toFloat(), 0f),
+                    size = Size(dividerPx.toFloat(), size.height),
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val totalWidth = constraints.maxWidth
+        val totalHeight = constraints.maxHeight
+        var primaryWidth = 0
+        var secondaryWidth = 0
+        var primaryX = 0
+        var secondaryX = 0
+        when (mode) {
+            CarouselMode.OnlyPrimary -> {
+                primaryWidth = totalWidth
+                primaryX = 0
+                secondaryWidth = 0
+                secondaryX = totalWidth
+            }
+
+            CarouselMode.OnlyLeft -> {
+                if (primaryOnLeft) {
+                    primaryWidth = totalWidth
+                    secondaryWidth = 0
+                    secondaryX = totalWidth
+                } else {
+                    secondaryWidth = totalWidth
+                    primaryWidth = 0
+                    primaryX = totalWidth
+                }
+            }
+
+            CarouselMode.OnlyRight -> {
+                if (primaryOnLeft) {
+                    secondaryWidth = totalWidth
+                    secondaryX = 0
+                    primaryWidth = 0
+                    primaryX = totalWidth
+                } else {
+                    primaryWidth = totalWidth
+                    primaryX = 0
+                    secondaryWidth = 0
+                    secondaryX = totalWidth
+                }
+            }
+
+            CarouselMode.Split -> {
+                val rightWidth = (totalWidth - leftPx - dividerPx).coerceAtLeast(0)
+                if (primaryOnLeft) {
+                    primaryWidth = leftPx
+                    primaryX = 0
+                    secondaryWidth = rightWidth
+                    secondaryX = leftPx + dividerPx
+                } else {
+                    secondaryWidth = leftPx
+                    secondaryX = 0
+                    primaryWidth = rightWidth
+                    primaryX = leftPx + dividerPx
+                }
+            }
+        }
+        val primaryPlaceable = measurables[0].measure(
+            Constraints.fixed(primaryWidth, totalHeight),
+        )
+        val secondaryPlaceable = measurables[1].measure(
+            Constraints.fixed(secondaryWidth, totalHeight),
+        )
+        layout(totalWidth, totalHeight) {
+            primaryPlaceable.placeRelative(primaryX, 0)
+            secondaryPlaceable.placeRelative(secondaryX, 0)
+        }
+    }
+}
+
+
 /**
  * 手写 ViewModel 工厂（P0 决策 D-3：不用 Hilt）。
  *
  * `albumId` / `chapterId` / `searchEntry` 只有对应页面需要，所以做成可选参数：
- * 传 [OnlineSearchEntry] 的是搜索结果页（进页面就搜/回显快照），不传的是发现页（只发历史）。
+ * 传 [OnlineSearchEntry] 的是搜索结果页（进页面就搜 / 回显快照），
+ * 不传的是发现页（只发历史）。
  */
 class ViewModelFactory(
     private val container: AppContainer,

@@ -56,7 +56,7 @@ fun AccountForgotScreen(
 ) {
     // 请求在飞时拦住返回键：这个请求**不重试**，中途退出会让"服务端到底重置没重置"变得不确定。
     // （请求挂在页面的 viewModelScope 上，pop 会把它取消，但服务端可能已经处理完了。）
-    BackHandler(enabled = state.submitting) { }
+    PageBackHandler(enabled = state.submitting) { }
 
     // 服务端 / 网络错误走弹窗（与登录 / 注册页一致）：文案长、放页内会把控件顶下去。
     state.error?.let { message ->

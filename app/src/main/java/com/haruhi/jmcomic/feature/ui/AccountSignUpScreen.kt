@@ -82,7 +82,7 @@ fun AccountSignUpScreen(
     val atVerifyStep = state.step == SignUpStep.VERIFY && !state.verifiedNeedLogin
     // 验证码步骤按返回键回注册表单（还要能改错填的邮箱）；「已有验证码」模式直接退出。
     // 请求在飞时返回键不响应，避免把提交中的请求取消掉（与顶栏返回按钮一致）。
-    BackHandler(enabled = atVerifyStep) {
+    PageBackHandler(enabled = atVerifyStep) {
         when {
             state.submitting -> Unit
             state.verifyOnly -> onBack()

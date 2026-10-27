@@ -1,7 +1,6 @@
 package com.haruhi.jmcomic.feature.ui
 
 import android.os.Build
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -209,7 +208,7 @@ fun LibraryScreen(
     val selectedAlbums = state.albums.filter { it.album.id in selection }
 
     // 返回键先退出多选，而不是直接退出页面
-    BackHandler(enabled = selecting) { selection = emptySet() }
+    PageBackHandler(enabled = selecting) { selection = emptySet() }
 
     // 自动填充：筛选条件（"有 ZIP / 有 PDF"、"已下载"）是在客户端算的，
     // 一页可能一条都不匹配。**显示不足半屏就继续翻页**，直到凑够或翻到底，
