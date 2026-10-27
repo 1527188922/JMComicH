@@ -31,7 +31,9 @@ https://{线路域名}/{接口路径}?{query}
 - 路径**没有** `/api` 之类前缀，直接是 `album`、`search`、`categories/filter`…（源码里都不带前导 `/`）。
 - 线路域名由开屏页从加密清单里取（`docs/official-api-2.1.11.md` §3），实测可用：
   `www.cdngwc.cc`（本次偶发 522）、`www.cdngwc.club`、`www.cdnutc.me`。
-- 图片域名**不写死**：取 `GET /setting` 的 `img_host`，每条线路不同。
+- 图片域名**不写死**：取 `GET /setting` 的 `img_host`。它**不是“每条线路一个固定值”**：
+  同一线路连续请求也会在 `cdn-msp*` / `jmapiproxy*` / `jmdanjonproxy*` 之间轮换
+  （2026-10-27 实测：同一线路 3 次请求拿到 3 个不同 `img_host`），所以按“服务端这次给哪个就用哪个”处理。
 
 ### 1.2 请求头（每个请求都要）
 
@@ -557,10 +559,33 @@ var scramble_id = 220980;
 
 用途：走 `/chapter` 旧机制时补 `scramble_id`。取不到时的兜底是 `220980`（`JmcomicService` 的行为）。
 
-### 5.5 `GET /album_download_2/{id}` — 整本下载地址
+### 5.5 `GET /album_download_2/{id}` — 整本/单章下载地址
 
 **id 在路径里**，无业务 query 参数（本次调用自动带了 `lang=CN`，服务端接受）。
-实测在**登录态**下调用；返回的 `download_url` 里带 `uid` 与 `expires`，推测需要登录（未验证匿名调用）。
+`id` 既可以是整本 id，也可以是 `series[].id`（章节 id）——详情页从章节列表跳下载页时传的是后者。
+实测在**登录态**下调用；返回的 `download_url` 里带 `uid` 与 `expires`。
+
+> **登录是服务端门槛，不是前端门槛（2026-10-27 五条线路逐条实测）**：
+> 匿名调用一律 HTTP 200 + 信封 `code 200`，解密后**只有**
+> `{"status":"0","msg":"請先登入"}`，**没有 `download_url`**。
+> 官方 App 的下载页只是把 `status === "0"` 翻译成「請先登入」弹窗；改前端也拿不到链接，
+> 因为 `md5` 是服务端签的。
+
+> **下载页的加法验证码是纯前端**：`Download.tsx` 用本地 `generateMathProblem()`
+> 出题（`num1(1..100) + num2(1..10)`）、本地比较答案，答对后才把**已经拿到的**
+> `download_url` 塞进 `<a>` 点击；验证码不进任何请求，服务端也从不校验。
+> 2.1.12 的更新日志里仍有「修正下載頁驗證碼無法顯示的問題」，且这段逻辑与 2.1.11
+> 相同（已核对 2.1.12 APK 的 sourcemap）；它只能挡随手点一下的人，不构成服务端校验。
+
+> **链接本身是 bearer**：带 `uid`/`expires`/`md5`，下载请求不需要登录头；
+> `expires` 过期后返回 **HTTP 410**（用本文样本复测）。同一个过期链接在
+> `dl2025.cdngwc.club` / `.cc` / `.net` / `dl2025.cdnutc.me` / `dl2025.cdnhjk.net`
+> 上都走到同一套校验（同样 410），说明下载 CDN 共享验签。
+>
+> **下载域名**：样本（线路4 `www.cdngwc.club`）下发的是 `https://dl2025.cdngwc.club/...`；
+> 五条线路的域名下都存在 `dl2025.<线路域名>` 的下载子域（DNS + HTTP 实测）。
+> 因此换线路时下载域名**会跟着线路域名走**（推断：跨线路登录态未实测）；
+> 但客户端始终应该直接用服务端返回的 `download_url`，不要拼死 `dl2025.*`。
 
 ```json
 {
