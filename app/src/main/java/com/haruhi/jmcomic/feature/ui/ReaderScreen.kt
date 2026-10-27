@@ -125,12 +125,19 @@ fun ReaderScreen(
     onSetBrightness: (Float) -> Unit,
     onSetKeepScreenOn: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 是否让阅读器接管窗口亮度 / 屏幕常亮。
+     *
+     * 阅读器挂在平板右栏时，登录页等整页会把右栏临时藏起来（宽度 0，但仍在组合里保温），
+     * 这时必须把窗口效果关掉，否则登录页会继承阅读器的亮度。整页阅读器照旧用默认 true。
+     */
+    windowEffectsEnabled: Boolean = true,
 ) {
     val background = readerBackgroundColor(state.preferences.background)
     val contentColor = readerContentColor(state.preferences.background)
 
     // 屏幕常亮与亮度：直接作用在 Activity 窗口上，离开阅读器立刻还原
-    ReaderWindowEffect(state.preferences)
+    if (windowEffectsEnabled) ReaderWindowEffect(state.preferences)
 
     CompositionLocalProvider(LocalLayoutDirection provides state.preferences.layoutDirection) {
         // 双指缩放作用于**整块阅读区域**（用户要求：不是单张图片各自放大）。

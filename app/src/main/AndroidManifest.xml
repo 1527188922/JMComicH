@@ -73,11 +73,18 @@
         android:theme="@style/Theme.JMComicH.CardWhite"
         tools:targetApi="34">
 
+        <!--
+          平板双栏 / 阅读器整屏完全依赖窗口尺寸的**实时**变化（见 AdaptiveLayout.kt）。
+          如果转屏时重建 Activity，右栏（独立 NavHost）的返回栈会丢：
+          阅读中把 pad 竖起来，阅读器会直接消失。这里由 Activity 自己处理配置变更，
+          Compose 会通过 LocalConfiguration / LocalWindowInfo 拿到新尺寸并重组。
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:theme="@style/Theme.JMComicH.CardWhite"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|navigation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

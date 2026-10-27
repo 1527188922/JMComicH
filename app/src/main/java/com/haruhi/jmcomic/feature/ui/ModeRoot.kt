@@ -52,8 +52,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -333,22 +336,52 @@ fun ModeRoot(
     val factory = remember(container) { ViewModelFactory(container) }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
-    // 详情页与阅读器隐藏底部导航（计划 §9 第 2 条）
-    val showBottomBar = currentRoute in Tab.entries.map { it.route }
     // 平板（窗口短边 >= 600dp）用侧栏替代底栏；手机横屏的短边仍只有 300~400dp，
     // 因此不会被误判成平板，底栏保持原样。
     val wideShell = isWideWindow()
-    // 双栏（方案 B）：左侧列表 + 右侧详情。除了平板判定，还要求整窗宽度够放下
-    // "420dp 列表 + 详情"，所以再卡一道 840dp；手机永远不满足，UI 保持原样。
+    // 双栏：左侧 + 右侧。除了平板判定，还要求整窗宽度够放下
+    // "420dp 左栏 + 右栏"，所以再卡一道 840dp；手机永远不满足，UI 保持原样。
     val splitCapable = wideShell && windowWidthDp() >= SPLIT_MIN_WIDTH
-    val splitActive = splitCapable && currentRoute in SPLIT_LIST_ROUTES
-    // 右栏是**独立**的导航栈：左栏一直停在列表页，详情只在右栏里进出，
-    // 系统返回键/详情页返回键都先退右栏，不会把列表页一起退掉。
+    // 阅读器的左右分栏只在**横屏**启用：pad 竖起来时（用户要求）阅读页占满屏幕。
+    val landscape = windowWidthDp() > windowHeightDp()
+    // 右栏是**独立**的导航栈：详情 / 搜索结果 / 「我的」二级页都在右栏里进出，
+    // 系统返回键先退右栏，不会把左栏的页面一起退掉。
     val paneNavController = rememberNavController()
+    val paneEntry by paneNavController.currentBackStackEntryAsState()
+    val paneRoute = paneEntry?.destination?.route
+    // 底栏里的四个 tab（左栏的根页面）
+    val tabRoutes = remember { Tab.entries.map { it.route }.toSet() }
+    val leftRouteIsTab = currentRoute in tabRoutes
+    // 登录 / 注册 / 找回密码：这三个页面永远整页显示，登录成功后按落点回到左栏或右栏。
+    var authReturnRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // 阅读时左栏临时变成"这一本的详情"，右栏放阅读器（用户 2026-10-27 要求）
+    val readingSplit = splitCapable && landscape &&
+        currentRoute == Routes.DETAIL && paneRoute == Routes.READER
+    // 阅读中把 pad 竖起来（或窗口被缩到不再横屏分栏）：阅读器**整屏覆盖**（用户要求）。
+    // 不把它挪回主栈：挪回去会换一个 ViewModel，当前章节 / 阅读位置都会丢；
+    // 这里只是把右栏的宿主铺满整块内容区，旋转回横屏又会自然回到左右分栏。
+    val readerFullscreen = paneRoute == Routes.READER && !(splitCapable && landscape)
+    // 右栏有内容、但窗口已经窄到分不了栏（分屏 / 小窗）时：让右栏里的页面整屏接管，
+    // 与手机上"二级页整页显示"的观感一致；左栏保持 0 宽但**不退出组合**，返回栈不丢。
+    val paneHasContent = paneRoute != null && paneRoute != SPLIT_PANE_EMPTY
+    // 只有左栏是 tab 时才允许右栏整屏接管：根栈在登录页 / 详情页时不能把右栏盖上去。
+    val paneExpanded = readerFullscreen ||
+        (!splitCapable && paneHasContent && leftRouteIsTab)
+    // 只有两栏都有意义时才真的分栏：
+    // - 左栏是 tab（书库 / 分类 / 发现 / 我的），右栏可以是详情、结果或二级页；
+    // - 或者左栏是阅读中的详情、右栏是阅读器。
+    // 其余情况（登录页、设置里的二级页在手机上等）仍然整页显示，手机 UI 完全不变。
+    val splitActive = splitCapable && (leftRouteIsTab || readingSplit)
+    // 右栏当前是否露出来（分栏，或整屏接管）。
+    val paneVisible = splitActive || paneExpanded
+    // 底栏/侧栏：分栏时侧栏一直保留（即使左栏临时变成了详情），手机行为不变。
+    // 阅读器 / 右栏页面整屏接管时不显示底栏/侧栏，保证它真正占满屏幕。
+    // 详情 / 阅读器 / 二级页在非分栏时仍然隐藏底部导航（计划 §9 第 2 条）。
+    val showBottomBar = !paneExpanded && (leftRouteIsTab || splitActive)
     // 底栏/侧栏共用同一套切换逻辑：各 tab 保留独立滚动位置与筛选（§9 第 2 条）
     val switchTab: (Tab) -> Unit = { tab ->
         if (currentRoute != tab.route) {
-            // 详情不属于任何 tab：切 tab 时把右栏退回空态，免得切回来还残留上一本
+            // 详情/二级页不属于任何 tab：切 tab 时把右栏退回空态，免得切回来还残留上一本
             paneNavController.popBackStack(SPLIT_PANE_EMPTY, inclusive = false)
             navController.navigate(tab.route) {
                 popUpTo(Routes.LIBRARY) { saveState = true }
@@ -357,15 +390,79 @@ fun ModeRoot(
             }
         }
     }
-    // 列表页点卡片：双栏时进右栏（先退回空态，右栏只保留一本），
-    // 其余情况（手机 / 非列表页）与原来一样整页打开详情。
-    val openAlbumFromList: (Long) -> Unit = { albumId ->
-        if (splitActive) {
+    // 打开一个二级页：分栏时进右栏，其余情况（手机）与以前一样整页入栈。
+    // 右栏里只保留**当前这一个**二级页（点另一项是替换，不是往栈上叠）：
+    // 否则「收藏 → 最近浏览」按返回会先回收藏，与「我的」的直觉不符。
+    val openChildRoute: (String) -> Unit = { route ->
+        if (splitCapable) {
+            if (paneRoute != route) {
+                paneNavController.navigate(route) {
+                    popUpTo(SPLIT_PANE_EMPTY)
+                }
+            }
+        } else {
+            navController.navigate(route)
+        }
+    }
+    // 左栏列表点一本：分栏时进右栏（右栏只留这一本），手机整页打开详情。
+    val openAlbumFromLeft: (Long) -> Unit = { albumId ->
+        if (splitCapable) {
             paneNavController.navigate(Routes.detail(albumId)) {
                 popUpTo(SPLIT_PANE_EMPTY)
             }
         } else {
             navController.navigate(Routes.detail(albumId))
+        }
+    }
+    // 搜索结果页：分栏时进右栏（发现页留在左栏），每次搜索都换一个新的结果页
+    // （不能带 `launchSingleTop`：同一个 destination 命中后会复用旧 entry 与旧 ViewModel，
+    // 新关键字被忽略，用户会看到上一次的结果）；手机保持原来的整页入栈。
+    val openSearchResults: (String) -> Unit = { route ->
+        if (splitCapable) {
+            paneNavController.navigate(route) {
+                popUpTo(SPLIT_PANE_EMPTY)
+            }
+        } else {
+            navController.navigate(route) { launchSingleTop = true }
+        }
+    }
+    // 点「阅读」/ 点章节：
+    // - 横屏分栏：左栏变成这一本的详情、右栏变成阅读器（用户 2026-10-27 要求）；
+    // - 竖屏 / 手机：整页进入阅读器（与以前完全一致）。
+    val openReader: (Long, Long) -> Unit = { albumId, chapterId ->
+        if (splitCapable && landscape) {
+            if (currentRoute != Routes.DETAIL) {
+                navController.navigate(Routes.detail(albumId))
+            }
+            paneNavController.navigate(Routes.reader(albumId, chapterId)) {
+                popUpTo(SPLIT_PANE_EMPTY)
+            }
+        } else {
+            navController.navigate(Routes.reader(albumId, chapterId))
+        }
+    }
+    // 登录/注册页始终整页（表单不适合塞进右栏）。落点由 finishAuthTo 决定。
+    val openLogin: (String) -> Unit = { next ->
+        if (!isAuthRoute(currentRoute)) authReturnRoute = currentRoute
+        navController.navigate(Routes.login(next))
+    }
+    // 登录 / 注册成功后：把登录页（注册时还压着一层登录页）一起摘掉，
+    // 再按落点把页面放回右栏或整页。手机上的观感与改动前一致。
+    val finishAuthTo: (String) -> Unit = { next ->
+        var guard = 0
+        while (isAuthRoute(navController.currentBackStackEntry?.destination?.route) && guard++ < 4) {
+            navController.popBackStack()
+        }
+        val under = authReturnRoute
+        authReturnRoute = null
+        if (next.isNotBlank()) {
+            when {
+                // 从详情页点的收藏：登录完直接回详情（详情 VM 自己订阅账号状态）
+                under == Routes.DETAIL -> Unit
+                // 平板：落点大多是右栏的二级页
+                splitCapable -> paneNavController.navigate(next) { launchSingleTop = true }
+                else -> navController.navigate(next) { launchSingleTop = true }
+            }
         }
     }
 
@@ -422,8 +519,9 @@ fun ModeRoot(
                     .clearFocusOnTap()
                     // 双指聚拢开启、张开关闭隐私模式。
                     // 阅读器内禁用：它的双指缩小/还原会跨过同样的阈值，造成误触发。
+                    // 阅读器也可能挂在右栏（阅读时左详情 + 右阅读器），所以两个路由都要判。
                     .privacyPinchGesture(
-                        enabled = currentRoute != Routes.READER,
+                        enabled = currentRoute != Routes.READER && paneRoute != Routes.READER,
                         onPinchIn = { setPrivacyMode(true) },
                         onPinchOut = { setPrivacyMode(false) },
                     ),
@@ -453,7 +551,7 @@ fun ModeRoot(
                     }
                 },
             ) { padding ->
-                Row(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    Row(modifier = Modifier.fillMaxSize().padding(padding)) {
                     // 平板上底栏换成左侧导航栏；详情/阅读器/二级页与手机一样隐藏
                     if (showBottomBar && wideShell) {
                         NavigationRail(
@@ -478,14 +576,25 @@ fun ModeRoot(
                         }
                     }
                     // 手机 / 非分栏：NavHost 占满剩余宽度；
-                    // 平板双栏：左栏固定 420dp，右栏另挂一个独立的详情栈。
+                    // 平板双栏：左栏固定 420dp，右栏另挂一个独立的详情栈；
+                    // 阅读器 / 右栏页面整屏时左栏收成 0 宽——**不把它移出组合**，
+                    // 否则 NavHost 重新挂载会把主栈/右栏的返回栈重建，状态全丢。
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
                             .then(
-                                if (splitActive) Modifier.width(SPLIT_LIST_WIDTH)
-                                else Modifier.weight(1f)
-                            ),
+                                when {
+                                    paneExpanded -> Modifier.width(0.dp)
+                                    splitActive -> Modifier.width(SPLIT_LIST_WIDTH)
+                                    else -> Modifier.weight(1f)
+                                }
+                            )
+                            // 必须裁到本栏范围内：分类页的 `ModalNavigationDrawer`
+                            // 即使**关着**也把抽屉画在自己的左边界外（Compose 默认不裁剪），
+                            // 平板分栏时左栏左边就是导航栏，抽屉会整块盖住导航栏，
+                            // 只剩关闭 ✕ 和二级分类的 ✓ 两个图标露在栏里
+                            // ——用户看到的"最左侧分类侧栏文字消失"。手机全屏时裁不裁一样。
+                            .clipToBounds(),
                     ) {
                     NavHost(
                         navController = navController,
@@ -537,10 +646,11 @@ fun ModeRoot(
                             columns = 3,
                             onFilterChange = vm::updateFilter,
                             onClearFilter = vm::clearFilter,
-                            onOpenAlbum = openAlbumFromList,
+                            onOpenAlbum = openAlbumFromLeft,
                             onToggleCollected = vm::setCollected,
-                            // 「继续阅读」卡片（§9 第 4 条）：直接回到保存的位置
-                            onContinueReading = { albumId -> navController.navigate(Routes.reader(albumId)) },
+                            // 「继续阅读」卡片（§9 第 4 条）：直接回到保存的位置。
+                            // 平板横屏时同样走"左详情 + 右阅读器"（用户 2026-10-27 要求）。
+                            onContinueReading = { albumId -> openReader(albumId, 0L) },
                             // 卡片右上角 ✕：清掉「继续阅读」指针，卡片消失
                             onDismissContinueReading = vm::dismissContinueReading,
                             // 长按多选（用户要求第 1 点）
@@ -569,32 +679,33 @@ fun ModeRoot(
                             // 下拉刷新：联网重拉收藏夹名单，成功后覆盖本地缓存
                             onRefresh = { vm.refreshFolderCount() },
                             // 未登录点账号入口 = 直接去登录页，登录成功后回到「收藏」
+                            // 平板分栏时二级页一律进右栏，左栏仍是「我的」（用户 2026-10-27 要求）
                             onOpenFavorites = {
                                 if (accountState.isSignedIn) {
-                                    navController.navigate(Routes.ACCOUNT_FAVORITES)
+                                    openChildRoute(Routes.ACCOUNT_FAVORITES)
                                 } else {
-                                    navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES))
+                                    openLogin(Routes.ACCOUNT_FAVORITES)
                                 }
                             },
-                            onOpenRecent = { navController.navigate(Routes.RECENT) },
+                            onOpenRecent = { openChildRoute(Routes.RECENT) },
                             onOpenComments = {
                                 if (accountState.isSignedIn) {
-                                    navController.navigate(Routes.ACCOUNT_COMMENTS)
+                                    openChildRoute(Routes.ACCOUNT_COMMENTS)
                                 } else {
-                                    navController.navigate(Routes.login(Routes.ACCOUNT_COMMENTS))
+                                    openLogin(Routes.ACCOUNT_COMMENTS)
                                 }
                             },
-                            onOpenTasks = { navController.navigate(Routes.TASKS) },
-                            onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                            onOpenAbout = { navController.navigate(Routes.ABOUT) },
+                            onOpenTasks = { openChildRoute(Routes.TASKS) },
+                            onOpenSettings = { openChildRoute(Routes.SETTINGS) },
+                            onOpenAbout = { openChildRoute(Routes.ABOUT) },
                             onOpenProfile = {
                                 if (accountState.isSignedIn) {
-                                    navController.navigate(Routes.ACCOUNT_PROFILE)
+                                    openChildRoute(Routes.ACCOUNT_PROFILE)
                                 } else {
-                                    navController.navigate(Routes.login(Routes.ACCOUNT_PROFILE))
+                                    openLogin(Routes.ACCOUNT_PROFILE)
                                 }
                             },
-                            onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES)) },
+                            onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
                             onLogout = vm::logout,
                         )
                     }
@@ -634,16 +745,8 @@ fun ModeRoot(
                                 navController.navigate(Routes.FORGOT) { launchSingleTop = true }
                             },
                             onLoggedIn = {
-                                // 一次性把登录页从栈里摘掉，再落到 next（没有 next 就留在「我的」）。
-                                // 不用"先 pop 再 navigate"：两次导航挨着调用时，第二次可能基于旧栈。
-                                if (next.isBlank()) {
-                                    navController.popBackStack()
-                                } else {
-                                    navController.navigate(next) {
-                                        popUpTo(Routes.LOGIN) { inclusive = true }
-                                        launchSingleTop = true
-                                    }
-                                }
+                                // 登录成功：摘掉登录页，按落点回到左栏或右栏（手机行为不变）
+                                finishAuthTo(next)
                             },
                         )
                     }
@@ -686,15 +789,8 @@ fun ModeRoot(
                             onConsumeError = vm::consumeError,
                             onResumeVerification = vm::resumeVerification,
                             onSignedUp = {
-                                // 注册页与登录页一起摘掉：注册成功即已登录，回到登录页没有意义
-                                if (next.isBlank()) {
-                                    navController.popBackStack(Routes.LOGIN, inclusive = true)
-                                } else {
-                                    navController.navigate(next) {
-                                        popUpTo(Routes.LOGIN) { inclusive = true }
-                                        launchSingleTop = true
-                                    }
-                                }
+                                // 注册成功即已登录：登录/注册页一起摘掉，再按落点回到左栏或右栏
+                                finishAuthTo(next)
                             },
                             onGoLogin = { username ->
                                 // 账号已创建但自动登录失败：去登录页，预填用户名（密码让用户自己输）。
@@ -724,72 +820,36 @@ fun ModeRoot(
                     }
 
                     centeredComposable(Routes.ACCOUNT_FAVORITES) { entry ->
-                        val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        // 从夹内页 / 详情页回来时先按内存快照同步：取消收藏已就地减掉总数，
-                        // 不用用户再下拉刷新一次（用户要求 2026-10-22）。
-                        OnResumeEffect { vm.onScreenResumed() }
-                        // 进页面**不再自动刷新**：ViewModel 先用进程内快照铺内容（见 AccountCache），
-                        // 只有数据被动过才静默补一次；用户想刷新就下拉。
-                        AccountFavoritesScreen(
-                            state = state,
+                        AccountFavoritesDestination(
+                            entry = entry,
+                            factory = factory,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
                             onOpenFolder = { folderId, name ->
                                 navController.navigate(Routes.accountFavoriteAlbums(folderId, name))
                             },
-                            onCreate = vm::create,
-                            onRename = vm::rename,
-                            onDelete = vm::delete,
-                            onRefresh = vm::refresh,
-                            onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_FAVORITES)) },
-                            onMessage = showMessage,
-                            onConsumeMessage = vm::consumeMessage,
+                            onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
                         )
                     }
 
                     composable(
                         route = Routes.ACCOUNT_FAVORITE_ALBUMS,
-                        arguments = listOf(
-                            navArgument("folderId") { type = NavType.LongType },
-                            navArgument("name") { type = NavType.StringType; defaultValue = "" },
-                        ),
+                        arguments = accountAlbumsArguments(),
                     ) { entry ->
-                        val rawFolderId = entry.arguments?.getLong("folderId") ?: 0L
-                        val name = remember(entry.arguments?.getString("name")) {
-                            decodeRouteArg(entry.arguments?.getString("name").orEmpty())
-                        }
-                        val folderId = rawFolderId.takeIf { it > 0L }?.toString()
-                        val vm: AccountAlbumsViewModel = viewModel(
-                            viewModelStoreOwner = entry,
-                            factory = ViewModelFactory(container, accountFolderId = folderId, accountFolderName = name),
-                        )
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        // 从详情页回来时按内存快照同步：在详情页取消收藏后，
-                        // 这本已从缓存里删掉，返回即可见、不用下拉刷新（用户要求 2026-10-22）。
-                        OnResumeEffect { vm.onScreenResumed() }
-                        AccountAlbumsScreen(
-                            state = state,
+                        AccountAlbumsDestination(
+                            entry = entry,
+                            container = container,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromList,
-                            onLoadMore = vm::loadMore,
-                            onOrderChange = vm::setOrder,
-                            onRemove = vm::remove,
-                            onRefresh = vm::refresh,
-                            onMessage = showMessage,
-                            onConsumeMessage = vm::consumeMessage,
+                            onOpenAlbum = openAlbumFromLeft,
                         )
                     }
 
                     centeredComposable(Routes.ACCOUNT_PROFILE) { entry ->
-                        val vm: AccountProfileViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        // 从编辑页返回：保存成功后新资料已写进账号缓存，这里把它同步到界面上
-                        // （否则返回资料页看到的还是编辑前的内容，用户会以为没保存）。
-                        OnResumeEffect { vm.onScreenResumed() }
-                        AccountProfileScreen(
-                            state = state,
+                        AccountProfileDestination(
+                            entry = entry,
+                            factory = factory,
                             onBack = { navController.popBackStack() },
-                            onRefresh = vm::refresh,
                             onEdit = {
                                 // 连点两下不要压两个编辑页（这条路由没有参数，复用同一个 entry 是安全的）
                                 navController.navigate(Routes.ACCOUNT_PROFILE_EDIT) {
@@ -801,52 +861,35 @@ fun ModeRoot(
 
                     // 个人资料编辑：进页面先 GET 最新资料，加载完再渲染表单（避免官方 App 的回显 bug）
                     centeredComposable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
-                        val vm: AccountProfileEditViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        AccountProfileEditScreen(
-                            state = state,
+                        AccountProfileEditDestination(
+                            entry = entry,
+                            factory = factory,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
-                            onFormChange = vm::updateForm,
-                            onSave = vm::save,
-                            onRetry = vm::retry,
-                            onMessage = showMessage,
-                            onConsumeMessage = vm::consumeMessage,
-                            onConsumeSaveError = vm::consumeSaveError,
                             onSaved = { navController.popBackStack() },
                         )
                     }
 
                     // 留言记录：我发过的留言（10/页）。删一条就地消失，点一行跳那本的评论 tab。
                     centeredComposable(Routes.ACCOUNT_COMMENTS) { entry ->
-                        val vm: AccountCommentsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        AccountCommentsScreen(
-                            state = state,
+                        AccountCommentsDestination(
+                            entry = entry,
+                            factory = factory,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
                             onOpenAlbum = { albumId ->
                                 navController.navigate(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
                             },
-                            onRefresh = vm::refresh,
-                            onLoadMore = vm::loadMore,
-                            onRetry = vm::retry,
-                            onDelete = vm::delete,
-                            onLogin = { navController.navigate(Routes.login(Routes.ACCOUNT_COMMENTS)) },
-                            // 本页自己没有 Snackbar 宿主，提示统一交给根部弹
-                            onMessage = showMessage,
-                            onConsumeMessage = vm::consumeMessage,
+                            onLogin = { openLogin(Routes.ACCOUNT_COMMENTS) },
                         )
                     }
 
                     centeredComposable(Routes.RECENT) { entry ->
-                        val vm: RecentViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        RecentScreen(
-                            state = state,
-                            // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+                        RecentDestination(
+                            entry = entry,
+                            factory = factory,
                             onBack = { navController.popBackStack() },
-                            onOpenAlbum = openAlbumFromList,
-                            onClearAll = vm::clearAll,
-                            onRemoveAlbum = vm::remove,
+                            onOpenAlbum = openAlbumFromLeft,
                         )
                     }
 
@@ -864,7 +907,7 @@ fun ModeRoot(
                             onRefresh = vm::refresh,
                             onLoadMore = vm::loadMore,
                             onRetry = vm::retry,
-                            onOpenAlbum = openAlbumFromList,
+                            onOpenAlbum = openAlbumFromLeft,
                             onMessage = showMessage,
                             onConsumeMessage = vm::consumeMessage,
                         )
@@ -879,27 +922,24 @@ fun ModeRoot(
                             onSortChange = vm::onSortChange,
                             // 点「搜索」：**先跳结果页，由结果页自己发请求**（用户要求）。
                             // 关键字为空就不跳、原地提示——结果页没有输入框，空关键字跳过去没法改。
+                            // 平板分栏时**右栏**打开结果页，左栏仍停在发现页（用户 2026-10-27 要求）。
                             onSearch = {
                                 val keyword = state.keyword.trim()
                                 if (keyword.isEmpty()) {
                                     showMessage("请输入搜索关键字")
                                 } else {
-                                    navController.navigate(Routes.searchResults(keyword, state.sort)) {
-                                        launchSingleTop = true
-                                    }
+                                    openSearchResults(Routes.searchResults(keyword, state.sort))
                                 }
                             },
                             // 点历史记录：带 historyId 进结果页，那边**只回显快照、不重搜**（用户要求）
                             onOpenHistory = { history ->
-                                navController.navigate(
+                                openSearchResults(
                                     Routes.searchResults(
                                         keyword = history.keyword,
                                         sort = SearchSort.fromCode(history.sort),
                                         historyId = history.id,
                                     ),
-                                ) {
-                                    launchSingleTop = true
-                                }
+                                )
                             },
                             onDeleteHistory = vm::deleteHistory,
                             onClearHistory = vm::clearHistory,
@@ -911,51 +951,15 @@ fun ModeRoot(
 
                     composable(
                         route = Routes.SEARCH_RESULTS,
-                        arguments = listOf(
-                            navArgument("keyword") { type = NavType.StringType; defaultValue = "" },
-                            navArgument("sort") { type = NavType.StringType; defaultValue = SearchSort.DEFAULT.code },
-                            navArgument("historyId") { type = NavType.LongType; defaultValue = 0L },
-                        ),
+                        arguments = searchResultsArguments(),
                     ) { entry ->
-                        // 路由参数只在这里解一次（[encodeRouteArg] 是自描述的：不带前缀就是明文）。
-                        // **不要再叠一层 `URLDecoder.decode`**：Navigation 已经做过一次百分号解码，
-                        // 关键字里的 `%` 会让第二次解码抛异常并退回未解码的串（用户报的 `+` bug）。
-                        val keyword = remember(entry.arguments?.getString("keyword")) {
-                            decodeRouteArg(entry.arguments?.getString("keyword").orEmpty())
-                        }
-                        val sort = SearchSort.fromCode(entry.arguments?.getString("sort"))
-                        val historyId = entry.arguments?.getLong("historyId") ?: 0L
-                        // 搜索请求由结果页自己的 ViewModel 发起（进页面就搜）：
-                        // 挂在这个 entry 上保证转屏/重组不会重复发，路由参数只作为入参传一次。
-                        val vm: OnlineSearchViewModel = viewModel(
-                            viewModelStoreOwner = entry,
-                            factory = ViewModelFactory(
-                                container,
-                                searchEntry = OnlineSearchEntry(keyword, sort, historyId),
-                            ),
-                        )
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        SearchResultsScreen(
-                            state = state,
-                            // 结果页现在自带输入框（用户要求）：改完关键字点右侧按钮/回车是**原地重搜**，
-                            // 不再往导航栈上再压一层结果页（`SearchResultsScreen` 内部也不再跳转）。
-                            onKeywordChange = vm::onKeywordChange,
-                            onSearch = vm::search,
+                        SearchResultsDestination(
+                            entry = entry,
+                            container = container,
+                            factory = factory,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
-                            onRefresh = vm::refresh,
-                            // 换排序立刻重搜：只改芯片不重搜的话，选中的芯片会和列表内容对不上
-                            onSortChange = vm::changeSort,
-                            onLoadMore = vm::loadMore,
-                            onRevealMore = vm::showMoreItems,
-                            // 卡片 / 列表切换（默认卡片，与分类页同一套；纯界面状态，不重搜）
-                            onToggleViewMode = vm::toggleViewMode,
-                            onOpenAlbum = openAlbumFromList,
-                            onAddToLibrary = vm::addToLibrary,
-                            // 点卡片上的「已入库」= 移出书库（页面内已二次确认）
-                            onRemoveFromLibrary = vm::removeFromLibrary,
-                            // 本页自己没有 Snackbar 宿主，提示统一交给根部弹
-                            onMessage = showMessage,
-                            onConsumeMessage = vm::consumeMessage,
+                            onOpenAlbum = openAlbumFromLeft,
                         )
                     }
 
@@ -980,85 +984,27 @@ fun ModeRoot(
                     */
 
                     centeredComposable(Routes.TASKS) {
-                        MessageEffect(
-                            taskState.message,
-                            onConsume = taskViewModel::consumeMessage,
-                            onShow = showMessage,
-                        )
-                        TaskScreen(
-                            state = taskState,
-                            // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+                        TasksDestination(
+                            taskViewModel = taskViewModel,
+                            taskState = taskState,
+                            context = context,
+                            scope = scope,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
-                            onToggleExpanded = taskViewModel::toggleExpanded,
-                            onPause = taskViewModel::pause,
-                            onResume = taskViewModel::resume,
-                            onCancel = taskViewModel::cancel,
-                            onRetry = taskViewModel::retry,
-                            onRemove = taskViewModel::remove,
-                            onClearFinished = taskViewModel::clearFinished,
-                            // 点封面进详情页（用户要求第 1 点）
-                            onOpenAlbum = { albumId -> navController.navigate(Routes.detail(albumId)) },
-                            // 导出成品的「打开至 / 发送至」（用户要求第 4 点）
-                            onOpenOutput = { name ->
-                                launchOutputIntent(context, name, share = false, showMessage, scope) {
-                                    taskViewModel.outputUri(name)
-                                }
-                            },
-                            onSendOutput = { name ->
-                                launchOutputIntent(context, name, share = true, showMessage, scope) {
-                                    taskViewModel.outputUri(name)
-                                }
-                            },
-                            onDeleteOutput = taskViewModel::deleteOutput,
+                            onOpenAlbum = openAlbumFromLeft,
                         )
                     }
 
                     centeredComposable(Routes.SETTINGS) { entry ->
-                        val vm: SettingsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
-                        SettingsScreen(
-                            state = state,
-                            onBack = { navController.popBackStack() },
-                            // 阅读与显示：阅读背景与亮度放在阅读器的设置面板里（跟着环境变，进阅读器再改）
-                            onSetReadingMode = vm::setReadingMode,
-                            onSetReadingDirection = vm::setReadingDirection,
-                            onSetKeepScreenOn = vm::setKeepScreenOn,
-                            // 取图管线：原图缓存（默认，快）/ 解扰后落盘（旧，可随时切回）
-                            onSetReaderCacheMode = vm::setReaderCacheMode,
-                            // 隐私模式：与全局双指手势共用同一个存储值
+                        SettingsDestination(
+                            entry = entry,
+                            factory = factory,
+                            showMessage = showMessage,
                             privacyMode = privacyMode,
-                            onSetPrivacyMode = setPrivacyMode,
-                            // 文字隐私：只在隐私模式开启时显示，单独保存
                             textPrivacy = textPrivacy,
+                            onSetPrivacyMode = setPrivacyMode,
                             onSetTextPrivacy = setTextPrivacy,
-                            // 下载
-                            onSetDownloadThreads = vm::setDownloadThreads,
-                            onSetDownloadNetwork = vm::setDownloadNetwork,
-                            // 语言：接口返回的中文用简中还是繁中（默认简中）
-                            onSetApiLanguage = vm::setApiLanguage,
-                            // 导出默认密码（原文写进加密凭据存储，页面上默认用圆点遮住）
-                            onSaveZipPassword = vm::saveZipPassword,
-                            onSavePdfPassword = vm::savePdfPassword,
-                            // 网络与线路
-                            onSetTimeoutSeconds = vm::setTimeoutSeconds,
-                            onSetImageTimeoutSeconds = vm::setImageTimeoutSeconds,
-                            onSaveProxy = vm::saveProxy,
-                            // 线路：清单里选中即生效（没有「保存」按钮）；
-                            // 两个面板里都能「全部测速」（接口线路打 /setting，图片线路取探针图）
-                            onSelectApiLine = vm::selectApiLine,
-                            onSelectImageLine = vm::selectImageLine,
-                            onResetApiLine = vm::resetApiLine,
-                            onResetImageLine = vm::resetImageLine,
-                            onTestApiLines = vm::testAllApiLines,
-                            onTestImageLines = vm::testAllImageLines,
-                            // 高级：接口请求重试（所有接口共用）与图片加载/下载重试（仅超时）
-                            onSetRequestRetry = vm::setRequestRetry,
-                            onSetImageRetry = vm::setImageRetry,
-                            // 账号只读接口是否复用服务端缓存（关掉后请求带 t，强制回源）
-                            onSetAccountApiCache = vm::setAccountApiCache,
-                            // 恢复默认：只重置偏好，不动书库与文件、不动凭据
-                            onResetSettings = vm::resetSettings,
+                            onBack = { navController.popBackStack() },
                         )
                     }
 
@@ -1067,40 +1013,15 @@ fun ModeRoot(
                     // 这里只负责状态接线与"发安装 Intent / 开设置页"这类 Context 动作
                     //（与导出成品的 launchOutputIntent 同一模式）。
                     centeredComposable(Routes.ABOUT) { entry ->
-                        val vm: AboutViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        // 从详情页（删文件/下载）或别的页面回来时重扫存储，数字跟着变
-                        OnResumeEffect { vm.rescan() }
-                        MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
-                        AboutScreen(
-                            state = state,
+                        AboutDestination(
+                            entry = entry,
+                            container = container,
+                            factory = factory,
+                            context = context,
+                            scope = scope,
+                            showMessage = showMessage,
                             onBack = { navController.popBackStack() },
-                            onSelectSegment = vm::select,
-                            onOpenAlbum = { navController.navigate(Routes.detail(it)) },
-                            onCheckUpdate = vm::checkUpdate,
-                            onRetryScan = vm::rescan,
-                            onDownloadUpdate = vm::downloadUpdate,
-                            onInstallUpdate = { downloadId ->
-                                launchApkInstall(context, container.appDownloadGateway, downloadId, showMessage)
-                            },
-                            onCancelUpdateDownload = vm::cancelUpdateDownload,
-                            onUpdateToBackground = vm::updateToBackground,
-                            onDismissUpdateDialog = vm::dismissUpdateDialog,
-                            onOpenReleasesPage = {
-                                openUrl(context, ReleaseChecker.RELEASES_PAGE_URL, showMessage)
-                            },
-                            // 明细行操作：导出成品的「打开至 / 发送至」（与任务页/详情页同一套 Intent）
-                            onOpenOutput = { name ->
-                                launchOutputIntent(context, name, share = false, showMessage, scope) {
-                                    vm.outputUri(name)
-                                }
-                            },
-                            onSendOutput = { name ->
-                                launchOutputIntent(context, name, share = true, showMessage, scope) {
-                                    vm.outputUri(name)
-                                }
-                            },
-                            onDeleteUsage = vm::deleteUsage,
+                            onOpenAlbum = openAlbumFromLeft,
                         )
                     }
 
@@ -1153,7 +1074,7 @@ fun ModeRoot(
 
                     // 详情页：手机 / 非分栏时整页入栈（主栈）。
                     // 平板双栏时同一份实现也挂在右栏（见 SplitDetailPane），
-                    // 但「阅读器 / 登录 / 作者搜索」这类全屏页始终推到主栈。
+                    // 阅读时主栈会把它推到左栏（右栏换成阅读器）。
                     centeredComposable(
                         route = Routes.DETAIL,
                         arguments = detailArguments(),
@@ -1161,9 +1082,21 @@ fun ModeRoot(
                         AlbumDetailDestination(
                             entry = entry,
                             container = container,
-                            rootNavController = navController,
                             detailNavController = navController,
-                            inSplitPane = false,
+                            // 平板分栏时登录完直接回到详情（详情 VM 自己订阅账号状态）；
+                            // 手机保持原来的"登录成功后重新打开详情页"。
+                            loginNext = if (splitCapable) {
+                                ""
+                            } else {
+                                Routes.detail(entry.arguments?.getLong("albumId") ?: 0L)
+                            },
+                            openReader = openReader,
+                            openLogin = openLogin,
+                            onSearchAuthor = { author ->
+                                navController.navigate(Routes.searchResults(author)) {
+                                    launchSingleTop = true
+                                }
+                            },
                             context = context,
                             showMessage = showMessage,
                             scope = scope,
@@ -1172,70 +1105,54 @@ fun ModeRoot(
 
                     composable(
                         route = Routes.READER,
-                        arguments = listOf(
-                            navArgument("albumId") { type = NavType.LongType },
-                            navArgument("chapterId") { type = NavType.LongType; defaultValue = 0L },
-                        ),
+                        arguments = readerArguments(),
                     ) { entry ->
-                        val albumId = entry.arguments?.getLong("albumId") ?: return@composable
-                        val chapterId = entry.arguments?.getLong("chapterId") ?: 0L
-                        val vm: ReaderViewModel = viewModel(
-                            viewModelStoreOwner = entry,
-                            factory = ViewModelFactory(container, albumId, chapterId.takeIf { it > 0 }),
-                        )
-                        val state by vm.state.collectAsStateWithLifecycle()
-                        MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
-                        // 从任务页/详情页回到阅读器时重新扫一遍本地缓存：
-                        // 刚下好的页要立刻显示出来（用户要求第 2 点）
-                        OnResumeEffect { vm.refreshFromDisk() }
-                        ReaderScreen(
-                            state = state,
-                            // 退出前把去抖窗口里的位置立刻落库，重启后才能接着读
-                            onBack = {
-                                vm.flushPosition()
-                                navController.popBackStack()
-                            },
-                            onPositionChanged = vm::onPositionChanged,
-                            onToggleControls = vm::toggleControls,
-                            onPreviousChapter = vm::previousChapter,
-                            onNextChapter = vm::nextChapter,
-                            onOpenChapter = vm::openChapterAt,
-                            onShowChapterPicker = vm::showChapterPicker,
-                            onShowSettings = vm::showSettings,
-                            onDismissSheets = vm::dismissSheets,
-                            onRetryPage = vm::retryPage,
-                            onRequestPage = vm::requestPage,
-                            onDownloadChapter = vm::downloadCurrentChapter,
-                            onRetryLoad = vm::retryLoad,
-                            onToggleCollected = vm::toggleCollected,
-                            onSetReadingMode = vm::setReadingMode,
-                            onSetDirection = vm::setReadingDirection,
-                            onSetBackground = vm::setBackground,
-                            onSetBrightnessFollowSystem = vm::setBrightnessFollowSystem,
-                            onSetBrightness = vm::setBrightness,
-                            onSetKeepScreenOn = vm::setKeepScreenOn,
+                        ReaderDestination(
+                            entry = entry,
+                            container = container,
+                            factory = factory,
+                            showMessage = showMessage,
+                            onBack = { navController.popBackStack() },
                         )
                     }
                     }
                     }
 
-                    // 右栏：平板双栏时才有；左栏的列表页与它是两套独立的导航栈
-                    if (splitActive) {
-                        // 1dp 分隔线（与分类页常驻抽屉同一种画法）
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(1.dp)
-                                .background(MaterialTheme.colorScheme.outlineVariant),
-                        )
+                    // 右栏：平板双栏 / 阅读器或右栏页面整屏时都挂在这里。
+                    // **只有一个调用点**：旋转 / 登录页压栈时只改宽度、不把 NavHost 挪走，
+                    // 否则重建 NavHost 会重置右栏（阅读器 / 详情）与主栈的返回栈。
+                    // 不可见但有内容时仍以 0 宽留在组合里，登录回来内容还在。
+                    if (paneVisible || paneHasContent) {
+                        // 1dp 分隔线（与分类页常驻抽屉同一种画法）；整屏时不需要
+                        if (paneVisible && !paneExpanded) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(1.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant),
+                            )
+                        }
                         SplitDetailPane(
                             paneNavController = paneNavController,
-                            rootNavController = navController,
                             container = container,
+                            factory = factory,
+                            taskViewModel = taskViewModel,
+                            taskState = taskState,
+                            privacyMode = privacyMode,
+                            textPrivacy = textPrivacy,
+                            setPrivacyMode = setPrivacyMode,
+                            setTextPrivacy = setTextPrivacy,
                             context = context,
                             showMessage = showMessage,
                             scope = scope,
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            openReader = openReader,
+                            openLogin = openLogin,
+                            visible = paneVisible,
+                            modifier = if (paneVisible) {
+                                Modifier.weight(1f).fillMaxHeight()
+                            } else {
+                                Modifier.width(0.dp).fillMaxHeight()
+                            },
                         )
                     }
                 }
@@ -1323,19 +1240,15 @@ private fun NavGraphBuilder.centeredComposable(
 }
 
 /**
- * 平板双栏的列表页：这些路由在双栏下固定占左栏，右侧详情在独立栈里打开。
+ * 登录 / 注册 / 找回密码这三个表单页的路由。
  *
- * 「发现」「我的」「任务」「关于」不是漫画列表，不参与分栏（右栏也没有可显示的详情）。
- * 「最近浏览」「搜索结果」「账号收藏夹内页」虽然是从「我的」进来的二级页，
- * 但本身就是漫画网格，所以照样分栏。
+ * 它们**永远整页显示**（不放进右栏）：登录成功后的落点由 `finishAuthTo` 统一处理，
+ * 这样手机上的行为一点不变，平板上也能把页面放回正确的栏。
  */
-private val SPLIT_LIST_ROUTES = setOf(
-    Routes.LIBRARY,
-    Routes.CATEGORY,
-    Routes.SEARCH_RESULTS,
-    Routes.RECENT,
-    Routes.ACCOUNT_FAVORITE_ALBUMS,
-)
+private val AUTH_ROUTES = setOf(Routes.LOGIN, Routes.SIGNUP, Routes.FORGOT)
+
+/** [route] 是不是登录 / 注册 / 找回密码这类整页表单。 */
+private fun isAuthRoute(route: String?): Boolean = route != null && route in AUTH_ROUTES
 
 /** 右栏的起点：还没有选任何漫画时的空态。 */
 private const val SPLIT_PANE_EMPTY = "jm/split/empty"
@@ -1349,20 +1262,37 @@ private fun detailArguments(): List<NamedNavArgument> = listOf(
 )
 
 /**
- * 平板双栏的右栏：详情面板。
+ * 平板双栏的右栏：详情 / 搜索结果 / 「我的」二级页 / 阅读器。
  *
- * 它是一个**独立**的 NavHost：左栏永远停在列表页，详情只在右栏里进出，
- * 系统返回键也先退右栏（右栏 NavHost 自己的返回回调）。
+ * 它是一个**独立**的 NavHost：左栏页面（列表、发现、我的、阅读中的详情）不动，
+ * 右栏自己进出；系统返回键也先退右栏（见方法末尾的 `BackHandler`）。
  * 主栈的页面切换动画与右栏无关，所以右栏直接用默认的淡入淡出。
+ *
+ * 交互（用户 2026-10-27 要求）：
+ * - 左栏列表点一本 → 详情进右栏；
+ * - 发现页搜索 / 点历史 → 搜索结果进右栏（左栏仍是发现页）；
+ * - 「我的」点具体项 → 二级页进右栏（左栏仍是我的）；
+ * - 详情页点「阅读」/ 点章节 → 左栏变成这一本的详情、右栏变成阅读器
+ *   （竖屏 / 手机时仍整页进入阅读器，见 [ModeRoot] 的 openReader）。
  */
 @Composable
 private fun SplitDetailPane(
     paneNavController: NavHostController,
-    rootNavController: NavHostController,
     container: AppContainer,
+    factory: ViewModelFactory,
+    taskViewModel: TaskViewModel,
+    taskState: TaskUiState,
+    privacyMode: Boolean,
+    textPrivacy: Boolean,
+    setPrivacyMode: (Boolean) -> Unit,
+    setTextPrivacy: (Boolean) -> Unit,
     context: Context,
     showMessage: (String) -> Unit,
     scope: CoroutineScope,
+    openReader: (Long, Long) -> Unit,
+    openLogin: (String) -> Unit,
+    /** 右栏是否真的露在外面。为 false 时它只是以 0 宽留在组合里保温，不能再抢返回键。 */
+    visible: Boolean,
     modifier: Modifier = Modifier,
 ) {
     NavHost(
@@ -1391,18 +1321,169 @@ private fun SplitDetailPane(
             AlbumDetailDestination(
                 entry = entry,
                 container = container,
-                rootNavController = rootNavController,
                 detailNavController = paneNavController,
-                inSplitPane = true,
+                loginNext = "",
+                openReader = openReader,
+                openLogin = openLogin,
+                onSearchAuthor = { author ->
+                    paneNavController.navigate(Routes.searchResults(author)) {
+                        launchSingleTop = true
+                    }
+                },
                 context = context,
                 showMessage = showMessage,
                 scope = scope,
             )
         }
+        composable(
+            route = Routes.READER,
+            arguments = readerArguments(),
+        ) { entry ->
+            ReaderDestination(
+                entry = entry,
+                container = container,
+                factory = factory,
+                showMessage = showMessage,
+                // 关掉阅读器只退右栏：左栏的详情还在，用户可以接着挑章节
+                onBack = { paneNavController.popBackStack() },
+                // 右栏被登录页等整页藏起来时不接管窗口亮度 / 屏幕常亮
+                windowEffectsEnabled = visible,
+            )
+        }
+        // ---- 发现页 → 搜索结果（右栏）----
+        composable(
+            route = Routes.SEARCH_RESULTS,
+            arguments = searchResultsArguments(),
+        ) { entry ->
+            SearchResultsDestination(
+                entry = entry,
+                container = container,
+                factory = factory,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId))
+                },
+            )
+        }
+        // ---- 「我的」→ 各二级页（右栏）----
+        centeredComposable(Routes.ACCOUNT_FAVORITES) { entry ->
+            AccountFavoritesDestination(
+                entry = entry,
+                factory = factory,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenFolder = { folderId, name ->
+                    paneNavController.navigate(Routes.accountFavoriteAlbums(folderId, name))
+                },
+                onLogin = { openLogin(Routes.ACCOUNT_FAVORITES) },
+            )
+        }
+        composable(
+            route = Routes.ACCOUNT_FAVORITE_ALBUMS,
+            arguments = accountAlbumsArguments(),
+        ) { entry ->
+            AccountAlbumsDestination(
+                entry = entry,
+                container = container,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId))
+                },
+            )
+        }
+        centeredComposable(Routes.ACCOUNT_PROFILE) { entry ->
+            AccountProfileDestination(
+                entry = entry,
+                factory = factory,
+                onBack = { paneNavController.popBackStack() },
+                onEdit = {
+                    paneNavController.navigate(Routes.ACCOUNT_PROFILE_EDIT) {
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+        centeredComposable(Routes.ACCOUNT_PROFILE_EDIT) { entry ->
+            AccountProfileEditDestination(
+                entry = entry,
+                factory = factory,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onSaved = { paneNavController.popBackStack() },
+            )
+        }
+        centeredComposable(Routes.ACCOUNT_COMMENTS) { entry ->
+            AccountCommentsDestination(
+                entry = entry,
+                factory = factory,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId, AlbumDetailTab.COMMENTS))
+                },
+                onLogin = { openLogin(Routes.ACCOUNT_COMMENTS) },
+            )
+        }
+        centeredComposable(Routes.RECENT) { entry ->
+            RecentDestination(
+                entry = entry,
+                factory = factory,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId))
+                },
+            )
+        }
+        centeredComposable(Routes.TASKS) {
+            TasksDestination(
+                taskViewModel = taskViewModel,
+                taskState = taskState,
+                context = context,
+                scope = scope,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId))
+                },
+            )
+        }
+        centeredComposable(Routes.SETTINGS) { entry ->
+            SettingsDestination(
+                entry = entry,
+                factory = factory,
+                showMessage = showMessage,
+                privacyMode = privacyMode,
+                textPrivacy = textPrivacy,
+                onSetPrivacyMode = setPrivacyMode,
+                onSetTextPrivacy = setTextPrivacy,
+                onBack = { paneNavController.popBackStack() },
+            )
+        }
+        centeredComposable(Routes.ABOUT) { entry ->
+            AboutDestination(
+                entry = entry,
+                container = container,
+                factory = factory,
+                context = context,
+                scope = scope,
+                showMessage = showMessage,
+                onBack = { paneNavController.popBackStack() },
+                onOpenAlbum = { albumId ->
+                    paneNavController.navigate(Routes.detail(albumId))
+                },
+            )
+        }
     }
-    // 放在 NavHost **之后**注册：右栏有详情时，系统返回先退右栏，而不是退掉左栏的列表页
+    // 放在 NavHost **之后**注册：右栏有内容时，系统返回先退右栏，而不是退掉左栏的页面。
+    // 阅读器在右栏时同样生效：返回键先关阅读器，左栏的详情保留下来。
     val paneEntry by paneNavController.currentBackStackEntryAsState()
-    BackHandler(enabled = paneEntry?.destination?.route == Routes.DETAIL) {
+    BackHandler(
+        enabled = visible &&
+            paneEntry != null &&
+            paneEntry?.destination?.route != SPLIT_PANE_EMPTY,
+    ) {
         paneNavController.popBackStack()
     }
 }
@@ -1413,15 +1494,19 @@ private fun SplitDetailPane(
  * 导航分工：
  * - 返回 → [detailNavController] 退一层（右栏退到空态，手机退回列表）；
  * - 点推荐漫画（详情 → 详情）→ [detailNavController] 入栈，返回能回到上一本；
- * - 阅读器 / 登录 / 作者搜索 → [rootNavController] 全屏入栈（右栏只放详情）。
+ * - 阅读器 → [openReader]：横屏由外层安排成"左详情 + 右阅读器"，手机整页入栈；
+ * - 登录 → [openLogin]（整页），登录完回落到本页；
+ * - 作者搜索 → [onSearchAuthor]（在详情所在的这一栏里打开结果页）。
  */
 @Composable
 private fun AlbumDetailDestination(
     entry: NavBackStackEntry,
     container: AppContainer,
-    rootNavController: NavHostController,
     detailNavController: NavHostController,
-    inSplitPane: Boolean,
+    loginNext: String,
+    openReader: (Long, Long) -> Unit,
+    openLogin: (String) -> Unit,
+    onSearchAuthor: (String) -> Unit,
     context: Context,
     showMessage: (String) -> Unit,
     scope: CoroutineScope,
@@ -1435,9 +1520,6 @@ private fun AlbumDetailDestination(
     val state by vm.state.collectAsStateWithLifecycle()
     // 从任务页/阅读器回来时重算章节状态（刚下完的章节要立刻显示"已下载"）
     OnResumeEffect { vm.refreshLocalStats() }
-    // 双栏时登录成功直接退回列表：右栏这本还在，登录状态由详情 VM 自己订阅账号状态刷新，
-    // 用户回来再点一次「收藏」即可。手机保持原来的"登录成功后重新打开详情页"。
-    val loginNext = if (inSplitPane) "" else Routes.detail(albumId)
     // 「移出书库」**不再自动退回上一页**（用户要求：退不退由用户自己按返回键决定）。
     //
     // 移除成功后停留在这页是有意义的：本子本身还在（最近浏览记录保留），
@@ -1462,32 +1544,33 @@ private fun AlbumDetailDestination(
             if (state.accountSignedIn) {
                 vm.openAccountFavoriteSheet()
             } else {
-                rootNavController.navigate(Routes.login(loginNext))
+                openLogin(loginNext)
             }
         },
         onDismissAccountFavoriteSheet = vm::dismissAccountFavoriteSheet,
         onChooseAccountFavorite = vm::chooseAccountFavorite,
         onCreateAccountFolderAndAdd = vm::createAccountFolderAndAdd,
         onRequireLogin = {
-            rootNavController.navigate(Routes.login(loginNext))
+            openLogin(loginNext)
         },
         // 点章节进阅读器：**先把这个本子的进度改写成这一话**，
-        // 阅读器再按"从这一话第一张开始"打开（用户第十一轮要求第 1 点）
+        // 阅读器再按"从这一话第一张开始"打开（用户第十一轮要求第 1 点）。
+        // 平板横屏时由外层把左栏换成详情、右栏放阅读器（用户 2026-10-27 要求）。
         onReadChapter = { chapterId ->
             vm.onChapterOpened(chapterId)
-            rootNavController.navigate(Routes.reader(albumId, chapterId))
+            openReader(albumId, chapterId)
         },
         // 主按钮：有进度就按存下来的位置续读（不带章节号 = 续读），
         // 没进度才从第一话第一张开始（用户第十一轮要求第 1 点）
         onReadFromStart = {
             val position = state.progress
             if (position?.isUsable == true) {
-                rootNavController.navigate(Routes.reader(albumId))
+                openReader(albumId, 0L)
             } else {
                 val first = state.chapters.firstOrNull()
                 if (first != null) {
                     vm.onChapterOpened(first.chapterId)
-                    rootNavController.navigate(Routes.reader(albumId, first.chapterId))
+                    openReader(albumId, first.chapterId)
                 }
             }
         },
@@ -1530,14 +1613,8 @@ private fun AlbumDetailDestination(
             openExportFolder(context, vm.outputFolderUri(), showMessage)
         },
         // 点作者：**直接开结果页按作者名搜**（用户要求），不再绕去发现页填搜索框。
-        //
-        // 普通入栈、不做 popUpTo：详情页留在栈里，从结果页返回就回到详情页；
-        // `launchSingleTop` 只是防止连点两下叠出两层一样的结果页。
-        onSearchAuthor = { author ->
-            rootNavController.navigate(Routes.searchResults(author)) {
-                launchSingleTop = true
-            }
-        },
+        // 在详情所在的这一栏里打开（右栏详情 → 右栏结果页；手机 → 整页）。
+        onSearchAuthor = { author -> onSearchAuthor(author) },
         // 点评论里的「我推荐这本书 <jmid>」：打开那本漫画的详情页。
         //
         // ⚠ 不能带 `launchSingleTop`（用户 2026-10-22 反馈"点了跳不过去"的根因）：
@@ -1563,6 +1640,449 @@ private fun AlbumDetailDestination(
         onConsumeMessage = vm::consumeMessage,
     )
 }
+
+/**
+ * 搜索结果页的唯一实现。
+ *
+ * 主栈（手机 / 非分栏）与平板右栏共用（用户 2026-10-27 要求：发现页搜索 / 点历史时
+ * 左栏仍是发现页、右栏才是结果页）。`onBack` 由宿主决定退哪一栏。
+ */
+@Composable
+private fun SearchResultsDestination(
+    entry: NavBackStackEntry,
+    container: AppContainer,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    // 路由参数只在这里解一次（[encodeRouteArg] 是自描述的：不带前缀就是明文）。
+    // **不要再叠一层 `URLDecoder.decode`**：Navigation 已经做过一次百分号解码，
+    // 关键字里的 `%` 会让第二次解码抛异常并退回未解码的串（用户报的 `+` bug）。
+    val keyword = remember(entry.arguments?.getString("keyword")) {
+        decodeRouteArg(entry.arguments?.getString("keyword").orEmpty())
+    }
+    val sort = SearchSort.fromCode(entry.arguments?.getString("sort"))
+    val historyId = entry.arguments?.getLong("historyId") ?: 0L
+    // 搜索请求由结果页自己的 ViewModel 发起（进页面就搜）：
+    // 挂在这个 entry 上保证转屏/重组不会重复发，路由参数只作为入参传一次。
+    val vm: OnlineSearchViewModel = viewModel(
+        viewModelStoreOwner = entry,
+        factory = ViewModelFactory(
+            container,
+            searchEntry = OnlineSearchEntry(keyword, sort, historyId),
+        ),
+    )
+    val state by vm.state.collectAsStateWithLifecycle()
+    SearchResultsScreen(
+        state = state,
+        // 结果页自带输入框（用户要求）：改完关键字点右侧按钮/回车是**原地重搜**，
+        // 不再往导航栈上再压一层结果页（`SearchResultsScreen` 内部也不再跳转）。
+        onKeywordChange = vm::onKeywordChange,
+        onSearch = vm::search,
+        onBack = onBack,
+        onRefresh = vm::refresh,
+        // 换排序立刻重搜：只改芯片不重搜的话，选中的芯片会和列表内容对不上
+        onSortChange = vm::changeSort,
+        onLoadMore = vm::loadMore,
+        onRevealMore = vm::showMoreItems,
+        // 卡片 / 列表切换（默认卡片，与分类页同一套；纯界面状态，不重搜）
+        onToggleViewMode = vm::toggleViewMode,
+        onOpenAlbum = onOpenAlbum,
+        onAddToLibrary = vm::addToLibrary,
+        // 点卡片上的「已入库」= 移出书库（页面内已二次确认）
+        onRemoveFromLibrary = vm::removeFromLibrary,
+        // 本页自己没有 Snackbar 宿主，提示统一交给根部弹
+        onMessage = showMessage,
+        onConsumeMessage = vm::consumeMessage,
+    )
+}
+
+/** 「最近浏览」页（主栈与右栏共用）。 */
+@Composable
+private fun RecentDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    val vm: RecentViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    RecentScreen(
+        state = state,
+        // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+        onBack = onBack,
+        onOpenAlbum = onOpenAlbum,
+        onClearAll = vm::clearAll,
+        onRemoveAlbum = vm::remove,
+    )
+}
+
+/** 账号收藏夹列表页（主栈与右栏共用）。 */
+@Composable
+private fun AccountFavoritesDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenFolder: (String?, String) -> Unit,
+    onLogin: () -> Unit,
+) {
+    val vm: AccountFavoritesViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    // 从夹内页 / 详情页回来时先按内存快照同步：取消收藏已就地减掉总数，
+    // 不用用户再下拉刷新一次（用户要求 2026-10-22）。
+    OnResumeEffect { vm.onScreenResumed() }
+    // 进页面**不再自动刷新**：ViewModel 先用进程内快照铺内容（见 AccountCache），
+    // 只有数据被动过才静默补一次；用户想刷新就下拉。
+    AccountFavoritesScreen(
+        state = state,
+        onBack = onBack,
+        onOpenFolder = onOpenFolder,
+        onCreate = vm::create,
+        onRename = vm::rename,
+        onDelete = vm::delete,
+        onRefresh = vm::refresh,
+        onLogin = onLogin,
+        onMessage = showMessage,
+        onConsumeMessage = vm::consumeMessage,
+    )
+}
+
+/** 账号收藏夹内页（漫画网格；主栈与右栏共用）。 */
+@Composable
+private fun AccountAlbumsDestination(
+    entry: NavBackStackEntry,
+    container: AppContainer,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    val rawFolderId = entry.arguments?.getLong("folderId") ?: 0L
+    val name = remember(entry.arguments?.getString("name")) {
+        decodeRouteArg(entry.arguments?.getString("name").orEmpty())
+    }
+    val folderId = rawFolderId.takeIf { it > 0L }?.toString()
+    val vm: AccountAlbumsViewModel = viewModel(
+        viewModelStoreOwner = entry,
+        factory = ViewModelFactory(container, accountFolderId = folderId, accountFolderName = name),
+    )
+    val state by vm.state.collectAsStateWithLifecycle()
+    // 从详情页回来时按内存快照同步：在详情页取消收藏后，
+    // 这本已从缓存里删掉，返回即可见、不用下拉刷新（用户要求 2026-10-22）。
+    OnResumeEffect { vm.onScreenResumed() }
+    AccountAlbumsScreen(
+        state = state,
+        onBack = onBack,
+        onOpenAlbum = onOpenAlbum,
+        onLoadMore = vm::loadMore,
+        onOrderChange = vm::setOrder,
+        onRemove = vm::remove,
+        onRefresh = vm::refresh,
+        onMessage = showMessage,
+        onConsumeMessage = vm::consumeMessage,
+    )
+}
+
+/** 个人资料页（主栈与右栏共用）。 */
+@Composable
+private fun AccountProfileDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    onBack: () -> Unit,
+    onEdit: () -> Unit,
+) {
+    val vm: AccountProfileViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    // 从编辑页返回：保存成功后新资料已写进账号缓存，这里把它同步到界面上
+    // （否则返回资料页看到的还是编辑前的内容，用户会以为没保存）。
+    OnResumeEffect { vm.onScreenResumed() }
+    AccountProfileScreen(
+        state = state,
+        onBack = onBack,
+        onRefresh = vm::refresh,
+        onEdit = onEdit,
+    )
+}
+
+/** 个人资料编辑页（主栈与右栏共用）。 */
+@Composable
+private fun AccountProfileEditDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onSaved: () -> Unit,
+) {
+    val vm: AccountProfileEditViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    AccountProfileEditScreen(
+        state = state,
+        onBack = onBack,
+        onFormChange = vm::updateForm,
+        onSave = vm::save,
+        onRetry = vm::retry,
+        onMessage = showMessage,
+        onConsumeMessage = vm::consumeMessage,
+        onConsumeSaveError = vm::consumeSaveError,
+        onSaved = onSaved,
+    )
+}
+
+/** 「留言记录」页（主栈与右栏共用）。 */
+@Composable
+private fun AccountCommentsDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+    onLogin: () -> Unit,
+) {
+    val vm: AccountCommentsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    AccountCommentsScreen(
+        state = state,
+        onBack = onBack,
+        onOpenAlbum = onOpenAlbum,
+        onRefresh = vm::refresh,
+        onLoadMore = vm::loadMore,
+        onRetry = vm::retry,
+        onDelete = vm::delete,
+        onLogin = onLogin,
+        // 本页自己没有 Snackbar 宿主，提示统一交给根部弹
+        onMessage = showMessage,
+        onConsumeMessage = vm::consumeMessage,
+    )
+}
+
+/** 「下载任务」页（主栈与右栏共用）。任务 ViewModel 挂在 Activity 上，两处一致。 */
+@Composable
+private fun TasksDestination(
+    taskViewModel: TaskViewModel,
+    taskState: TaskUiState,
+    context: Context,
+    scope: CoroutineScope,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    MessageEffect(
+        taskState.message,
+        onConsume = taskViewModel::consumeMessage,
+        onShow = showMessage,
+    )
+    TaskScreen(
+        state = taskState,
+        // 二级页自己带返回按钮（底栏在这一层是隐藏的）
+        onBack = onBack,
+        onToggleExpanded = taskViewModel::toggleExpanded,
+        onPause = taskViewModel::pause,
+        onResume = taskViewModel::resume,
+        onCancel = taskViewModel::cancel,
+        onRetry = taskViewModel::retry,
+        onRemove = taskViewModel::remove,
+        onClearFinished = taskViewModel::clearFinished,
+        // 点封面进详情页（用户要求第 1 点）
+        onOpenAlbum = onOpenAlbum,
+        // 导出成品的「打开至 / 发送至」（用户要求第 4 点）
+        onOpenOutput = { name ->
+            launchOutputIntent(context, name, share = false, showMessage, scope) {
+                taskViewModel.outputUri(name)
+            }
+        },
+        onSendOutput = { name ->
+            launchOutputIntent(context, name, share = true, showMessage, scope) {
+                taskViewModel.outputUri(name)
+            }
+        },
+        onDeleteOutput = taskViewModel::deleteOutput,
+    )
+}
+
+/** 「应用设置」页（主栈与右栏共用）。 */
+@Composable
+private fun SettingsDestination(
+    entry: NavBackStackEntry,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    privacyMode: Boolean,
+    textPrivacy: Boolean,
+    onSetPrivacyMode: (Boolean) -> Unit,
+    onSetTextPrivacy: (Boolean) -> Unit,
+    onBack: () -> Unit,
+) {
+    val vm: SettingsViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
+    SettingsScreen(
+        state = state,
+        onBack = onBack,
+        // 阅读与显示：阅读背景与亮度放在阅读器的设置面板里（跟着环境变，进阅读器再改）
+        onSetReadingMode = vm::setReadingMode,
+        onSetReadingDirection = vm::setReadingDirection,
+        onSetKeepScreenOn = vm::setKeepScreenOn,
+        // 取图管线：原图缓存（默认，快）/ 解扰后落盘（旧，可随时切回）
+        onSetReaderCacheMode = vm::setReaderCacheMode,
+        // 隐私模式：与全局双指手势共用同一个存储值
+        privacyMode = privacyMode,
+        onSetPrivacyMode = onSetPrivacyMode,
+        // 文字隐私：只在隐私模式开启时显示，单独保存
+        textPrivacy = textPrivacy,
+        onSetTextPrivacy = onSetTextPrivacy,
+        // 下载
+        onSetDownloadThreads = vm::setDownloadThreads,
+        onSetDownloadNetwork = vm::setDownloadNetwork,
+        // 语言：接口返回的中文用简中还是繁中（默认简中）
+        onSetApiLanguage = vm::setApiLanguage,
+        // 导出默认密码（原文写进加密凭据存储，页面上默认用圆点遮住）
+        onSaveZipPassword = vm::saveZipPassword,
+        onSavePdfPassword = vm::savePdfPassword,
+        // 网络与线路
+        onSetTimeoutSeconds = vm::setTimeoutSeconds,
+        onSetImageTimeoutSeconds = vm::setImageTimeoutSeconds,
+        onSaveProxy = vm::saveProxy,
+        // 线路：清单里选中即生效（没有「保存」按钮）；
+        // 两个面板里都能「全部测速」（接口线路打 /setting，图片线路取探针图）
+        onSelectApiLine = vm::selectApiLine,
+        onSelectImageLine = vm::selectImageLine,
+        onResetApiLine = vm::resetApiLine,
+        onResetImageLine = vm::resetImageLine,
+        onTestApiLines = vm::testAllApiLines,
+        onTestImageLines = vm::testAllImageLines,
+        // 高级：接口请求重试（所有接口共用）与图片加载/下载重试（仅超时）
+        onSetRequestRetry = vm::setRequestRetry,
+        onSetImageRetry = vm::setImageRetry,
+        // 账号只读接口是否复用服务端缓存（关掉后请求带 t，强制回源）
+        onSetAccountApiCache = vm::setAccountApiCache,
+        // 恢复默认：只重置偏好，不动书库与文件、不动凭据
+        onResetSettings = vm::resetSettings,
+    )
+}
+
+/** 「关于」页（主栈与右栏共用）。 */
+@Composable
+private fun AboutDestination(
+    entry: NavBackStackEntry,
+    container: AppContainer,
+    factory: ViewModelFactory,
+    context: Context,
+    scope: CoroutineScope,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    onOpenAlbum: (Long) -> Unit,
+) {
+    val vm: AboutViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
+    val state by vm.state.collectAsStateWithLifecycle()
+    // 从详情页（删文件/下载）或别的页面回来时重扫存储，数字跟着变
+    OnResumeEffect { vm.rescan() }
+    MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
+    AboutScreen(
+        state = state,
+        onBack = onBack,
+        onSelectSegment = vm::select,
+        onOpenAlbum = onOpenAlbum,
+        onCheckUpdate = vm::checkUpdate,
+        onRetryScan = vm::rescan,
+        onDownloadUpdate = vm::downloadUpdate,
+        onInstallUpdate = { downloadId ->
+            launchApkInstall(context, container.appDownloadGateway, downloadId, showMessage)
+        },
+        onCancelUpdateDownload = vm::cancelUpdateDownload,
+        onUpdateToBackground = vm::updateToBackground,
+        onDismissUpdateDialog = vm::dismissUpdateDialog,
+        onOpenReleasesPage = {
+            openUrl(context, ReleaseChecker.RELEASES_PAGE_URL, showMessage)
+        },
+        // 明细行操作：导出成品的「打开至 / 发送至」（与任务页/详情页同一套 Intent）
+        onOpenOutput = { name ->
+            launchOutputIntent(context, name, share = false, showMessage, scope) {
+                vm.outputUri(name)
+            }
+        },
+        onSendOutput = { name ->
+            launchOutputIntent(context, name, share = true, showMessage, scope) {
+                vm.outputUri(name)
+            }
+        },
+        onDeleteUsage = vm::deleteUsage,
+    )
+}
+
+/**
+ * 阅读器页（主栈与右栏共用）。
+ *
+ * 横屏双栏时它挂在右栏（左栏是这一本的详情）；手机 / 竖屏时挂在主栈、占满屏幕。
+ * `onBack` 由宿主决定退右栏还是整页，退出前都把去抖窗口里的位置立刻落库。
+ */
+@Composable
+private fun ReaderDestination(
+    entry: NavBackStackEntry,
+    container: AppContainer,
+    factory: ViewModelFactory,
+    showMessage: (String) -> Unit,
+    onBack: () -> Unit,
+    /** 右栏被整页盖住（登录等）时为 false：阅读器仍在组合里保温，但不接管窗口亮度。 */
+    windowEffectsEnabled: Boolean = true,
+) {
+    val albumId = entry.arguments?.getLong("albumId") ?: return
+    val chapterId = entry.arguments?.getLong("chapterId") ?: 0L
+    val vm: ReaderViewModel = viewModel(
+        viewModelStoreOwner = entry,
+        factory = ViewModelFactory(container, albumId, chapterId.takeIf { it > 0 }),
+    )
+    val state by vm.state.collectAsStateWithLifecycle()
+    MessageEffect(state.message, onConsume = vm::consumeMessage, onShow = showMessage)
+    // 从任务页/详情页回到阅读器时重新扫一遍本地缓存：
+    // 刚下好的页要立刻显示出来（用户要求第 2 点）
+    OnResumeEffect { vm.refreshFromDisk() }
+    ReaderScreen(
+        state = state,
+        onBack = {
+            vm.flushPosition()
+            onBack()
+        },
+        onPositionChanged = vm::onPositionChanged,
+        onToggleControls = vm::toggleControls,
+        onPreviousChapter = vm::previousChapter,
+        onNextChapter = vm::nextChapter,
+        onOpenChapter = vm::openChapterAt,
+        onShowChapterPicker = vm::showChapterPicker,
+        onShowSettings = vm::showSettings,
+        onDismissSheets = vm::dismissSheets,
+        onRetryPage = vm::retryPage,
+        onRequestPage = vm::requestPage,
+        onDownloadChapter = vm::downloadCurrentChapter,
+        onRetryLoad = vm::retryLoad,
+        onToggleCollected = vm::toggleCollected,
+        onSetReadingMode = vm::setReadingMode,
+        onSetDirection = vm::setReadingDirection,
+        onSetBackground = vm::setBackground,
+        onSetBrightnessFollowSystem = vm::setBrightnessFollowSystem,
+        onSetBrightness = vm::setBrightness,
+        onSetKeepScreenOn = vm::setKeepScreenOn,
+        windowEffectsEnabled = windowEffectsEnabled,
+    )
+}
+
+/** 搜索结果页的路由参数（主栈与右栏共用）。 */
+private fun searchResultsArguments(): List<NamedNavArgument> = listOf(
+    navArgument("keyword") { type = NavType.StringType; defaultValue = "" },
+    navArgument("sort") { type = NavType.StringType; defaultValue = SearchSort.DEFAULT.code },
+    navArgument("historyId") { type = NavType.LongType; defaultValue = 0L },
+)
+
+/** 阅读器的路由参数（主栈与右栏共用）。 */
+private fun readerArguments(): List<NamedNavArgument> = listOf(
+    navArgument("albumId") { type = NavType.LongType },
+    navArgument("chapterId") { type = NavType.LongType; defaultValue = 0L },
+)
+
+/** 账号收藏夹内页的路由参数（主栈与右栏共用）。 */
+private fun accountAlbumsArguments(): List<NamedNavArgument> = listOf(
+    navArgument("folderId") { type = NavType.LongType },
+    navArgument("name") { type = NavType.StringType; defaultValue = "" },
+)
 
 /**
  * 导出成品的「打开至 / 发送至」。

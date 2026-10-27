@@ -60,8 +60,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -126,6 +124,13 @@ fun CategoryScreen(
         // 平板上把分类树常驻在左侧（真正的平板：短边 >= 600dp 且本页宽度 >= 840dp）。
         // 手机仍是原来的 ModalNavigationDrawer，所有交互保持不变。
         val permanentDrawer = isWideWindow() && maxWidth >= PERMANENT_DRAWER_MIN_WIDTH
+        // 抽屉宽度跟**本页宽度**走（不是整窗宽度）：双栏左栏只有 420dp 时，
+        // 按 1024dp 窗口算出来的 360dp 会几乎盖满左栏；反过来，窗口被拆小时
+        // 0.88 * 窗口宽 也可能小到只剩几十 dp（分类文字被裁掉）。
+        // 这里再夹一道下限，保证两层分类名都有地方显示。
+        val drawerWidth = (maxWidth * 0.88f)
+            .coerceAtMost(MAX_DRAWER_WIDTH)
+            .coerceAtLeast(minOf(MIN_DRAWER_WIDTH, maxWidth))
 
         // 抽屉不跟着页面走：切到别的页面（底栏切 tab / 进详情页 / App 退到后台）时要自己收起来（用户要求）。
         // 不这么做会有两个后果：切走时抽屉跟着旧页面一起滑出去；而 `rememberDrawerState` 内部是
@@ -149,6 +154,7 @@ fun CategoryScreen(
                     onRetry = onRetry,
                     onClose = {},
                     permanent = true,
+                    drawerWidth = PERMANENT_DRAWER_WIDTH,
                 )
                 // 常驻面板与正文都是白/灰拼色，靠这条 1dp 竖线把边界画出来
                 Box(
@@ -188,6 +194,7 @@ fun CategoryScreen(
                         },
                         onRetry = onRetry,
                         onClose = { scope.launch { drawerState.close() } },
+                        drawerWidth = drawerWidth,
                     )
                 },
             ) {
@@ -628,6 +635,7 @@ private fun CategoryDrawer(
     onSelectSub: (CategorySub) -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
+    drawerWidth: Dp,
     permanent: Boolean = false,
 ) {
     if (permanent) {
@@ -635,7 +643,7 @@ private fun CategoryDrawer(
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(PERMANENT_DRAWER_WIDTH)
+                .width(drawerWidth)
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             CategoryDrawerContent(
@@ -648,11 +656,7 @@ private fun CategoryDrawer(
             )
         }
     } else {
-        // 手机 Modal 模式：原逻辑完全不动
-        val density = LocalDensity.current
-        val windowWidth = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
-        val drawerWidth = (windowWidth * 0.88f).coerceAtMost(MAX_DRAWER_WIDTH)
-
+        // 手机 Modal 模式：宽度由调用方按本页宽度算好（见 CategoryScreen 的 drawerWidth）
         ModalDrawerSheet(
             drawerState = drawerState,
             modifier = Modifier.width(drawerWidth),
@@ -899,3 +903,11 @@ private fun CategoryDrawerError(message: String, onRetry: () -> Unit) {
 
 /** 抽屉最宽多少：Material 的 `ModalDrawerSheet` 本身就封顶 360dp，这里对齐那个值。 */
 private val MAX_DRAWER_WIDTH: Dp = 360.dp
+
+/**
+ * 抽屉最窄多少。
+ *
+ * 两层分类栏（主分类 140dp + 二级）要能同时放下名字，低于这个宽度就会出现
+ * "只剩关闭按钮和勾，分类文字整列消失"的情况。
+ */
+private val MIN_DRAWER_WIDTH: Dp = 280.dp
