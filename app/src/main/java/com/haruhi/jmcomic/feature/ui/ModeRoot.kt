@@ -2234,7 +2234,14 @@ private class CarouselNavigator(
     fun switchTab(tab: Tab) {
         activeTabState.value = tab.route
         primaryOnLeftState.value = true
+        // 右栏的页面不属于任何 tab：切走时直接退掉（不保存），免得切回来还残留上一本
         secondaryNav.popBackStack(SPLIT_PANE_EMPTY, inclusive = false)
+        // 主栈里压在 tab 上的子页面（详情 / 阅读器 / 二级页）同样先退掉。
+        // 关键：**不能带着它们去 saveState**——否则切回这个 tab 时 restoreState
+        // 会把阅读器恢复出来，变成"左阅读、右空态"（用户反馈的 bug）。
+        while (!isTab(primaryNav.currentBackStackEntry?.destination?.route)) {
+            if (!primaryNav.popBackStack()) break
+        }
         primaryNav.navigate(tab.route) {
             popUpTo(Routes.LIBRARY) { saveState = true }
             launchSingleTop = true
