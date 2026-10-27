@@ -20,7 +20,7 @@ enum class StorageKind(val label: String) {
 
     EXPORT_PDF("导出 PDF"),
 
-    /** 阅读器原图缓存（`reader-cache/<aid>/`）。 */
+    /** **旧版**阅读器缓存（`reader-cache/<aid>/`）；新版本不再产生，只保留清理入口。 */
     READER_CACHE("阅读缓存"),
 }
 
@@ -138,7 +138,7 @@ class StorageStatsCollector(
             }
             .sortedByDescending { it.sizeBytes }
 
-    /** 阅读原图缓存：`reader-cache/<aid>`，目录名就是本子号。 */
+    /** **旧版**阅读缓存：`reader-cache/<aid>`，目录名就是本子号；新版本不再写入。 */
     private fun scanReaderCache(byId: Map<Long, AlbumBaseEntity>): List<AlbumUsage> =
         dirs.readerCache.listFiles().orEmpty()
             .filter { it.isDirectory }

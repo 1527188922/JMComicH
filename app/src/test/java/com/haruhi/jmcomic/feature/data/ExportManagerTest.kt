@@ -7,6 +7,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.haruhi.jmcomic.core.codec.ArchiveWriter
+import com.haruhi.jmcomic.core.codec.ImageEncodeMode
 import com.haruhi.jmcomic.core.codec.PdfWriter
 import com.haruhi.jmcomic.core.database.JmComicDatabase
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
@@ -92,6 +93,9 @@ class ExportManagerTest {
             pdfWriter = PdfWriter(),
             publisher = publisher,
             scope = scope,
+            // 测试图是 Robolectric 画出来的 PNG（扩展名是 .webp），用无损直接流进 zip；
+            // 有损模式会调用 WebP 编码，Robolectric 下没有可靠的编码器。
+            imageEncodingProvider = { ImageEncodeMode.LOSSLESS },
         )
     }
 

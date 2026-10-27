@@ -60,10 +60,10 @@ tag 徽标的底色 / 文字色**必须与官方 App 一致**：`#FF7B00` + 纯�
 
 ### 明确不算违规的例外
 
-- **阅读器的章节原图**不是封面，不适用本规范：它有两种来源（见 `ReaderCacheMode`）——
-  旧管线落盘的解扰成品（`ImageStore.file` → `AsyncImage(page.displayFile)`），
-  或新管线就地解扰出的位图（`ImageStore.displayBitmap` → `Image(page.bitmap)`）。
-  **不要**把章节图塞进 `Cover`，也不要另建 ImageLoader。
+- **阅读器的章节原图**不是封面，不适用本规范：`library/<本子>/<章节>/` 里现在存的是
+  **站点原始字节**（新下载）或旧版本解扰成品；阅读器统一在内存里解码，原始字节再按
+  `ImageScramble.blockNumOf` 现场解扰（`ImageStore.displayBitmap`），用 `Image(bitmap)`
+  直接画。**不要**把章节图塞进 `Cover`，也不要另建 ImageLoader。
 - **评论者头像**（详情页「评论」tab）不是封面：地址是 `{img_host}/media/users/{photo}`，
   按**文件名**取图，根本没有本子号可以传给 `Cover`。这种图直接 `AsyncImage` +
   **同一个应用级 ImageLoader**（`currentImageLoader()`，带正确 UA / 代理、缓存同一处），

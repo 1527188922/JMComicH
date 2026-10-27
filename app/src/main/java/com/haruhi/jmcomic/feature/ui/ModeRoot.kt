@@ -1813,8 +1813,6 @@ private fun SettingsDestination(
         onSetReadingMode = vm::setReadingMode,
         onSetReadingDirection = vm::setReadingDirection,
         onSetKeepScreenOn = vm::setKeepScreenOn,
-        // 取图管线：原图缓存（默认，快）/ 解扰后落盘（旧，可随时切回）
-        onSetReaderCacheMode = vm::setReaderCacheMode,
         // 隐私模式：与全局双指手势共用同一个存储值
         privacyMode = privacyMode,
         onSetPrivacyMode = onSetPrivacyMode,
@@ -1829,6 +1827,8 @@ private fun SettingsDestination(
         // 导出默认密码（原文写进加密凭据存储，页面上默认用圆点遮住）
         onSaveZipPassword = vm::saveZipPassword,
         onSavePdfPassword = vm::savePdfPassword,
+        // 导出图片编码：有损（默认，接近官方包）/ 无损（像素完全不变）
+        onSetImageEncoding = vm::setImageEncoding,
         // 网络与线路
         onSetTimeoutSeconds = vm::setTimeoutSeconds,
         onSetImageTimeoutSeconds = vm::setImageTimeoutSeconds,

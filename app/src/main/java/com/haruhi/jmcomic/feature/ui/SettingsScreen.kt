@@ -78,7 +78,7 @@ import com.haruhi.jmcomic.core.protocol.ImageLine
 import com.haruhi.jmcomic.core.protocol.LineCatalog
 import com.haruhi.jmcomic.core.settings.DownloadNetwork
 import com.haruhi.jmcomic.core.settings.ProxyType
-import com.haruhi.jmcomic.core.settings.ReaderCacheMode
+import com.haruhi.jmcomic.core.settings.ImageEncoding
 import com.haruhi.jmcomic.core.settings.ResolvedNetworkConfig
 import com.haruhi.jmcomic.core.settings.SecretStore
 import com.haruhi.jmcomic.core.settings.SettingDefaults
@@ -132,13 +132,15 @@ data class SettingsUiState(
     val readingMode: ReadingMode = ReadingMode.VERTICAL,
     val readingDirection: ReadingDirection = ReadingDirection.LTR,
     val keepScreenOn: Boolean = true,
+
+    // 导出
     /**
-     * 阅读器取图管线（见 [ReaderCacheMode]）：默认「原图缓存」。
+     * 导出时解扰后的编码方式（见 [ImageEncoding]）：默认**有损**。
      *
-     * 旧行为「解扰后落盘」完整保留，用户可随时切回来；只影响**在线看**怎么取图，
-     * 「下载本话」永远产出解扰后的成品。
+     * 只影响 ZIP 包内图片与 PDF 内嵌图片；`library/` 里下载的永远是站点原始字节。
+     * 有损用 WebP q85 / JPEG q90，实测与官方下载包体积差 1.5%；无损像素不变但 ZIP 约 9.2 倍。
      */
-    val readerCacheMode: ReaderCacheMode = ReaderCacheMode.DEFAULT,
+    val imageEncoding: ImageEncoding = ImageEncoding.DEFAULT,
 
     // 下载
     /** 同时下载图片数（**没有"自动"档**）；默认 4 就是滑杆的初始位置。 */
@@ -316,9 +318,9 @@ class SettingsViewModel(
         val keepScreenOn = settings
             .jmBoolean(SettingKeys.Jm.KEEP_SCREEN_ON, SettingDefaults.Jm.KEEP_SCREEN_ON)
             .first()
-        val readerCacheMode = ReaderCacheMode.fromCode(
+        val imageEncoding = ImageEncoding.fromCode(
             settings
-                .jmInt(SettingKeys.Jm.READER_CACHE_MODE, SettingDefaults.Jm.READER_CACHE_MODE)
+                .jmInt(SettingKeys.Jm.IMAGE_ENCODING, SettingDefaults.Jm.IMAGE_ENCODING)
                 .first(),
         )
         val threads = settings
@@ -361,7 +363,7 @@ class SettingsViewModel(
                 readingMode = mode,
                 readingDirection = direction,
                 keepScreenOn = keepScreenOn,
-                readerCacheMode = readerCacheMode,
+                imageEncoding = imageEncoding,
                 downloadThreads = threads,
                 apiLanguage = apiLanguage,
                 zipPassword = zipPassword,
@@ -415,13 +417,12 @@ class SettingsViewModel(
     }
 
     /**
-     * 阅读器取图管线（「图片缓存方式」）。**选中即生效**：
-     * 阅读器那个 ViewModel 订阅同一个 key，下一张要取的图就走新管线；
-     * 已经在屏幕上的页不重建，切回旧管线也不会把已显示的内容弄乱。
+     * 导出时解扰后的编码方式（「导出图片压缩」）。**选中即生效**：
+     * 导出任务开始时会重新读这一项；已经在跑的导出不受影响。
      */
-    fun setReaderCacheMode(mode: ReaderCacheMode) {
-        _state.update { it.copy(readerCacheMode = mode) }
-        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.READER_CACHE_MODE, mode.toCode()) }
+    fun setImageEncoding(encoding: ImageEncoding) {
+        _state.update { it.copy(imageEncoding = encoding) }
+        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.IMAGE_ENCODING, encoding.toCode()) }
     }
 
     // ------------------------------------------------------------------
@@ -757,8 +758,6 @@ fun SettingsScreen(
     onSetReadingMode: (ReadingMode) -> Unit,
     onSetReadingDirection: (ReadingDirection) -> Unit,
     onSetKeepScreenOn: (Boolean) -> Unit,
-    /** 阅读器取图管线：原图缓存 / 解扰后落盘（旧行为，随时可切回）。 */
-    onSetReaderCacheMode: (ReaderCacheMode) -> Unit,
     // 隐私
     /** 隐私模式：所有漫画封面模糊显示；与全局双指手势共用同一个存储值。 */
     privacyMode: Boolean,
@@ -775,6 +774,8 @@ fun SettingsScreen(
     // 导出
     onSaveZipPassword: (String) -> Unit,
     onSavePdfPassword: (String) -> Unit,
+    /** 导出图片编码：有损（默认，体积接近官方包）/ 无损（像素完全不变）。 */
+    onSetImageEncoding: (ImageEncoding) -> Unit,
     // 网络与线路
     onSetTimeoutSeconds: (Int) -> Unit,
     onSetImageTimeoutSeconds: (Int) -> Unit,
@@ -848,7 +849,6 @@ fun SettingsScreen(
                     onSetReadingMode = onSetReadingMode,
                     onSetReadingDirection = onSetReadingDirection,
                     onSetKeepScreenOn = onSetKeepScreenOn,
-                    onSetReaderCacheMode = onSetReaderCacheMode,
                 )
                 PrivacySection(
                     privacyMode = privacyMode,
@@ -869,6 +869,7 @@ fun SettingsScreen(
                     state = state,
                     onSaveZipPassword = onSaveZipPassword,
                     onSavePdfPassword = onSavePdfPassword,
+                    onSetImageEncoding = onSetImageEncoding,
                 )
                 NetworkSection(
                     state = state,
@@ -925,7 +926,6 @@ private fun ReadingSection(
     onSetReadingMode: (ReadingMode) -> Unit,
     onSetReadingDirection: (ReadingDirection) -> Unit,
     onSetKeepScreenOn: (Boolean) -> Unit,
-    onSetReaderCacheMode: (ReaderCacheMode) -> Unit,
 ) {
     SettingsSection("阅读与显示") {
         ChoiceRow(
@@ -953,17 +953,6 @@ private fun ReadingSection(
             hint = "只在阅读器前台时生效",
             checked = state.keepScreenOn,
             onCheckedChange = onSetKeepScreenOn,
-        )
-        CardDivider()
-        // 两套取图管线都保留，用户可以随时切回旧的那套（见 docs/PROGRESS.md「阅读器取图管线」）
-        ChoiceRow(
-            title = "在线阅读图片保存方式",
-            hint = "该配置决定在线观看时的漫画图片保存在哪",
-            help = "「使用缓存」：看过的图只保存缓存，在线观看图片加载更快，对手机内存使用稍有增多。" +
-                "\n「直接下载」：会直接下载看过的图，在线观看时图片加载稍慢。",
-            options = ReaderCacheMode.entries.map { it.label },
-            selectedIndex = ReaderCacheMode.entries.indexOf(state.readerCacheMode),
-            onSelect = { onSetReaderCacheMode(ReaderCacheMode.entries[it]) },
         )
     }
 }
@@ -1069,8 +1058,21 @@ private fun ExportSection(
     state: SettingsUiState,
     onSaveZipPassword: (String) -> Unit,
     onSavePdfPassword: (String) -> Unit,
+    onSetImageEncoding: (ImageEncoding) -> Unit,
 ) {
     SettingsSection("导出") {
+        ChoiceRow(
+            title = "导出图片压缩",
+            hint = "ZIP 包内图片、PDF 内嵌图片在解扰后重新编码的方式",
+            help = "有损（默认）：WebP q85 / JPEG q90，体积接近官方下载包。" +
+                "实测 36 页样本用 q85 重压总量与官方包只差 1.5%，肉眼几乎无差。" +
+                "\n无损：像素完全不变，但 ZIP 体积大约是官方包的 9.2 倍。" +
+                "\n只影响导出；已下载的原始图片不受影响。",
+            options = ImageEncoding.entries.map { it.label },
+            selectedIndex = ImageEncoding.entries.indexOf(state.imageEncoding),
+            onSelect = { onSetImageEncoding(ImageEncoding.entries[it]) },
+        )
+        CardDivider()
         ExportPasswordEditor(
             title = "压缩包默认密码",
             hint = "导出 ZIP 时的密码预填值，留空表示不加密（最多 ${SettingLimits.EXPORT_PASSWORD_MAX_CHARS} 个字符）",

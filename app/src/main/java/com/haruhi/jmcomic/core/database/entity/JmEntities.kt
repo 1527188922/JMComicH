@@ -151,6 +151,15 @@ data class ChapterImageEntity(
      * 一个章节里所有图片行的值都相同（它是按"话"给的）。
      */
     @ColumnInfo(name = "scramble_id") val scrambleId: Long? = null,
+    /**
+     * 这个文件在 `library/` 里的存储形态（见 [com.haruhi.jmcomic.core.storage.ImageStorage]）：
+     * `0` = 旧版本解扰后的成品，`1` = 站点原始字节（阅读 / 导出时现场解扰）。
+     *
+     * 旧行没有这一列（迁移默认 0），新下载写 1。`replaceChapter` 整章替换时会按
+     * 图片名把旧值带回来，否则重新拉一次清单就会把"原始字节"误判成"已解扰"。
+     */
+    @ColumnInfo(name = "storage_encoding", defaultValue = "0")
+    val storageEncoding: Int = com.haruhi.jmcomic.core.storage.ImageStorage.DESCRAMBLED,
     /** 接口返回的原始文件名，同时就是磁盘上的文件名。 */
     @ColumnInfo(name = "image_file") val imageFile: String,
     @ColumnInfo(name = "image_sort") val imageSort: Int? = null,

@@ -47,6 +47,10 @@ import com.haruhi.jmcomic.core.database.entity.PlaybackPositionEntity
  *
  * **v5**：`t_jm_chapter_image` 加一列 `scramble_id`（可空），
  * 用于把 `/comic_read` 一起返回的解扰参数随图片清单存下来（见 [MIGRATION_4_5]）。
+ *
+ * **v6**：`t_jm_chapter_image` 加一列 `storage_encoding`（非空、默认 0），
+ * 记录 `library/` 里这张图是**旧版解扰成品**还是**站点原始字节**（见 [MIGRATION_5_6]）。
+ * 升级用户没有这一列时一律按旧成品处理：那些文件确实已经解扰过，不能二次解扰。
  */
 @Database(
     entities = [
@@ -61,7 +65,7 @@ import com.haruhi.jmcomic.core.database.entity.PlaybackPositionEntity
         PlaybackPositionEntity::class,
         SearchHistoryEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -98,9 +102,24 @@ abstract class JmComicDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 → v6：`t_jm_chapter_image` 加一列 `storage_encoding`（非空、默认 0）。
+         *
+         * 旧版本 `library/` 里全是解扰后的成品，所以默认 0（DESCRAMBLED）就是对的；
+         * 新版本下载时写 1（RAW），阅读 / ZIP / PDF 才知道要现场解扰。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE t_jm_chapter_image " +
+                        "ADD COLUMN storage_encoding INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
         fun create(context: Context): JmComicDatabase =
             Room.databaseBuilder(context.applicationContext, JmComicDatabase::class.java, NAME)
-                .addMigrations(MIGRATION_4_5)
+                .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                 .build()
     }
 }

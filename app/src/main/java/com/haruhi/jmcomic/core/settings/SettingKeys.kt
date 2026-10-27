@@ -53,12 +53,12 @@ internal object SettingKeys {
         const val TEXT_PRIVACY = "text_privacy"
 
         /**
-         * 阅读器取图管线：0=解扰后落盘（旧） 1=原图缓存（默认）。
+         * 导出时解扰后的编码方式：0=无损，1=有损（默认）。
          *
-         * 两套管线都保留，用户可随时切回来（见 [ReaderCacheMode]）。
-         * 只影响**在线看**的取图方式；"下载本话"永远产出解扰后的成品。
+         * 只影响 ZIP 包内图片与 PDF 内嵌图片；`library/` 里下载的永远是站点原始字节。
+         * 见 [ImageEncoding]。
          */
-        const val READER_CACHE_MODE = "reader_cache_mode"
+        const val IMAGE_ENCODING = "image_encoding"
 
         /**
          * 同时下载图片数（1～12，默认 4；**没有"自动"档**，2026-10-15 取消）。

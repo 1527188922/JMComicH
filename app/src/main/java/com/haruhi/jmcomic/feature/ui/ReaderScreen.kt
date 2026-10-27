@@ -79,7 +79,6 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
 
@@ -443,11 +442,10 @@ private fun HorizontalReader(
  * - **本地没有的图会自动联网取回来**（用户要求第 2 点）：进入可视范围时触发
  *   [onRequest]。`LazyColumn` / `HorizontalPager` 只组合可见项，
  *   所以不会一进阅读器就把整话几十张图全拉下来；
- * - **两种显示来源**（见 `ReaderCacheMode`）：
- *   [ReaderPage.bitmap]（原图管线，就地解扰出来的位图）用 `Image` 直接画，
- *   [ReaderPage.displayFile]（解扰后的成品文件）交给 Coil；二者都走同一个占位与失败态；
- * - `LaunchedEffect` 的 key 里有 [ReaderPage.rawFile]：原图（字节）刚被预取回来时，
- *   这一页若已经在视野里就立刻解扰，不会干等下一次滚动（解扰完成后 rawFile 不会清空，
+ * - **显示来源只有一种**：`library/` 里的源文件（站点原始字节或旧版成品）在内存里
+ *   解码 + 解扰后得到 [ReaderPage.bitmap]，用 `Image` 直接画；不再把文件交给 Coil。
+ * - `LaunchedEffect` 的 key 里有 [ReaderPage.rawFile]：源文件（原始字节）刚被预取回来时，
+ *   这一页若已经在视野里就立刻解码，不会干等下一次滚动（解扰完成后 rawFile 不会清空，
  *   位图被窗口回收时靠 key 里的 `state → Pending` 触发重解）；
  * - 取的过程中显示进度圈，只有真的失败才显示"取不回来 + 重试"；
  * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
@@ -515,19 +513,11 @@ private fun ReaderPageItem(
     ) {
         val bitmap = page.bitmap
         if (bitmap != null) {
-            // 原图管线：位图已经解扰好，直接画（不再经过 Coil、不再解码第二次）
+            // 源文件已经解码 + 解扰（旧成品只解码），直接画；不再经过 Coil、不再解码第二次
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "第 ${page.index + 1} 页",
                 contentScale = ContentScale.FillWidth,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f / page.aspectRatio),
-            )
-        } else {
-            AsyncImage(
-                model = page.displayFile,
-                contentDescription = "第 ${page.index + 1} 页",
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f / page.aspectRatio),

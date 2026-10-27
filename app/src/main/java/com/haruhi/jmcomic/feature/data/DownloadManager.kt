@@ -1,6 +1,5 @@
 package com.haruhi.jmcomic.feature.data
 
-import com.haruhi.jmcomic.core.codec.ImageDownloadTransform
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadTaskChapterEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadType
@@ -87,8 +86,8 @@ data class DownloadPayload(
  *
  * - **任务生命周期**：提交（含去重）、开始、暂停、恢复、取消、重试；
  * - **执行顺序**：任务 → 章节 → 图片。每章先保证"图片清单已入库"
- *   （没有就现场拉一次 `/chapter` 并持久化，§9 第 7 条），再取 `scramble_id`
- *   构造解扰钩子，然后走并发图片下载；
+ *   （没有就现场拉一次 `/chapter` 并持久化，§9 第 7 条），然后走并发图片下载；
+ *   下载产物是**站点原始字节**（不解扰），阅读 / 导出时再现场解扰；
  * - **进度持久化**：每张图完成写一次章节计数；任务级数字（任务卡进度条、通知栏都读它）
  *   由"进度心跳"按 [TASK_PROGRESS_REFRESH_MS] 周期从章节明细重算——每张图只写章节表，
  *   任务行如果只在整话结束时才更新，界面在整话下载期间就是静止的（用户反馈第 1、2 点）；
@@ -99,7 +98,7 @@ data class DownloadPayload(
  *
  * ## 它不负责什么
  *
- * 不做解扰算法（[ImageDownloadTransform]）、不做 HTTP（`FileDownloader`）、
+ * 不做解扰算法（阅读/导出时现场做）、不做 HTTP（`FileDownloader`）、
  * 不做通知（`DownloadForegroundService` 订阅任务表渲染）。
  * 这样"谁在下载"只有一个答案。
  *
@@ -395,19 +394,6 @@ class DownloadManager(
 
         val folder = row.chapterTitle?.takeIf { it.isNotBlank() } ?: chapterId.toString()
         val chapterDir = dirs.chapterDir(albumFolder, folder)
-        // 取消必须原样抛出：被 runCatching 吞掉就会"用兜底 id 继续解扰"，
-        // 兜底值与真实值不一致时块数算错，解扰不可逆 → 图被永久毁掉。
-        val scrambleId = try {
-            repo.scrambleIdOf(chapterId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            Timber.tag("dl").w(e, "取 scramble_id 失败，使用兜底值：chapterId=%d", chapterId)
-            Defaults.FALLBACK_SCRAMBLE_ID
-        }
-        // 解扰不可逆，而且现在由引擎在**发布之前**调用（`FileDownloader` 的 beforePublish）：
-        // 一话共用一个 transform，同一张图不会被处理两次。
-        val transform = ImageDownloadTransform(scrambleId = scrambleId, chapterId = chapterId)
 
         val concurrency = environment.concurrency()
         val missing = { images.filterNot { isUsable(File(chapterDir, it)) } }
@@ -437,10 +423,20 @@ class DownloadManager(
                 images = providers,
                 chapterDir = chapterDir,
                 concurrency = concurrency,
-                transform = transform::transform,
-                // 阅读器（原图管线）已经把这张图的原始字节存下来了？那就别再联网下一遍：
-                // 直接拿本地字节走"解扰 + 原子发布"，下载出来的仍然是成品
+                // 阅读器（旧版 reader-cache）里已经有这张图的原始字节？那就别再联网下一遍
                 seedFor = { name -> readerRawSeed(albumId, chapterId, name) },
+                // 下载完成的是站点原始字节：立刻在图片清单里标记 RAW（阅读/导出据此解扰）。
+                // 只对真正发生了下载的文件调；已存在的旧成品保持原标记不动。
+                onFileDownloaded = { name ->
+                    try {
+                        repo.markImageRaw(albumId, chapterId, name)
+                    } catch (e: Exception) {
+                        // 标记失败就别把"看起来已下载、实际会被当旧成品"的原始字节留在盘上：
+                        // 删掉它，下一次重试会重新下载并重新标记。
+                        File(chapterDir, name).delete()
+                        throw e
+                    }
+                },
                 onFileDone = { _, success ->
                     if (success) {
                         val done = doneCounter.incrementAndGet()
@@ -466,10 +462,10 @@ class DownloadManager(
     }
 
     /**
-     * 这张图在**阅读器原图缓存**里的副本（有的话）。
+     * 这张图在**旧版阅读缓存**（`reader-cache/`）里的副本（有的话）。
      *
-     * 只服务"一边看一边下载"：阅读器把站点原图存在 `reader-cache/<aid>/<cid>/`，
-     * 下载任务要的是解扰后的成品（`library/`）。没有这个入口的话同一张图会被网络下两遍。
+     * 新版本不再产生这个目录；这里只是让升级用户"边看边下"时不重复联网：
+     * 旧缓存里存的也是站点原始字节，和新下载目标的内容一致。
      * 文件不在 / 长度为 0 就返回 null，下载走正常网络路径。
      */
     private fun readerRawSeed(albumId: Long, chapterId: Long, fileName: String): File? =

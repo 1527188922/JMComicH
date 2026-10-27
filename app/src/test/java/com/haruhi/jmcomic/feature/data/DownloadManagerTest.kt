@@ -350,13 +350,14 @@ class DownloadManagerTest {
     }
 
     @Test
-    fun `scramble id is requested once per chapter download`() {
+    fun `download no longer requests a scramble id`() {
         seedAlbum()
         seedChapter(chapterOne, "第1话", "00001.webp", "00002.webp")
 
         downloadAndWait(chapterOne)
 
-        assertThat(comicReadRequests.get()).isEqualTo(1)
+        // 新架构：下载只存站点原始字节，解扰推迟到阅读 / 导出
+        assertThat(comicReadRequests.get()).isEqualTo(0)
     }
 
     @Test

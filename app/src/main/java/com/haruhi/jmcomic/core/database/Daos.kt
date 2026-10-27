@@ -237,6 +237,7 @@ interface ChapterImageDao {
         SELECT MIN(id) AS id,
                album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
                chapter_add_time, series_id, liked, is_favorite, scramble_id,
+               MIN(storage_encoding) AS storage_encoding,
                MIN(image_file) AS image_file,
                MIN(image_sort) AS image_sort
         FROM t_jm_chapter_image
@@ -253,6 +254,7 @@ interface ChapterImageDao {
         SELECT MIN(id) AS id,
                album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
                chapter_add_time, series_id, liked, is_favorite, scramble_id,
+               MIN(storage_encoding) AS storage_encoding,
                MIN(image_file) AS image_file,
                MIN(image_sort) AS image_sort
         FROM t_jm_chapter_image
@@ -269,7 +271,7 @@ interface ChapterImageDao {
         """
         SELECT id, album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
                chapter_add_time, series_id, liked, is_favorite, scramble_id,
-               image_file, image_sort
+               storage_encoding, image_file, image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId AND chapter_id = :chapterId
         ORDER BY image_sort, id
@@ -281,7 +283,7 @@ interface ChapterImageDao {
         """
         SELECT id, album_id, chapter_id, chapter_sort, chapter_title, chapter_name,
                chapter_add_time, series_id, liked, is_favorite, scramble_id,
-               image_file, image_sort
+               storage_encoding, image_file, image_sort
         FROM t_jm_chapter_image
         WHERE album_id = :albumId AND chapter_id = :chapterId
         ORDER BY image_sort, id
@@ -310,6 +312,34 @@ interface ChapterImageDao {
         """,
     )
     suspend fun scrambleIdOfChapter(chapterId: Long): Long?
+
+    /** 这一话里哪些文件是站点原始字节（`storage_encoding = 1`）。整章替换时用它保留标记。 */
+    @Query(
+        """
+        SELECT image_file FROM t_jm_chapter_image
+        WHERE album_id = :albumId AND chapter_id = :chapterId AND storage_encoding = 1
+        """,
+    )
+    suspend fun rawImageFiles(albumId: Long, chapterId: Long): List<String>
+
+    /** 单张图的存储形态；没有这一行（清单未入库）时返回 null。 */
+    @Query(
+        """
+        SELECT storage_encoding FROM t_jm_chapter_image
+        WHERE album_id = :albumId AND chapter_id = :chapterId AND image_file = :imageFile
+        LIMIT 1
+        """,
+    )
+    suspend fun storageEncodingOf(albumId: Long, chapterId: Long, imageFile: String): Int?
+
+    /** 某张图被新版本以"站点原始字节"下载完成；重复调用幂等。 */
+    @Query(
+        """
+        UPDATE t_jm_chapter_image SET storage_encoding = 1
+        WHERE album_id = :albumId AND chapter_id = :chapterId AND image_file = :imageFile
+        """,
+    )
+    suspend fun markRaw(albumId: Long, chapterId: Long, imageFile: String)
 
     @Query("DELETE FROM t_jm_chapter_image WHERE album_id = :albumId AND chapter_id = :chapterId")
     suspend fun deleteChapter(albumId: Long, chapterId: Long)

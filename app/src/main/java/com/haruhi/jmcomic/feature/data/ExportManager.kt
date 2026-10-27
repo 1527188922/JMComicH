@@ -1,6 +1,8 @@
 package com.haruhi.jmcomic.feature.data
 
 import com.haruhi.jmcomic.core.codec.ArchiveWriter
+import com.haruhi.jmcomic.core.codec.ChapterImagePlan
+import com.haruhi.jmcomic.core.codec.ImageEncodeMode
 import com.haruhi.jmcomic.core.codec.PdfWriter
 import com.haruhi.jmcomic.core.database.entity.DownloadType
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
@@ -8,6 +10,7 @@ import com.haruhi.jmcomic.core.download.DownloadTaskRepository
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.core.storage.ExportPublisher
 import com.haruhi.jmcomic.core.storage.FileNaming
+import com.haruhi.jmcomic.core.storage.ImageStorage
 import com.haruhi.jmcomic.core.storage.LibraryDirs
 import com.haruhi.jmcomic.feature.api.ApiJson
 import kotlinx.coroutines.CancellationException
@@ -88,6 +91,13 @@ class ExportManager(
     private val pdfWriter: PdfWriter,
     private val publisher: ExportPublisher,
     private val scope: CoroutineScope,
+    /**
+     * 导出时解扰后的编码方式（设置页「导出 → 导出图片压缩」）。
+     *
+     * 做成 suspend 闭包而不是构造快照：用户可能在导出排队期间改了设置，
+     * 下一次导出应读新值。默认有损（与官方下载包体积对齐）。
+     */
+    private val imageEncodingProvider: suspend () -> ImageEncodeMode = { ImageEncodeMode.LOSSY },
     private val onTaskStarted: () -> Unit = {},
 ) {
 
@@ -418,6 +428,19 @@ class ExportManager(
         // 类型标签「生成 ZIP / 生成 PDF」保持同一口径）
         tasks.updateProgress(taskId, stageText = "生成 ${format.label}")
 
+        // 解扰信息：哪些图片是站点原始字节、每话的 scramble_id。
+        // 旧成品不需要解扰，所以只有存在 raw 文件的章节才会去查 scramble_id（可能联网）。
+        val mode = imageEncodingProvider()
+        val chapterPlans = try {
+            buildChapterPlans(payload.albumId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.tag("export").w(e, "导出任务 %d 取解扰参数失败", taskId)
+            tasks.markFailed(taskId, e.message ?: "导出失败：缺少章节解扰参数")
+            return
+        }
+
         val password = passwords[taskId].orEmpty()
         val out = File(dirs.export, task.displayName ?: "${payload.folderName}.${format.extension}")
         // 中转文件先清掉，避免上一次的残留被当成结果
@@ -427,8 +450,13 @@ class ExportManager(
             coroutineContext.ensureActive()
             runCatching {
                 when (format) {
-                    ExportFormat.ZIP -> exportZip(taskId, albumDir, out, password) { job?.isActive != false }
-                    ExportFormat.PDF -> exportPdf(taskId, albumDir, out, password) { job?.isActive != false }
+                    ExportFormat.ZIP -> exportZip(taskId, albumDir, out, password, mode, chapterPlans) {
+                        job?.isActive != false
+                    }
+
+                    ExportFormat.PDF -> exportPdf(taskId, albumDir, out, password, mode, chapterPlans) {
+                        job?.isActive != false
+                    }
                 }
             }.getOrElse { e ->
                 out.delete()
@@ -452,9 +480,17 @@ class ExportManager(
         albumDir: File,
         out: File,
         password: String,
+        mode: ImageEncodeMode,
+        chapterPlans: Map<String, ChapterImagePlan>,
         isActive: () -> Boolean,
     ) {
-        val result = archiveWriter.albumToZip(albumDir, out, password.ifEmpty { null }) { done, total, chapter ->
+        val result = archiveWriter.albumToZip(
+            albumDir = albumDir,
+            out = out,
+            password = password.ifEmpty { null },
+            mode = mode,
+            chapterPlans = chapterPlans,
+        ) { done, total, chapter ->
             if (!isActive()) throw CancellationException("导出已取消")
             scope.launch {
                 tasks.updateProgress(
@@ -465,7 +501,12 @@ class ExportManager(
                 )
             }
         }
-        Timber.tag("export").i("zip 完成：%d 个条目，加密=%s", result.entryCount, result.encrypted)
+        Timber.tag("export").i(
+            "zip 完成：%d 个条目，加密=%s，编码=%s",
+            result.entryCount,
+            result.encrypted,
+            mode,
+        )
     }
 
     private fun exportPdf(
@@ -473,12 +514,16 @@ class ExportManager(
         albumDir: File,
         out: File,
         password: String,
+        mode: ImageEncodeMode,
+        chapterPlans: Map<String, ChapterImagePlan>,
         isActive: () -> Boolean,
     ) {
         val result = pdfWriter.albumToPdf(
             albumDir = albumDir,
             out = out,
             password = password.ifEmpty { null },
+            mode = mode,
+            chapterPlans = chapterPlans,
             onProgress = { done, total, chapter ->
                 scope.launch {
                     tasks.updateProgress(
@@ -492,12 +537,55 @@ class ExportManager(
             isCancelled = { !isActive() },
         )
         Timber.tag("export").i(
-            "pdf 完成：%d 页 / %d 话（切片 %d 张），加密=%s",
+            "pdf 完成：%d 页 / %d 话（切片 %d 张），加密=%s，编码=%s",
             result.pageCount,
             result.chapterCount,
             result.slicedImageCount,
             result.encrypted,
+            mode,
         )
+    }
+
+    /**
+     * 从图片清单构造"每话要解扰哪些文件"。
+     *
+     * `t_jm_chapter_image.storage_encoding` 是权威标记：新版本下载写 RAW，旧版本行默认
+     * DESCRAMBLED。只有存在 RAW 文件时才去取 `scramble_id`（可能联网），旧成品不碰网络。
+     */
+    private suspend fun buildChapterPlans(albumId: Long): Map<String, ChapterImagePlan> {
+        val album = repo.findAlbum(albumId) ?: return emptyMap()
+        val plans = HashMap<String, ChapterImagePlan>()
+        for (chapter in repo.chaptersOf(album)) {
+            val images = repo.imagesOf(albumId, chapter.chapterId)
+            val rawFiles = images
+                .filter { ImageStorage.isRaw(it.storageEncoding) }
+                .map { it.imageFile }
+                .toSet()
+            if (rawFiles.isEmpty()) {
+                plans[repo.chapterFolderName(chapter)] = ChapterImagePlan(
+                    chapterId = chapter.chapterId,
+                    scrambleId = 0,
+                    rawFiles = emptySet(),
+                )
+                continue
+            }
+            val scrambleId = try {
+                repo.scrambleIdOf(chapter.chapterId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw IllegalStateException(
+                    "导出需要「${chapter.title}」的解扰参数，但本地没有且联网失败，请检查网络后重试",
+                    e,
+                )
+            }
+            plans[repo.chapterFolderName(chapter)] = ChapterImagePlan(
+                chapterId = chapter.chapterId,
+                scrambleId = scrambleId,
+                rawFiles = rawFiles,
+            )
+        }
+        return plans
     }
 
     private suspend fun isRunnable(taskId: Long): Boolean =

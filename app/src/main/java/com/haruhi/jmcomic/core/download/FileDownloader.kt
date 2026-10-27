@@ -145,14 +145,13 @@ class FileDownloader(
         beforePublish: ((File) -> Unit)? = null,
         /**
          * **可选的本地种子文件**：已经下好、内容与目标相同的另一份字节
-         * （阅读器的"原图缓存"就是这种）。
+         * （升级用户遗留的 `reader-cache` 就是这种；新版本不再产生）。
          *
          * 给了它并且文件可用时**一个网络请求都不发**：把种子拷成 `.part`，
          * 走同一条「校验 → `beforePublish` → 原子发布」的路径。
          *
-         * 为什么需要：新取图管线把站点原图存在 `reader-cache/`，下载任务写的是解扰后的
-         * 成品（`library/`）。两套目录必然是两个文件，但**不该为同一张图联网两次**——
-         * "一边看一边下载"时的重复下载就是靠这个参数消掉的。
+         * 为什么需要：`library/` 现在直接存站点原始字节，旧缓存里也是同一份内容，
+         * 不该为同一张图联网两次。
          */
         seedFile: File? = null,
     ): DownloadOutcome {
@@ -569,15 +568,12 @@ class ParallelImageDownloader(
      * 下载一批图片。
      *
      * @param images 目标文件名（相对 [chapterDir]）到下载地址的映射；地址用闭包以支持直链刷新
-     * @param chapterDir 章节落盘目录
+     * @param chapterDir 章节落盘目录（现在存的是**站点原始字节**）
      * @param concurrency 并发数；`<= 0` 时用 [defaultConcurrency]
-     * @param transform 单张图**发布前**的处理钩子（JM 用来解扰）；返回 false 表示无需处理。
-     *        它由 [FileDownloader.download] 在 per-file 锁内、`rename` 到目标名之前调用，
-     *        所以：只在真正发生了下载（`Downloaded`）时执行一次，跳过的文件不重复处理
-     *        （解扰不可逆，重复执行会毁图）；处理失败会让这张图判为失败，**不会**把
-     *        未处理的字节发布到目标路径。
-     * @param seedFor 单张图的**本地种子**（阅读器的原图缓存）：给得出来就省掉这次网络请求，
-     *        仍然照常走 `transform` 与原子发布。见 [FileDownloader.download] 的 `seedFile`。
+     * @param seedFor 单张图的**本地种子**（旧版 reader-cache 里的原始字节）：给得出来就省掉
+     *        这次网络请求；新版本不再产生这个目录。见 [FileDownloader.download] 的 `seedFile`。
+     * @param onFileDownloaded 单张图**真的发生了下载**时回调（跳过已存在的不算）。
+     *        调用方用它把"这张图是原始字节"写进图片清单；解扰不在这里做。
      * @param onProgress `(已存在+已成功的数量, 总数)`
      * @param onFileDone 单张图完成（用于仓库层持久化章节计数）
      */
@@ -585,9 +581,9 @@ class ParallelImageDownloader(
         images: Map<String, suspend () -> String>,
         chapterDir: File,
         concurrency: Int = defaultConcurrency,
-        transform: ((File, String) -> Boolean)? = null,
         onProgress: ((done: Int, total: Int) -> Unit)? = null,
         onFileDone: (suspend (fileName: String, success: Boolean) -> Unit)? = null,
+        onFileDownloaded: (suspend (fileName: String) -> Unit)? = null,
         seedFor: ((fileName: String) -> File?)? = null,
     ): ChapterResult = coroutineScope {
         chapterDir.mkdirs()
@@ -624,18 +620,15 @@ class ParallelImageDownloader(
                             urlProvider = urlProvider,
                             target = target,
                             skipIfComplete = true,
-                            // 解扰放在"发布之前"：换成发布之后再处理的话，"已发布但还没解扰"
-                            // 的中间态会被阅读器当成成品图直接显示，而且再也不会被重新处理。
-                            beforePublish = if (transform == null) {
-                                null
-                            } else {
-                                { part: File -> transform(part, fileName) }
-                            },
-                            // 阅读器已经把这张图的原始字节存下来了？那就别再联网下一遍
+                            // 原样发布：不解扰、不重编码（解扰在阅读 / 导出时做）
+                            beforePublish = null,
+                            // 旧版 reader-cache 里已有这张图的原始字节？那就别再联网下一遍
                             seedFile = seedFor?.invoke(fileName),
                         )
                         when (outcome) {
                             is DownloadOutcome.Downloaded -> {
+                                // 真的发生了下载：调用方据此标记"原始字节"
+                                onFileDownloaded?.invoke(fileName)
                                 val done = doneCounter.incrementAndGet()
                                 onFileDone?.invoke(fileName, true)
                                 onProgress?.invoke(done.toInt(), total)

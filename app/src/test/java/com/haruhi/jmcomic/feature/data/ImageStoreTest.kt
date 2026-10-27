@@ -207,13 +207,13 @@ class ImageStoreTest {
     }
 
     @Test
-    fun `scramble id is fetched once per chapter`() {
+    fun `download does not need a scramble id anymore`() {
         runBlocking {
             store.file(album, chapterId, folder, "00001.webp")
             store.file(album, chapterId, folder, "00002.webp")
         }
-        // `/comic_read` 一次同时给出图片清单与 scramble_id，所以这一话只打一次接口
-        assertThat(requests.getValue("comic_read").get()).isEqualTo(1)
+        // 新架构只在阅读/导出时解扰，下载原始字节不需要 `/comic_read`
+        assertThat(requests["comic_read"]).isNull()
     }
 
     @Test
@@ -225,77 +225,54 @@ class ImageStoreTest {
     }
 
     // ------------------------------------------------------------------
-    // 原图缓存（新管线，ReaderCacheMode.RAW）
+    // 新架构：library 直接存原始字节
     // ------------------------------------------------------------------
 
     /**
-     * 新管线的核心承诺：**下载只存原始字节**——不解扰、不解码、不重编码。
-     *
-     * 所以这里断言三件事：
-     * 1. 落盘字节与响应逐字节相同（没有经过任何处理）；
-     * 2. 落点在 `reader-cache/`，**不是** `library/`（不污染"是否已下载"与导出源）；
-     * 3. 第二次取不再发请求。
+     * 下载只存**站点原始字节**，落点就是 `library/`，并且把标记写成 RAW。
+     * 这样阅读器和导出才知道"这份文件还要解扰"。
      */
     @Test
-    fun `fetchRawFile stores the untouched bytes in the reader cache`() = runBlocking {
-        val file = store.fetchRawFile(album.id, chapterId, imageFile)
+    fun `download stores raw bytes in the library and marks them raw`() = runBlocking {
+        seedImageRow(imageFile)
+
+        val file = store.file(album, chapterId, folder, imageFile)
 
         assertThat(file.readBytes()).isEqualTo(payload)
-        assertThat(file.length()).isEqualTo(payload.size.toLong())
-        assertThat(store.cachedRawFile(album.id, chapterId, imageFile)).isEqualTo(file)
-
-        // 落在 reader-cache/<aid>/<cid>/ 下，且不是 library 里的成品
-        assertThat(file.parentFile).isEqualTo(dirs.readerCacheChapterDir(album.id, chapterId))
-        assertThat(file.parentFile!!.parentFile).isEqualTo(dirs.readerCacheAlbumDir(album.id))
-        assertThat(store.cachedFile(album, folder, imageFile)).isNull()
-
-        // 第二次（例如翻回来重新解扰）**一个请求都不发**
-        val again = store.fetchRawFile(album.id, chapterId, imageFile)
-        assertThat(again).isEqualTo(file)
-        assertThat(requests.getValue(imageFile).get()).isEqualTo(1)
+        assertThat(file.parentFile).isEqualTo(store.chapterDir(album, folder))
+        assertThat(store.cachedFile(album, folder, imageFile)).isEqualTo(file)
+        // 新下载的原始字节：标记必须落库，阅读/导出才会现场解扰
+        assertThat(store.isRaw(file, album.id, chapterId, imageFile)).isTrue()
+        // 新版本不再产生 reader-cache
+        assertThat(dirs.readerCache.exists()).isFalse()
     }
 
-    /**
-     * 新管线连**需要解扰**的章节也不做任何处理：字节原样落盘，解扰推迟到显示时。
-     *
-     * 把 `scramble_id` 设成 1（远小于章节号）→ 这一话每张图都要搬块。旧管线在这个前提下
-     * 会解码 + 无损重编码（测试里的字节根本不是合法 webp，Robolectric 下必然解不出来），
-     * 所以"文件字节仍与响应逐字节一致"就证明新管线没走那条路。
-     */
+    /** 旧版 `reader-cache` 里的原图可以当本地种子：不联网、直接拷进 library。 */
     @Test
-    fun `fetchRawFile never descrambles even when the chapter is scrambled`() = runBlocking {
-        scrambleId = "1"
+    fun `legacy reader cache is reused as a seed`() = runBlocking {
+        seedImageRow(imageFile)
+        val legacy = File(dirs.readerCacheChapterDir(album.id, chapterId), imageFile)
+        legacy.parentFile!!.mkdirs()
+        legacy.writeBytes(payload)
 
-        val file = store.fetchRawFile(album.id, chapterId, imageFile)
+        val file = store.file(album, chapterId, folder, imageFile)
 
         assertThat(file.readBytes()).isEqualTo(payload)
-        assertThat(store.cachedFile(album, folder, imageFile)).isNull()
-        assertThat(requests.getValue(imageFile).get()).isEqualTo(1)
+        assertThat(server.requestCount).isEqualTo(0)
+        assertThat(store.isRaw(file, album.id, chapterId, imageFile)).isTrue()
     }
 
-    /** 原图缓存与"下载成品"是两套目录，互不影响：清掉缓存不会动已下载的图。 */
+    /** 旧版遗留的 `reader-cache` 仍然可以被"清理缓存"清掉。 */
     @Test
-    fun `raw cache and downloaded files live in different places`() = runBlocking {        val raw = store.fetchRawFile(album.id, chapterId, imageFile)
-        val downloaded = store.file(album, chapterId, folder, imageFile)
-
-        assertThat(raw.absolutePath).isNotEqualTo(downloaded.absolutePath)
-        assertThat(downloaded.parentFile).isEqualTo(store.chapterDir(album, folder))
-        assertThat(raw.parentFile).isEqualTo(dirs.readerCacheChapterDir(album.id, chapterId))
-        // 成品在 library 里，删本子目录不会碰原图缓存，反之亦然
-        assertThat(dirs.sizeOf(dirs.readerCache)).isGreaterThan(0L)
-    }
-
-    /** `clearCache()` 会把原图缓存一起清掉（它是纯缓存，不是用户资产）。 */
-    @Test
-    fun `clearing the cache frees the raw reader cache too`() = runBlocking {
-        store.fetchRawFile(album.id, chapterId, imageFile)
-        assertThat(dirs.readerCache.exists()).isTrue()
+    fun `clearing the cache still frees the legacy reader cache`() = runBlocking {
+        val legacy = File(dirs.readerCacheChapterDir(album.id, chapterId), imageFile)
+        legacy.parentFile!!.mkdirs()
+        legacy.writeBytes(payload)
 
         val freed = dirs.clearCache()
 
         assertThat(freed).isGreaterThan(0L)
         assertThat(dirs.readerCache.exists()).isFalse()
-        // 库里（用户资产）不受影响
         assertThat(dirs.library.exists()).isTrue()
     }
 
@@ -303,24 +280,18 @@ class ImageStoreTest {
      * 用户实际问过的场景：**一边下载、一边看漫画**。
      *
      * 阅读器与下载任务同时要同一张图时，两边抢的是**同一个 [FileDownloader]** 的 per-file 锁，
-     * 所以这张图只会真正下载一次，也不会出现"后一次下载覆盖前一次"（后到者拿到锁时看到的
-     * 已经是解扰完的成品，于是安全地走 `Skipped`），后处理也只会对真正下载过的那一次执行。
+     * 所以这张图只会真正下载一次，也不会出现"后一次下载覆盖前一次"。
      */
     @Test
     fun `reader and download task racing for the same image download it once`() = runTest {
         val chapterDir = store.chapterDir(album, folder)
         val parallel = ParallelImageDownloader(downloader = fileDownloader, defaultConcurrency = 2)
-        val taskTransforms = AtomicInteger()
 
         val reader = async { store.file(album, chapterId, folder, imageFile) }
         val task = async {
             parallel.downloadImages(
                 images = mapOf(imageFile to { server.url("/$imageFile").toString() }),
                 chapterDir = chapterDir,
-                transform = { _, _ ->
-                    taskTransforms.incrementAndGet()
-                    false
-                },
             )
         }
         val published = reader.await()
@@ -328,11 +299,27 @@ class ImageStoreTest {
 
         // 只下载一次：两边不会各下一份、也不会互相覆盖
         assertThat(requests.getValue(imageFile).get()).isEqualTo(1)
-        // 后处理只对真正下载过的那一次执行（解扰不可逆，跑两遍会毁图）
-        assertThat(taskTransforms.get()).isAtMost(1)
         // 两边看到的是同一个文件，且后续读取直接命中缓存
         assertThat(published).isEqualTo(File(chapterDir, imageFile))
         assertThat(store.cachedFile(album, folder, imageFile)).isEqualTo(published)
+    }
+
+    /** 给 `markImageRaw` 一个可更新的图片清单行。 */
+    private fun seedImageRow(name: String) {
+        runBlocking {
+            db.chapterDao().insertAll(
+                listOf(
+                    com.haruhi.jmcomic.core.database.entity.ChapterImageEntity(
+                        albumId = album.id,
+                        chapterId = chapterId,
+                        chapterTitle = folder,
+                        chapterName = folder,
+                        imageFile = name,
+                        imageSort = 1,
+                    ),
+                ),
+            )
+        }
     }
 
     /**

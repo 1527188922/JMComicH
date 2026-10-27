@@ -53,17 +53,17 @@ object SettingDefaults {
         const val READING_DIRECTION_RTL = 1
 
         /**
-         * 阅读器取图管线（见 `core/settings/ReaderCacheMode.kt`）：
-         * `1` = 原图缓存（默认，只存原始字节、显示时就地解扰），
-         * `0` = 解扰后落盘（旧行为，下完就地解扰 + 无损重编码成成品）。
+         * 导出图片的编码方式（见 [ImageEncoding]）：
+         * `0` = 无损（像素不变、体积大），`1` = 有损（体积小、接近官方包）。
          *
-         * 编码值与 `ReaderCacheMode` 一一对应，设置页「阅读与显示 → 图片缓存方式」可随时切回。
+         * 默认 **有损**（用户 2026-10 要求）：实测官方 36 页样本用 q85 重压与官方包
+         * 总量只差 1.5%，而像素级无损会让 ZIP 大约 9.2 倍。
          */
-        const val READER_CACHE_MODE_RAW = 1
-        const val READER_CACHE_MODE_DESCRAMBLED = 0
+        const val IMAGE_ENCODING_LOSSLESS = 0
+        const val IMAGE_ENCODING_LOSSY = 1
 
-        /** 取图管线的默认值：原图缓存。 */
-        const val READER_CACHE_MODE = READER_CACHE_MODE_RAW
+        /** 导出编码的默认值：有损。 */
+        const val IMAGE_ENCODING = IMAGE_ENCODING_LOSSY
 
         /** [计划 §9.3] 阅读背景：跟随主题。 */
         const val READING_BACKGROUND_THEME = 0

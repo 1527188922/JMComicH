@@ -2,6 +2,9 @@ package com.haruhi.jmcomic.core.codec
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -10,6 +13,7 @@ import com.tom_roush.pdfbox.pdmodel.PageMode
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission
 import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy
+import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitWidthDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
@@ -27,7 +31,14 @@ import java.io.File
  * 3. 根书签标题 `目录`，`PageMode = USE_OUTLINES`；
  * 4. 加密用 `StandardProtectionPolicy`，权限 `canModify=false` /
  *    `canExtractContent=false` / `canExtractForAccessibility=false`；
- * 5. 图片用 `LosslessFactory` 内嵌（无损 Flate 压缩，文件偏大但与参考实现一致）。
+ * 5. 图片编码受 [mode] 控制：
+ *    - [ImageEncodeMode.LOSSLESS]：`LosslessFactory` 内嵌（无损 Flate，体积大）；
+ *    - [ImageEncodeMode.LOSSY]：`JPEGFactory` 以 q90 内嵌（体积小，线稿可能有轻微伪影）。
+ *
+ * 2026-10 起 `library/` 里是**站点原始字节**（加扰），所以 PDF 写入器要现场解扰：
+ * 按 [ChapterImagePlan.rawFiles] 判断哪些图需要解扰；旧版成品直接解码。
+ * 长图切片时**按输出切片逐块解码 + 重排**（[decodeDescrambledSlice]），
+ * 不会为一张 800×20000 的长图一次性分配整张位图。
  *
  * [password] 为 `null` 或空串时**不加任何保护**（对应用户点「不设密码」）。
  *
@@ -89,6 +100,8 @@ class PdfWriter(
      * @param albumDir 本子目录，直接子目录视为章节
      * @param out      输出文件（会被覆盖）
      * @param password 打开密码；`null`/空串表示不加密
+     * @param mode     解扰后图片的编码方式（无损 Flate / 有损 JPEG）
+     * @param chapterPlans 按章节目录名索引的解扰信息；缺省表示全是旧成品
      * @param onProgress 进度回调 `(已完成页数, 总页数, 当前章节名)`；总页数未知时为 -1
      * @param isCancelled 每张图开始前询问一次；返回 true 时抛出 [CancellationException]
      */
@@ -96,6 +109,8 @@ class PdfWriter(
         albumDir: File,
         out: File,
         password: String?,
+        mode: ImageEncodeMode = ImageEncodeMode.LOSSLESS,
+        chapterPlans: Map<String, ChapterImagePlan> = emptyMap(),
         onProgress: ((done: Int, total: Int, chapter: String) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ): Result {
@@ -128,10 +143,19 @@ class PdfWriter(
                 rootOutline.addLast(chapterOutline)
 
                 val chapterStartPage = document.numberOfPages
+                val chapterPlan = chapterPlans[chapterDir.name]
                 for ((image, plan) in images) {
                     require(!isCancelled()) { "导出已取消" }
                     if (plan.slices.size > 1) slicedImages++
-                    addImageToPdf(document, image, plan)
+                    // 只有新版本下载的原始字节需要现场解扰；旧成品 / 未加扰章节直接解码
+                    val blockNum = chapterPlan?.let { p ->
+                        if (image.name in p.rawFiles) {
+                            ImageScramble.blockNumOf(p.scrambleId, p.chapterId, image.name)
+                        } else {
+                            0
+                        }
+                    } ?: 0
+                    addImageToPdf(document, image, plan, blockNum, mode)
                     donePages += plan.slices.size
                     onProgress?.invoke(donePages, totalPages, chapterDir.name)
                 }
@@ -213,41 +237,164 @@ class PdfWriter(
     /**
      * 把一张图按切片方案写进 PDF。
      *
-     * 没超限的图（绝大多数）走快路径：整图解码一次、一页画完，
-     * 与参考实现的行为完全一致；超限的图才逐块解码，避免为一张长图分配几十 MB。
+     * - `blockNum == 0`：旧成品 / 未加扰，按原来的"整图或分段解码"路径；
+     * - `blockNum > 0`：站点原始字节，**按输出切片逐块解码 + 重排**
+     *   （[decodeDescrambledSlice]），长图不会一次性分配整张位图。
+     *
+     * 每次只让一张位图存活，画完立刻 `recycle()`。
      */
-    private fun addImageToPdf(document: PDDocument, imageFile: File, plan: PdfImagePlan) {
-        if (plan.slices.size == 1) {
-            val bitmap = bitmapFactory(imageFile)
-                ?: error("无法解码图片：${imageFile.absolutePath}")
-            try {
-                val slice = plan.slices.first()
-                val image = LosslessFactory.createFromImage(document, bitmap)
-                val page = PDPage(PDRectangle(plan.pageWidth.toFloat(), slice.pageHeight.toFloat()))
-                document.addPage(page)
-                PDPageContentStream(document, page).use { stream ->
-                    // 目标尺寸用"缩放后的页面尺寸"：宽度超限时由这里等比缩小
-                    stream.drawImage(image, 0f, 0f, plan.pageWidth.toFloat(), slice.pageHeight.toFloat())
-                }
-            } finally {
-                bitmap.recycle()
-            }
-            return
-        }
-
+    private fun addImageToPdf(
+        document: PDDocument,
+        imageFile: File,
+        plan: PdfImagePlan,
+        blockNum: Int,
+        mode: ImageEncodeMode,
+    ) {
         for (slice in plan.slices) {
-            val bitmap = decodeSlice(imageFile, slice)
-                ?: error("无法解码图片：${imageFile.absolutePath}")
+            val decoded: Bitmap? = if (blockNum > 0) {
+                decodeDescrambledSlice(imageFile, blockNum, slice)
+            } else if (plan.slices.size == 1) {
+                bitmapFactory(imageFile)
+            } else {
+                decodeSlice(imageFile, slice)
+            }
+            val bitmap = decoded ?: error("无法解码图片：${imageFile.absolutePath}")
             try {
-                val image = LosslessFactory.createFromImage(document, bitmap)
-                val page = PDPage(PDRectangle(plan.pageWidth.toFloat(), slice.pageHeight.toFloat()))
-                document.addPage(page)
-                PDPageContentStream(document, page).use { stream ->
-                    stream.drawImage(image, 0f, 0f, plan.pageWidth.toFloat(), slice.pageHeight.toFloat())
-                }
+                addBitmapPage(
+                    document = document,
+                    bitmap = bitmap,
+                    pageWidth = plan.pageWidth,
+                    pageHeight = slice.pageHeight,
+                    mode = mode,
+                )
             } finally {
                 bitmap.recycle()
             }
+        }
+    }
+
+    /** 把一张（已解扰的）位图编码后写成一页。 */
+    private fun addBitmapPage(
+        document: PDDocument,
+        bitmap: Bitmap,
+        pageWidth: Int,
+        pageHeight: Int,
+        mode: ImageEncodeMode,
+    ) {
+        val image = when (mode) {
+            ImageEncodeMode.LOSSLESS -> LosslessFactory.createFromImage(document, bitmap)
+            ImageEncodeMode.LOSSY -> JPEGFactory.createFromImage(
+                document,
+                bitmap,
+                ImageCodec.LOSSY_JPEG_QUALITY / 100f,
+            )
+        }
+        val page = PDPage(PDRectangle(pageWidth.toFloat(), pageHeight.toFloat()))
+        document.addPage(page)
+        PDPageContentStream(document, page).use { stream ->
+            // 目标尺寸用"缩放后的页面尺寸"：宽度超限时由这里等比缩小
+            stream.drawImage(image, 0f, 0f, pageWidth.toFloat(), pageHeight.toFloat())
+        }
+    }
+
+    /**
+     * 从**加扰的原始字节**里解出 PDF 输出切片（`slice.sourceY..sourceY+sourceHeight`）。
+     *
+     * 关键：不能先 `BitmapRegionDecoder` 截一段再解扰——块置换会把源图的纵向区块搬到
+     * 目标的不同高度，截出来的片段和目标的片段对不上。这里按 [Descrambler.plan] 的搬运
+     * 计划，把落在目标切片里的每个源区间**分别解码**，再画到目标位图的对应位置：
+     *
+     * - 目标位图只有切片高度（≤ PDF 单页上限）；
+     * - 每次只多持有一个源区块位图，画完立刻回收；
+     * - 区域解码失败时退回"整图解码 → 解扰 → 裁剪"（内存换正确性）。
+     */
+    private fun decodeDescrambledSlice(
+        imageFile: File,
+        blockNum: Int,
+        slice: PdfPageSlice,
+    ): Bitmap? {
+        val (width, height) = readMeta(imageFile) ?: return null
+        val moves = Descrambler.plan(height, blockNum)
+        if (moves.isEmpty()) return decodeSlice(imageFile, slice)
+
+        val sliceStart = slice.sourceY.coerceIn(0, height)
+        val sliceEnd = (slice.sourceY + slice.sourceHeight).coerceIn(sliceStart, height)
+        if (sliceEnd <= sliceStart) return null
+
+        val target = Bitmap.createBitmap(width, sliceEnd - sliceStart, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(target)
+        val paint = Paint().apply {
+            // 1:1 搬运必须逐像素原样拷，不能插值
+            isFilterBitmap = false
+            isAntiAlias = false
+        }
+        try {
+            var drawn = false
+            for (move in moves) {
+                val start = maxOf(sliceStart, move.dstY)
+                val end = minOf(sliceEnd, move.dstY + move.height)
+                if (start >= end) continue
+                val srcStart = move.srcY + (start - move.dstY)
+                val region = regionFactory(
+                    imageFile,
+                    Rect(0, srcStart, width, srcStart + (end - start)),
+                )
+                if (region == null) {
+                    // 区域解码不可用（部分机型/格式）：退回整图解扰后再裁
+                    target.recycle()
+                    return decodeFallback(imageFile, blockNum, sliceStart, sliceEnd)
+                }
+                try {
+                    canvas.drawBitmap(region, 0f, (start - sliceStart).toFloat(), paint)
+                } finally {
+                    region.recycle()
+                }
+                drawn = true
+            }
+            if (!drawn) {
+                target.recycle()
+                return null
+            }
+            return target
+        } catch (e: Throwable) {
+            if (!target.isRecycled) target.recycle()
+            throw e
+        }
+    }
+
+    /** 区域解码失败时的兜底：整图解码 → 解扰 → 裁出目标切片。 */
+    private fun decodeFallback(
+        imageFile: File,
+        blockNum: Int,
+        sliceStart: Int,
+        sliceEnd: Int,
+    ): Bitmap? {
+        val full = bitmapFactory(imageFile) ?: return null
+        val processed = try {
+            ImageCodec.descramble(full, blockNum)
+        } catch (e: Throwable) {
+            full.recycle()
+            throw e
+        } finally {
+            if (!full.isRecycled) full.recycle()
+        }
+        return try {
+            if (sliceStart == 0 && sliceEnd == processed.height) {
+                processed
+            } else {
+                val cropped = Bitmap.createBitmap(
+                    processed,
+                    0,
+                    sliceStart,
+                    processed.width,
+                    sliceEnd - sliceStart,
+                )
+                if (cropped !== processed) processed.recycle()
+                cropped
+            }
+        } catch (e: Throwable) {
+            if (!processed.isRecycled) processed.recycle()
+            throw e
         }
     }
 

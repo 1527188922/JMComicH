@@ -628,6 +628,9 @@ class Repository(
         val title = chapterTitleOf(effectiveSeries, chapter)
         // 接口给的是字符串（"220980"），解析失败按"没给"处理 -> 之后回落到接口/兜底值
         val scrambleId = chapter.scrambleId?.toLongOrNull()
+        // 整章替换会先 DELETE 再 INSERT：把"哪些图是站点原始字节"按文件名带回来，
+        // 否则重新拉一次清单就会把 RAW 误判成旧版成品，阅读/导出会直接拿到加扰图。
+        val preservedRaw = chapterDao.rawImageFiles(albumId, chapter.id).toSet()
         val entities = sorted.mapIndexed { index, image ->
             ChapterImageEntity(
                 albumId = albumId,
@@ -641,6 +644,11 @@ class Repository(
                 liked = chapter.liked,
                 isFavorite = chapter.isFavorite,
                 scrambleId = scrambleId,
+                storageEncoding = if (image in preservedRaw) {
+                    com.haruhi.jmcomic.core.storage.ImageStorage.RAW
+                } else {
+                    com.haruhi.jmcomic.core.storage.ImageStorage.DESCRAMBLED
+                },
                 imageFile = image,
                 imageSort = index + 1,
             )
@@ -750,6 +758,22 @@ class Repository(
 
     fun observeImages(albumId: Long, chapterId: Long): Flow<List<ChapterImageEntity>> =
         chapterDao.observeImages(albumId, chapterId)
+
+    /**
+     * 标记某张图已经是**站点原始字节**（新版本下载完成后调用）。
+     *
+     * 阅读器与下载任务共用同一个 `library/`：下载完成后阅读器要靠这个标记决定
+     * "现场解扰"还是"直接显示旧成品"。重复调用幂等；清单行不存在时是空操作。
+     */
+    suspend fun markImageRaw(albumId: Long, chapterId: Long, imageFile: String) {
+        chapterDao.markRaw(albumId, chapterId, imageFile)
+    }
+
+    /** 某张图的存储形态；清单未入库时按旧成品处理（与数据库默认值一致）。 */
+    suspend fun isImageRaw(albumId: Long, chapterId: Long, imageFile: String): Boolean =
+        com.haruhi.jmcomic.core.storage.ImageStorage.isRaw(
+            chapterDao.storageEncodingOf(albumId, chapterId, imageFile),
+        )
 
     /**
      * 统计某章在磁盘上已有的图片数（"已下载 / 部分下载 / 未下载"的判定依据）。
@@ -1002,8 +1026,8 @@ class Repository(
      * 只删文件不删清单：清单是"这一话应该有哪些图"的权威来源，
      * 删掉它就没法判断缺图，也没法重新下载。
      *
-     * 同时删掉这一话的阅读原图缓存（`reader-cache/<aid>/<cid>`）：用户点"删除图片"
-     * 就是要把这一话占的空间清掉，缓存继续留着没有意义，也会让"删了还有"看起来像没删干净。
+     * 同时删掉这一话的**旧版**阅读缓存（`reader-cache/<aid>/<cid>`）：新版本不再产生它，
+     * 但升级用户点"删除图片"时，旧缓存也一起清掉，避免"删了还有"看起来像没删干净。
      */
     suspend fun deleteChapterFiles(
         albumId: Long,

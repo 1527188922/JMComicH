@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.network.toUserMessage
-import com.haruhi.jmcomic.core.settings.ReaderCacheMode
 import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.core.settings.SettingsRepository
@@ -35,40 +34,37 @@ import kotlin.math.abs
 /**
  * 阅读器里的一页。
  *
- * 一页"能看"有两种来源（见 `ReaderCacheMode`）：
- * - [displayFile]：**解扰后的成品文件**（已下载的、或旧管线缓存下来的），交给 Coil 显示；
- * - [bitmap]：新管线在内存里就地解扰出来的位图，直接 `Image()` 显示。
+ * 2026-10 起 `library/<本子>/<章节>/` 存的是**站点原始字节**（或旧版本解扰成品），
+ * 阅读器统一在内存里解码 + 解扰，用 [bitmap] 直接画；不再有"成品文件交给 Coil"的分支。
  *
- * [rawFile] 只在**新管线**里出现：站点原始字节已经落盘（还没解扰时不能直接显示）。
- * 它的意义是"字节已经到手"，所以**解扰完成后也留着**——位图会被内存窗口回收，
- * 而"本地有没有字节"不跟着位图变（见 [hasBytes]）。
+ * [rawFile] 是磁盘上的**源文件**（原始字节或旧成品）。它的意义是"字节已经到手"：
+ * **解扰完成后也留着**——位图会被内存窗口回收，而"本地有没有字节"不跟着位图变
+ * （见 [hasBytes]）。[isRaw] 表示这份源文件需不需要解扰。
  */
 data class ReaderPage(
     val index: Int,
     val imageFile: String,
-    /** 解扰后的成品文件（旧管线缓存 / 已下载）；可直接显示。 */
-    val displayFile: File? = null,
-    /** 新管线就地解扰出的位图；可直接显示。 */
+    /** 从磁盘源文件解出来、可直接显示的位图（旧成品则只解码、不解扰）。 */
     val bitmap: Bitmap? = null,
     /**
-     * 站点原始字节已经落盘时的文件（新管线）。
+     * 磁盘上的源文件（站点原始字节，或旧版本解扰成品）。
      *
      * **解扰完成后也不清空**：它的语义是"字节在本地、再显示不用联网"，
-     * 而不是"还没解扰"。顶栏「已缓存 N 页」/底栏「加载中 N」就是靠它来数的——
-     * 位图会被内存窗口回收（[ReaderUiState.cachedCount] 不能跟着位图走），
-     * 字节却一直在磁盘上。
+     * 而不是"还没解扰"。顶栏「已缓存 N 页」/底栏「加载中 N」就是靠它来数的。
      */
     val rawFile: File? = null,
+    /** 源文件是不是站点原始字节（true = 显示前要解扰；false = 旧版成品 / 未加扰）。 */
+    val isRaw: Boolean = false,
     /** 高/宽。没有图时用 [DEFAULT_ASPECT] 占位，保证长图占位稳定。 */
     val aspectRatio: Float = DEFAULT_ASPECT,
     val state: PageState = PageState.Pending,
     val error: String? = null,
 ) {
-    /** 能不能**立刻画出来**（有成品文件或位图，二者之一）。 */
-    val available: Boolean get() = displayFile != null || bitmap != null
+    /** 能不能**立刻画出来**（位图已解好）。 */
+    val available: Boolean get() = bitmap != null
 
     /**
-     * 字节是否已在本地（有成品文件、有位图，或原图已落盘）。
+     * 字节是否已在本地（有位图，或源文件已落盘）。
      *
      * **不会因为位图被内存窗口回收而变 false**（[rawFile] 解扰后仍保留）：
      * "再显示要不要联网"只取决于磁盘，不取决于内存。
@@ -76,7 +72,7 @@ data class ReaderPage(
     val hasBytes: Boolean get() = available || rawFile != null
 
     enum class PageState {
-        /** 本地没有，等待联网取回（或已下好原图、等待解扰）。 */
+        /** 本地没有，等待联网取回（或源文件已就绪、等待解扰）。 */
         Pending,
 
         /** 正在下载 / 正在解扰。 */
@@ -137,12 +133,11 @@ data class ReaderUiState(
     val failedCount: Int get() = pages.count { it.state == ReaderPage.PageState.Failed }
 
     /**
-     * 已经在本地有字节的页数（成品或原图）。
+     * 已经在本地有字节的页数（位图，或磁盘上的源文件）。
      *
-     * 用 [ReaderPage.hasBytes] 而不是 [ReaderPage.available]：新管线的位图会被内存窗口回收，
-     * 但**字节还在磁盘上**（再显示时不用联网，见 [ReaderPage.rawFile]，它在解扰成功后
-     * 依然保留）。按"能不能不再联网"来数才符合用户的理解，
-     * 也避免顶栏的「已缓存 N 页」随着翻页来回跳。
+     * 用 [ReaderPage.hasBytes] 而不是 [ReaderPage.available]：位图会被内存窗口回收，
+     * 但**源文件还在磁盘上**（[ReaderPage.rawFile] 解码后依然保留）。按"能不能不再联网"
+     * 来数才符合用户的理解，也避免顶栏的「已缓存 N 页」随着翻页来回跳。
      */
     val cachedCount: Int get() = pages.count { it.hasBytes }
 
@@ -161,19 +156,17 @@ data class ReaderUiState(
 /**
  * 阅读器（计划 §9 第 8 条）。
  *
- * ## 两套取图管线（设置页「阅读与显示 → 图片缓存方式」）
+ * ## 取图管线（2026-10 起只有一条）
  *
- * - **原图缓存**（`ReaderCacheMode.RAW`，默认，2026-10-21 新增）：
- *   只把站点原始字节落盘（`reader-cache/<aid>/<cid>/`），**显示时**再解码 + `Canvas` 搬块。
- *   没有无损重编码、没有第二次解码、没有额外写盘——旧方案每页那 0.3～1.5 s 的本地成本
- *   基本被消掉（原因见 `docs/PROGRESS.md`「阅读器取图管线」）。
- * - **解扰后落盘**（`ReaderCacheMode.DESCRAMBLED`，旧行为，完整保留）：
- *   [ImageStore.file] 下载 → 解扰 → 无损 WEBP 重编码 → 与下载共用 `library` 目录。
+ * `library/<本子>/<章节>/` 里是**站点原始字节**（新下载）或**旧版本解扰成品**。
+ * 阅读器本地优先取这份文件，然后在内存里解码：
+ * - 新下载的原始字节：按章节 `scramble_id` 现场解扰（[ImageStore.displayBitmap]）；
+ * - 旧成品 / 未加扰章节：只解码，不解扰。
  *
- * 两套可以随时切换，切完对**新取的页**立刻生效；已经在屏幕上的页不重建。
- * **下载任务永远产出解扰后的成品**，与本设置无关（导出要能用）。
+ * **没有第二次落盘、没有无损重编码、没有 Coil 二次解码**。旧版 `reader-cache`
+ * 目录不再产生，只保留清理入口给升级用户。
  *
- * ## 预取（只有原图管线有）
+ * ## 预取
  *
  * 一页只有几十 KB，慢的从来不是传输，而是"滚到才下、下完才算"这种**串行**。
  * 所以可见页一就绪，就顺手把后面 [PREFETCH_AHEAD] 页的**原始字节**取回来
@@ -215,14 +208,6 @@ class ReaderViewModel(
     private val fetching = ConcurrentHashMap<String, Job>()
 
     /**
-     * 当前取图管线。设置一改就跟着变（只影响**新取的页**，不重建已经在屏幕上的页）。
-     *
-     * `@Volatile`：读写分别发生在 IO 协程（加载）与设置收集协程里。
-     */
-    @Volatile
-    private var cacheMode: ReaderCacheMode = ReaderCacheMode.DEFAULT
-
-    /**
      * 「同时下载图片数」= 在线取图的并发名额，**可见页与预取共用**（用户 2026-10-21 要求）。
      *
      * 存成 `@Volatile` + 可变引用：设置里的值一变就换一个新的信号量，
@@ -238,7 +223,7 @@ class ReaderViewModel(
     /** 解扰解码的并发上限（固定 2）：一张长图光位图就几十 MB，开太多只会换页时抖动。 */
     private val decodeSlots = Semaphore(DECODE_CONCURRENCY)
 
-    /** 已量过比例的图（新管线的位图按 imageFile 记，避免切章节来回重新解码）。 */
+    /** 已量过比例的图（按 imageFile 记，避免切章节来回重新解码）。 */
     private val bitmapAspects = ConcurrentHashMap<String, Float>()
 
     private var loadJob: Job? = null
@@ -266,11 +251,6 @@ class ReaderViewModel(
                 if (album != null) _state.update { it.copy(collected = album.collected == true) }
             }
         }
-        // 取图管线：设置页改完立刻生效（对**新取的页**；已经在屏幕上的页不重建）
-        viewModelScope.launch {
-            settings.jmInt(SettingKeys.Jm.READER_CACHE_MODE, SettingDefaults.Jm.READER_CACHE_MODE)
-                .collect { code -> cacheMode = ReaderCacheMode.fromCode(code) }
-        }
         // 并发名额跟着「同时下载图片数」走（用户 2026-10-21 要求：直接用设置里那一项）
         viewModelScope.launch {
             settings.jmInt(SettingKeys.Jm.DOWNLOAD_THREADS, SettingDefaults.Jm.DOWNLOAD_THREADS)
@@ -293,13 +273,6 @@ class ReaderViewModel(
 
     private suspend fun load() {
         _state.update { it.copy(loading = true, error = null) }
-        // 先确定这一章首次取图走哪条管线：设置收集协程第一项可能还没到，
-        // 不能拿默认值去决定（用户可能早就切到了「解扰后落盘」）
-        runCatching {
-            ReaderCacheMode.fromCode(
-                settings.jmInt(SettingKeys.Jm.READER_CACHE_MODE, SettingDefaults.Jm.READER_CACHE_MODE).first(),
-            )
-        }.onSuccess { cacheMode = it }
         val detail = runCatching { repo.localAlbumDetail(albumId) }.getOrNull()
         val album = detail?.album
         if (album == null) {
@@ -378,27 +351,18 @@ class ReaderViewModel(
                 images.mapIndexed { pageIndex, entity ->
                     // 本地有就立刻可用；没有就标记成待取，由界面滚动到附近时按需联网取。
                     //
-                    // "本地有"有两种：解扰后的成品（下载过 / 旧管线缓存）与原始字节（新管线缓存）。
-                    // 成品直接显示；原图只让页面进入"字节已就绪、待解扰"，滚动到附近再解。
-                    val finished = store.cachedFile(album, chapterFolder, entity.imageFile)
-                    val raw = if (finished == null) {
-                        store.cachedRawFile(albumId, chapter.chapterId, entity.imageFile)
-                    } else {
-                        null
-                    }
+                    // 本地有源文件就只记下来（等可见时解码 + 解扰）；没有就等按需联网取。
+                    // 形态看图片清单里的 storage_encoding：旧成品直接用，原始字节显示前解扰。
+                    val source = store.cachedFile(album, chapterFolder, entity.imageFile)
+                    val isRaw = com.haruhi.jmcomic.core.storage.ImageStorage.isRaw(entity.storageEncoding)
                     ReaderPage(
                         index = pageIndex,
                         imageFile = entity.imageFile,
-                        displayFile = finished,
-                        rawFile = raw,
-                        aspectRatio = finished?.let { store.aspectRatioOf(it, ReaderPage.DEFAULT_ASPECT) }
-                            ?: raw?.let { store.aspectRatioOf(it, ReaderPage.DEFAULT_ASPECT) }
+                        rawFile = source,
+                        isRaw = isRaw,
+                        aspectRatio = source?.let { store.aspectRatioOf(it, ReaderPage.DEFAULT_ASPECT) }
                             ?: ReaderPage.DEFAULT_ASPECT,
-                        state = if (finished != null) {
-                            ReaderPage.PageState.Ready
-                        } else {
-                            ReaderPage.PageState.Pending
-                        },
+                        state = ReaderPage.PageState.Pending,
                     )
                 }
             }
@@ -466,13 +430,10 @@ class ReaderViewModel(
                 if (_state.value.currentChapter?.chapterId != chapter.chapterId) return@launch
                 updatePage(pageIndex) {
                     it.copy(
-                        displayFile = loaded.file,
                         bitmap = loaded.bitmap,
-                        // 解扰成功后**不清空** rawFile（以前这里写的是 null）：
-                        // 它表示"字节在磁盘上"，位图被窗口回收后这一页仍然是"已缓存"。
-                        // 清掉的话 hasBytes 会跟着位图一起变 false，顶栏「已缓存 N 页」
-                        // 就会随翻页涨落、底栏还会把纯本地的重解算成"加载中"。
-                        rawFile = loaded.raw ?: it.rawFile,
+                        // 源文件（原始字节 / 旧成品）要留着：位图被窗口回收后这一页仍是"已缓存"。
+                        rawFile = loaded.source,
+                        isRaw = loaded.raw,
                         aspectRatio = loaded.aspect,
                         state = ReaderPage.PageState.Ready,
                         error = null,
@@ -498,21 +459,26 @@ class ReaderViewModel(
     }
 
     /**
-     * 一次取图的结果：成品文件或位图（二者之一），外加算好的宽高比。
+     * 一次取图的结果：解好的位图 + 磁盘上的源文件（用于"已缓存"计数）+ 宽高比。
      *
-     * [raw] 是原图管线取到的**原始字节**（已经落盘），要留在页面状态里当"已缓存"的证据；
-     * 成品管线为 null。
+     * [raw] 表示源文件是站点原始字节（下次位图被回收后重新解扰时还要用）。
      */
-    private data class LoadedPage(val file: File?, val bitmap: Bitmap?, val raw: File?, val aspect: Float)
+    private data class LoadedPage(
+        val bitmap: Bitmap,
+        val source: File,
+        val raw: Boolean,
+        val aspect: Float,
+    )
 
     /**
-     * 取一页并**准备好显示**。两条管线都在这里分派（见 [cacheMode]）。
+     * 取一页并**准备好显示**：本地有源文件就直接用；没有就联网取原始字节。
      *
-     * 优先级（两条管线相同）：**成品文件 > 现取**。所以"已经下载过"的章节在两种模式下
-     * 都是零成本打开——成品就是解扰好的图，直接交给 Coil。
+     * 两种源文件都在同一条路径上：
+     * - [raw] = true：先算块数、在内存里解扰；
+     * - [raw] = false：旧版本成品 / 未加扰，只解码。
      *
-     * 新管线只把字节落盘（`fetchRawFile`，占一个「同时下载图片数」名额），
-     * 解扰在解扰名额内单独做，跑完直接把位图返回给界面。
+     * 解扰与解码在 [withDecodeSlot] 名额内做（位图内存才是瓶颈），
+     * 不写盘、不重编码。
      */
     private suspend fun loadPage(
         album: AlbumEntity,
@@ -520,34 +486,14 @@ class ReaderViewModel(
         chapterFolder: String,
         imageFile: String,
     ): LoadedPage {
-        // 1) 成品优先：下载过的、或旧管线缓存下来的
-        store.cachedFile(album, chapterFolder, imageFile)?.let { finished ->
-            return LoadedPage(
-                file = finished,
-                bitmap = null,
-                raw = null,
-                aspect = store.aspectRatioOf(finished, ReaderPage.DEFAULT_ASPECT),
-            )
-        }
-
-        // 2) 旧管线：下载 → 解扰 → 无损重编码 → 落盘（与 2026-10 之前完全一致）
-        if (cacheMode == ReaderCacheMode.DESCRAMBLED) {
-            val file = withFetchSlot { store.file(album, chapterId, chapterFolder, imageFile) }
-            return LoadedPage(
-                file = file,
-                bitmap = null,
-                raw = null,
-                aspect = store.aspectRatioOf(file, ReaderPage.DEFAULT_ASPECT),
-            )
-        }
-
-        // 3) 新管线：先要原始字节，再在内存里解扰
-        val raw = store.cachedRawFile(albumId, chapterId, imageFile)
-            ?: withFetchSlot { store.fetchRawFile(albumId, chapterId, imageFile) }
+        val source = store.cachedFile(album, chapterFolder, imageFile)
+            ?: withFetchSlot { store.file(album, chapterId, chapterFolder, imageFile) }
+        val raw = store.isRaw(source, album.id, chapterId, imageFile)
         val bitmap = withDecodeSlot {
             store.displayBitmap(
                 chapterId = chapterId,
                 imageFile = imageFile,
+                source = source,
                 raw = raw,
                 targetWidthPx = targetWidthPx(),
             )
@@ -559,7 +505,7 @@ class ReaderViewModel(
                 ReaderPage.DEFAULT_ASPECT
             }
         }
-        return LoadedPage(file = null, bitmap = bitmap, raw = raw, aspect = aspect)
+        return LoadedPage(bitmap = bitmap, source = source, raw = raw, aspect = aspect)
     }
 
     /**
@@ -589,7 +535,7 @@ class ReaderViewModel(
     }
 
     /**
-     * 预取后面几页的**原始字节**（只有原图管线做）。
+     * 预取后面几页的**源文件**（只取字节，不解码）。
      *
      * 为什么要它：慢的从来不是传输（一页几十 KB），而是"滚到才下、下完才算"的串行。
      * 官方阅读器就是这么干的（提前 12 页 `new Image()` 灌进 HTTP 缓存），见文档 §8 与
@@ -601,8 +547,8 @@ class ReaderViewModel(
      * - **失败静默**：预取失败不打扰用户，滚到那一页时自然重试一次。
      */
     private fun prefetchAhead(from: Int) {
-        if (cacheMode != ReaderCacheMode.RAW) return
         val current = _state.value
+        val album = current.album ?: return
         val chapter = current.currentChapter ?: return
         val pages = current.pages
         for (offset in 1..PREFETCH_AHEAD) {
@@ -615,20 +561,21 @@ class ReaderViewModel(
             val slots = fetchSlots
             if (!slots.tryAcquire()) break
             val chapterId = chapter.chapterId
+            val chapterFolder = repo.chapterFolderName(chapter)
             fetching[page.imageFile] = viewModelScope.launch {
                 try {
-                    val raw = store.fetchRawFile(albumId, chapterId, page.imageFile)
+                    val source = store.file(album, chapterId, chapterFolder, page.imageFile)
                     // 顺手量出真实宽高比：这样用户滚到这一页时，占位框已经是正确高度，
                     // 图片出现时不会"跳一下"（这也是快翻时观感上的一部分闪烁）
-                    val aspect = store.aspectRatioOf(raw, page.aspectRatio)
+                    val aspect = store.aspectRatioOf(source, page.aspectRatio)
                     // 只写"字节已就绪"；界面收到后（`LaunchedEffect` 的 key 里有 rawFile）
-                    // 会在这一页可见时解扰
+                    // 会在这一页可见时解码 + 解扰
                     if (_state.value.currentChapter?.chapterId == chapterId) {
                         updatePage(index) { existing ->
                             if (existing.hasBytes) {
                                 existing
                             } else {
-                                existing.copy(rawFile = raw, aspectRatio = aspect)
+                                existing.copy(rawFile = source, isRaw = true, aspectRatio = aspect)
                             }
                         }
                     }
@@ -673,8 +620,8 @@ class ReaderViewModel(
             if (page.state == ReaderPage.PageState.Loading) return@forEach
             updatePage(index) {
                 if (it.hasBytes) {
-                    // 字节还在（成品或原图），只是没解扰 / 上一步失败：清掉显示态重来
-                    it.copy(displayFile = null, bitmap = null, state = ReaderPage.PageState.Pending, error = null)
+                    // 字节还在（原始字节或旧成品），只是没解好 / 上一步失败：清掉位图重来
+                    it.copy(bitmap = null, state = ReaderPage.PageState.Pending, error = null)
                 } else {
                     it.copy(state = ReaderPage.PageState.Pending, error = null)
                 }
@@ -683,43 +630,58 @@ class ReaderViewModel(
         }
     }
 
-    /** 重新扫一遍本地缓存（下载完成后回到阅读器，已下好的页要立刻显示）。 */
+    /** 重新扫一遍本地文件（下载完成后回到阅读器，已下好的页要立刻显示）。 */
     fun refreshFromDisk() {
         val current = _state.value
         val album = current.album ?: return
         val chapter = current.currentChapter ?: return
         val folder = repo.chapterFolderName(chapter)
+        val chapterId = chapter.chapterId
         scanJob?.cancel()
         scanJob = viewModelScope.launch {
+            // 下载任务可能刚把某些图写成原始字节：重新读一次清单里的 storage_encoding。
+            val encodings = runCatching { reading.imagesOf(albumId, chapterId) }
+                .getOrDefault(emptyList())
+                .associate { it.imageFile to it.storageEncoding }
             // 逐页核对磁盘：读文件头也算解码，全部放到 IO 上做（用户要求第 9 点）
             val scanned = withContext(Dispatchers.IO) {
-                current.pages.map { page ->
-                    val finished = store.cachedFile(album, folder, page.imageFile)
-                    when {
-                        // 下载完成了：成品直接显示（比内存里的位图更"权威"，也是导出用的那份）
-                        finished != null -> page.copy(
-                            displayFile = finished,
+                val result = ArrayList<ReaderPage>(current.pages.size)
+                for (page in current.pages) {
+                    val source = store.cachedFile(album, folder, page.imageFile)
+                    if (source == null) {
+                        result += if (page.hasBytes) {
+                            // 本地被删了且之前是就绪状态 -> 回到待取，滚动到时自动重新联网
+                            page.copy(
+                                bitmap = null,
+                                rawFile = null,
+                                isRaw = false,
+                                state = ReaderPage.PageState.Pending,
+                                error = null,
+                            )
+                        } else {
+                            page
+                        }
+                        continue
+                    }
+                    val isRaw = encodings[page.imageFile]?.let {
+                        com.haruhi.jmcomic.core.storage.ImageStorage.isRaw(it)
+                    } ?: store.isRaw(source, album.id, chapterId, page.imageFile)
+                    if (page.bitmap != null && page.isRaw == isRaw) {
+                        // 位图还在、形态没变：继续用
+                        result += page.copy(rawFile = source)
+                    } else {
+                        // 新下载 / 形态变了 / 位图被回收：回到待解，滚动到时重解（不联网）
+                        result += page.copy(
                             bitmap = null,
-                            aspectRatio = store.aspectRatioOf(finished, ReaderPage.DEFAULT_ASPECT),
-                            state = ReaderPage.PageState.Ready,
+                            rawFile = source,
+                            isRaw = isRaw,
+                            aspectRatio = store.aspectRatioOf(source, ReaderPage.DEFAULT_ASPECT),
+                            state = ReaderPage.PageState.Pending,
                             error = null,
                         )
-                        // 新管线：位图还在就继续用
-                        page.bitmap != null -> page
-                        else -> {
-                            // 原图还在磁盘上（之前下过、位图被回收了）：回到待解扰，滚动到时重解
-                            val raw = store.cachedRawFile(albumId, chapter.chapterId, page.imageFile)
-                            if (raw != null) {
-                                page.copy(displayFile = null, rawFile = raw, state = ReaderPage.PageState.Pending)
-                            } else if (page.hasBytes) {
-                                // 本地被删了且之前是就绪状态 -> 回到待取，滚动到时自动重新联网
-                                page.copy(displayFile = null, bitmap = null, rawFile = null, state = ReaderPage.PageState.Pending)
-                            } else {
-                                page
-                            }
-                        }
                     }
                 }
+                result
             }
             _state.update { it.copy(pages = scanned) }
         }
@@ -809,7 +771,7 @@ class ReaderViewModel(
         val chapterId = _state.value.currentChapter?.chapterId ?: return
         val page = _state.value.pages.getOrNull(pageIndex) ?: return
         _state.update { it.copy(currentPage = pageIndex) }
-        // 翻页顺手回收远处页的位图（新管线）：一张 800×1200 就是 3.7 MB，
+        // 翻页顺手回收远处页的位图：一张 800×1200 就是 3.7 MB，
         // 整话几十页全留着一定 OOM。只留当前页附近那几张，滚回来再解一次（本地文件，不联网）。
         //
         // **回收中心永远是 `currentPage`，不是"刚加载完的那一页"**：翻得快时先发出的页
@@ -939,7 +901,7 @@ class ReaderViewModel(
     }
 
     // ------------------------------------------------------------------
-    // 显示位图的内存窗口（只服务"原图缓存"管线）
+    // 显示位图的内存窗口（所有页共用：源文件在 library，位图只是显示中间产物）
     // ------------------------------------------------------------------
 
     /**
@@ -1044,7 +1006,7 @@ class ReaderViewModel(
         const val POSITION_DEBOUNCE_MS = 400L
 
         /**
-         * 提前几页取**字节**（只有原图管线预取；对齐官方阅读器的预取思路）。
+         * 提前几页取**字节**（对齐官方阅读器的预取思路）。
          *
          * 取 3：配合默认 4 个并发名额，可见页 + 3 页预取刚好铺满一轮；
          * 再多也只是把网络排满，用户滚不到那里就先占着名额。

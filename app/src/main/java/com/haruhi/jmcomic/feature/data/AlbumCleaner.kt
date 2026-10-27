@@ -70,11 +70,10 @@ class AlbumCleaner(
     private val tasks: com.haruhi.jmcomic.core.download.DownloadTaskRepository,
     private val coverCache: CoverCache,
     /**
-     * 目录规划：用来顺手清掉这本的**阅读原图缓存**（`reader-cache/<aid>`）。
+     * 目录规划：用来顺手清掉这本的**旧版阅读缓存**（`reader-cache/<aid>`）。
      *
-     * 它是"原图缓存"取图管线的缓存（站点原始字节、未解扰），不是用户资产，
-     * 但"删除本地文件 / 移出书库"在用户看来就是"这本的图别占我空间了"，
-     * 所以一起删；删掉只是下次再联网取一次。
+     * 新版本不再产生这个目录；升级用户可能还有，所以"删除本地文件 / 移出书库"
+     * 时一起清掉，免得旧缓存白占空间。
      */
     private val dirs: com.haruhi.jmcomic.core.storage.LibraryDirs,
 ) {
@@ -159,16 +158,15 @@ class AlbumCleaner(
     }
 
     /**
-     * 删掉这本的阅读原图缓存（`reader-cache/<aid>`），返回释放的字节数。
+     * 删掉这本的**旧版**阅读缓存（`reader-cache/<aid>`），返回释放的字节数。
      *
-     * 只在本子被"删除本地文件 / 移出书库"时调用，不参与"清理缓存"——
-     * 那一层由 `LibraryDirs.clearCache()` 整体清（它只是缓存，删了下次重取）。
+     * 只在本子被"删除本地文件 / 移出书库"时调用；新版本不再产生它。
      */
     private fun deleteReaderCache(album: AlbumEntity): Long {
         val dir = dirs.readerCacheAlbumDir(album.id)
         val freed = dirs.sizeOf(dir)
         runCatching { dir.deleteRecursively() }
-            .onFailure { Timber.tag("jm").w(it, "清理阅读原图缓存失败：%d", album.id) }
+            .onFailure { Timber.tag("jm").w(it, "清理旧版阅读缓存失败：%d", album.id) }
         return freed
     }
 

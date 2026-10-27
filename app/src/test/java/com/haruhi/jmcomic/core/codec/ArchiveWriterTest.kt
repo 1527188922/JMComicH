@@ -81,14 +81,14 @@ class ArchiveWriterTest {
     }
 
     @Test
-    fun `progress is reported per chapter`() {
+    fun `progress is reported per image`() {
         val albumDir = buildAlbum("第1话" to listOf("00001", "00002"), "第2话" to listOf("00001"))
         val out = File(temp.root, "progress.zip")
         val seen = mutableListOf<Pair<Int, Int>>()
 
         writer.albumToZip(albumDir, out, password = null) { done, total, _ -> seen += done to total }
 
-        assertThat(seen).containsExactly(2 to 3, 3 to 3).inOrder()
+        assertThat(seen).containsExactly(1 to 3, 2 to 3, 3 to 3).inOrder()
     }
 
     @Test

@@ -7,7 +7,6 @@ import android.graphics.Paint
 import android.graphics.Rect
 import timber.log.Timber
 import java.io.File
-import java.io.FileOutputStream
 
 /** 图片基本元信息。 */
 data class ImageMeta(
@@ -65,46 +64,71 @@ object ImageCodec {
     }
 
     /**
-     * 解码 → 按 [blockNum] 解扰 → 写回 [file]。
+     * 解码 → 按 [mode] 重新编码成 WebP 字节（**不解扰**）。
      *
-     * 语义严格对齐参考实现 `saveImg` + `stitchImg` + `copyImageBlock`：
-     * 整行 ARGB 拷贝，块顺序倒置。
-     *
-     * **与参考实现的有意差异**（计划 §0 已确认的决策）：
-     * 参考实现**无论是否解扰都重新编码成 webp**；
-     * 本 App 在 [blockNum] == 0（或 `<= 1`）时**直接把原文件落盘，不重新编码**。
-     * 所以调用方在 `blockNum == 0` 时**不应该调用本方法**，
-     * 而应直接保留下载下来的原文件（[ImageDownloadTransform] 已经这样做了）。
-     *
-     * @return true 表示做了实际处理；false 表示无需处理（调用方应保留原文件）
+     * 用于 ZIP 里"本来就是普通图、但用户选了有损"的情况（旧版本留存的解扰成品、
+     * 未加扰章节的 webp）：统一把体积压到官方量级。`blockNum > 0` 的原始字节请用
+     * [descrambleToBytes]，那条路会多一步搬块。
      */
-    fun descrambleInPlace(file: File, blockNum: Int, format: OutFormat = OutFormat.WEBP_LOSSLESS): Boolean {
-        if (blockNum < 1) return false
-
-        val source = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }) ?: error("无法解码图片：${file.absolutePath}")
-
-        val processed = try {
-            descramble(source, blockNum)
+    fun reencodeToBytes(file: File, mode: ImageEncodeMode): ByteArray {
+        val source = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+        ) ?: error("无法解码图片：${file.absolutePath}")
+        return try {
+            val out = java.io.ByteArrayOutputStream()
+            val quality = when (mode) {
+                ImageEncodeMode.LOSSY -> LOSSY_WEBP_QUALITY
+                ImageEncodeMode.LOSSLESS -> QUALITY_LOSSLESS
+            }
+            check(source.compress(Bitmap.CompressFormat.WEBP, quality, out)) {
+                "图片编码失败：${file.absolutePath}"
+            }
+            out.toByteArray()
         } finally {
             source.recycle()
         }
+    }
 
-        val temp = File(file.parentFile, file.name + ".descrambled")
-        try {
-            FileOutputStream(temp).use { out ->
-                val ok = processed.compress(format.toCompressFormat(), format.qualityHint(), out)
-                check(ok) { "图片编码失败：${file.absolutePath}" }
-            }
-            processed.recycle()
-            check(temp.renameTo(file) || temp.copyTo(file, overwrite = true).let { temp.delete(); true }) {
-                "替换解扰结果失败：${file.absolutePath}"
-            }
-        } finally {
-            if (temp.exists()) temp.delete()
+    /**
+     * 解码 → 按 [blockNum] 解扰 → 以 [mode] 重新编码成 WebP 字节（不写盘）。
+     *
+     * ZIP 导出用：`library/` 里是加扰的站点原始字节，包内必须是能直接看的普通图片，
+     * 所以在打包时现场解扰并编码。**一次只处理一张图**，调用方负责逐张回收，
+     * 不要把所有结果攒在内存里。
+     *
+     * `blockNum < 1` 时**不重新编码**：调用方应直接把原文件流进 ZIP，保持字节不变。
+     *
+     * @throws Exception 解码 / 编码失败；导出任务应放弃整个产物，不能把半成品交付出去
+     */
+    fun descrambleToBytes(file: File, blockNum: Int, mode: ImageEncodeMode): ByteArray {
+        require(blockNum >= 1) { "blockNum < 1 时不应重新编码" }
+        val source = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 },
+        ) ?: error("无法解码图片：${file.absolutePath}")
+
+        val processed = try {
+            descramble(source, blockNum)
+        } catch (e: Throwable) {
+            source.recycle()
+            throw e
         }
-        return true
+
+        return try {
+            val out = java.io.ByteArrayOutputStream()
+            val quality = when (mode) {
+                ImageEncodeMode.LOSSY -> LOSSY_WEBP_QUALITY
+                ImageEncodeMode.LOSSLESS -> QUALITY_LOSSLESS
+            }
+            check(processed.compress(Bitmap.CompressFormat.WEBP, quality, out)) {
+                "图片编码失败：${file.absolutePath}"
+            }
+            out.toByteArray()
+        } finally {
+            processed.recycle()
+            source.recycle()
+        }
     }
 
     /**
@@ -134,9 +158,9 @@ object ImageCodec {
     /**
      * 解码原图（可降采样）→ 解扰 → 返回**可直接显示**的位图。
      *
-     * 这是"原图缓存"取图管线（`ReaderCacheMode.RAW`）的显示端：**不写盘、不重编码**，
-     * 只做一次解码 + 若干次块搬移，所以比旧管线（解码→逐行拷贝→无损 WEBP 重编码→写盘→
-     * Coil 再解码）少掉一大半工作。
+     * 这是阅读器的显示端：`library/` 里是站点原始字节（或旧版成品），
+     * 这里**不写盘、不重编码**，只做一次解码 + 若干次块搬移，所以比
+     * "解码→逐行拷贝→无损 WEBP 重编码→写盘→Coil 再解码"少掉一大半工作。
      *
      * 与 [descramble] 的差别：
      * - 走 `Canvas.drawBitmap(src, srcRect, dstRect)` 的块搬移，而不是逐行
@@ -144,10 +168,10 @@ object ImageCodec {
      * - 解码时可以**按显示宽度降采样**（[decodeSampleSize]），长图不会整张解进内存；
      * - 结果直接给 Compose 的 `Image` 用，不再落盘，也不需要第二次解码。
      *
-     * 块布局仍由 [Descrambler.plan] 给出（与旧管线、导出、下载逐块一致），
+     * 块布局仍由 [Descrambler.plan] 给出（与旧成品、导出逐块一致），
      * 只是坐标落在**解码后**的位图上（等比，共 1px 之内的误差）。
      *
-     * @param blockNum 0 / 负数表示不需要解扰，直接返回解码结果
+     * @param blockNum 0 / 负数表示不需要解扰（旧版成品、未加扰章节），直接返回解码结果
      * @param targetWidthPx 显示宽度（像素）。用于算降采样倍数
      * @param maxPixels 单张位图的像素上限，超过就继续降采样（防长图 OOM）
      */
@@ -272,11 +296,23 @@ object ImageCodec {
     fun isVeryTallImage(width: Int, height: Int): Boolean =
         height > TALL_IMAGE_THRESHOLD || estimateArgb8888Bytes(width, height) > TALL_IMAGE_BYTES
 
-    /** 参考实现会重新编码成 webp 且质量未知；这里用无损以对齐"逐像素一致"的验收要求。 */
+    /** 无损 WebP / PNG 编码质量。 */
     private const val QUALITY_LOSSLESS = 100
 
     /**
-     * 显示端单张位图的像素上限（"原图缓存"管线的降采样依据）。
+     * 有损 WebP 的质量（导出 ZIP 用）。
+     *
+     * **实测对齐官方下载包**：36 页样本（960×1440）用 libwebp q85 重压总量
+     * 4,141,144 B，官方包 4,079,390 B，差 1.5%；q80 差 -10.4%，q90 差 +21.6%。
+     * 所以默认有损档取 85。
+     */
+    const val LOSSY_WEBP_QUALITY = 85
+
+    /** 有损 PDF 的 JPEG 质量：JPEG 对线稿的伪影更明显，取 90。 */
+    const val LOSSY_JPEG_QUALITY = 90
+
+    /**
+     * 显示端单张位图的像素上限（阅读器降采样依据）。
      *
      * 12 MP ≈ 常见长条页（800×12000 = 9.6 MP）的尺寸，超过才继续折半：
      * 再往上（800×20000）ARGB_8888 就是 64 MB 一张，阅读器不该扛这个。
@@ -286,100 +322,4 @@ object ImageCodec {
     /** 超过这个高度或内存占用就算长图（JM 常见 800×12000 ≈ 36MB）。 */
     private const val TALL_IMAGE_THRESHOLD = 6_000
     private const val TALL_IMAGE_BYTES = 24L * 1024 * 1024
-
-    private fun OutFormat.toCompressFormat(): Bitmap.CompressFormat = when (this) {
-        // minSdk 26：只能引用 API 30 之前就存在的 CompressFormat.WEBP。
-        // 质量 100 时 Android 走无损编码，等价于 API 30+ 的 WEBP_LOSSLESS。
-        OutFormat.WEBP_LOSSY, OutFormat.WEBP_LOSSLESS -> Bitmap.CompressFormat.WEBP
-        OutFormat.JPEG -> Bitmap.CompressFormat.JPEG
-        OutFormat.PNG -> Bitmap.CompressFormat.PNG
-    }
-
-    /** 该格式是否应该用无损质量编码。 */
-    private fun OutFormat.qualityHint(): Int = when (this) {
-        OutFormat.WEBP_LOSSY -> 80
-        OutFormat.WEBP_LOSSLESS -> QUALITY_LOSSLESS
-        OutFormat.JPEG -> 90
-        OutFormat.PNG -> QUALITY_LOSSLESS
-    }
-}
-
-/**
- * 给下载引擎用的"图片**发布前**处理"钩子（JM 解扰）。
- *
- * 计划 §0 已确认的决策：**`blockNum == 0` 时直接落原图，不重新编码**；
- * 只有需要解扰（`blockNum > 0`）才 解码→解扰→编码。
- * 这里把这条规则收在一处，避免调用方各写一遍。
- *
- * ## 必须在发布到最终路径之前调用
- *
- * 调用方判断"这张图在不在"只看目标文件是否存在（`FileDownloader.download` 的
- * `skipIfComplete` 与 `ImageStore.cachedFile`）。所以解扰**不能**放在发布之后：
- * 那样会留下一个"已经在最终路径上、内容却还是加扰的"中间态，而它会被当成成品图
- * 显示出来，并且之后再也不会被重新处理。正确的位置是
- * [com.haruhi.jmcomic.core.download.FileDownloader] 的 `beforePublish` 钩子。
- *
- * ## 为什么用传入的文件名，而不是 `file.name`
- *
- * 处理发生在 `.part` 上，物理名是 `00001.webp.part`：用它推扩展名会得到 `part`
- * （于是**静默跳过**解扰），用它算块数会变成 `00001.webp`（于是块数算错、图被解坏）。
- * 解扰参数一律只看**逻辑文件名**（章节里的图片名），物理文件只用于读写。
- *
- * @param scrambleId 章节的 `scramble_id`（由 `/chapter_view_template` 得到）
- * @param chapterId 章节 id
- */
-class ImageDownloadTransform(
-    private val scrambleId: Long,
-    private val chapterId: Long,
-) {
-    /**
-     * 就地处理 [file]。
-     *
-     * 这里**不再**自己记录"处理过哪些文件名"：调用点是引擎的 per-file 锁内（见类注释），
-     * 一次真实下载只会调用一次。留着去重集合反而有害——文件被删掉后重新下载时，
-     * 它会让第二次解扰被静默跳过，于是把加扰的字节发布出去。
-     *
-     * @param file 物理文件（可能是 `<目标>.part`）
-     * @param fileName 逻辑文件名（章节图片名，如 `00001.webp`）
-     * @return true 表示做了实际处理；false 表示无需处理（原样发布）
-     * @throws Exception 处理失败。**调用方必须放弃发布**，否则最终路径上会出现加扰图。
-     */
-    fun transform(file: File, fileName: String): Boolean {
-        val blockNum = blockNumOf(scrambleId, chapterId, fileName)
-        if (blockNum <= 0) {
-            // 未加扰：**直接保留原文件**，不重新编码（已确认的决策，也是 P3 的验收项）
-            return false
-        }
-        return try {
-            ImageCodec.descrambleInPlace(file, blockNum)
-            true
-        } catch (e: Throwable) {
-            // 解扰不可逆、失败原因多半是本地解码：吞掉它就等于把加扰图当成品发布，
-            // 所以这里必须把异常交给引擎，由引擎放弃发布。
-            Timber.tag("jm").w(e, "解扰失败，放弃本次下载：%s", fileName)
-            throw e
-        }
-    }
-
-    companion object {
-        /**
-         * 这张图的解扰块数（0 = 不需要解扰）。
-         *
-         * 两条管线的**唯一**块数算法，别再各写一份：
-         * - 旧管线（[ImageDownloadTransform.transform]）用它决定是否重编码；
-         * - 新管线（`ReaderCacheMode.RAW`，显示端）用它决定 [ImageCodec.descrambleToBitmap] 搬几块。
-         *
-         * 只对 `.webp` 解扰（参考实现 `downloadChapter` 第 948～954 行）：
-         * `.gif` 之类的旧漫画图从来没被切过。参数一律只看**逻辑文件名**，
-         * 不能传物理名（`.part` / `.descrambled` 会让块数算错、把图解坏）。
-         */
-        fun blockNumOf(scrambleId: Long, chapterId: Long, fileName: String): Int {
-            if (fileName.substringAfterLast('.', "").lowercase() != "webp") return 0
-            return com.haruhi.jmcomic.core.protocol.Crypto.calculateBlockNum(
-                scrambleId = scrambleId,
-                chapterId = chapterId,
-                filenameWithoutExt = fileName.substringBeforeLast('.'),
-            )
-        }
-    }
 }

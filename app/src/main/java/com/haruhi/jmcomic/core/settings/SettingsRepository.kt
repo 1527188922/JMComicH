@@ -149,6 +149,20 @@ class SettingsRepository(
         jmBoolean(SettingKeys.Jm.ACCOUNT_API_CACHE, SettingDefaults.Jm.ACCOUNT_API_CACHE).first()
 
     // ------------------------------------------------------------------
+    // 导出编码
+    // ------------------------------------------------------------------
+
+    /**
+     * 导出时解扰后的编码方式（设置页「导出 → 导出图片压缩」）。
+     *
+     * 默认有损：官方 36 页样本用 q85 重压与官方包总量只差 1.5%，而像素级无损
+     * 会让 ZIP 大约 9.2 倍。只影响 ZIP / PDF；下载永远存站点原始字节。
+     */
+    suspend fun resolveJmImageEncoding(): ImageEncoding = ImageEncoding.fromCode(
+        jmInt(SettingKeys.Jm.IMAGE_ENCODING, SettingDefaults.Jm.IMAGE_ENCODING).first(),
+    )
+
+    // ------------------------------------------------------------------
     // 旧「全局作用域」的一次性迁移
     // ------------------------------------------------------------------
 

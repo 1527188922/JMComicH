@@ -1906,6 +1906,83 @@ $env:ANDROID_SERIAL = "emulator-5554"   # 接了多台设备时指定目标
   唯一的例外是**单向复用**：下载时会先看 `reader-cache` 里有没有现成原图（有就不联网、直接解扰发布），
   反过来阅读器不会去偷 `library` 的半成品。
 
+## 下载 / 阅读 / 导出：`library` 直接存原始字节（2026-10）
+
+用户要求：**下载只下原始字节**，`library/` 里就是站点原图（加扰）；有字节就算已下载；
+阅读页从 `library/` 读取并现场解扰；ZIP / PDF 生成时当场解扰；解扰后的编码方式
+（有损 / 无损）进设置页，默认有损；取消 `reader-cache`，但保留旧缓存的统计与清理入口。
+
+### 1. 新架构
+
+| 环节 | 行为 |
+|---|---|
+| 下载 | 只把站点原始字节写进 `library/<本子>/<章节>/<文件名>`，不解扰、不解码、不重编码 |
+| 已下载判定 | 文件存在且非空就是已下载（与下载层、导出预检同一规则） |
+| 阅读 | 本地优先取 `library/` 源文件；新下载的原始字节按 `scramble_id` 现场解扰，旧版成品只解码；统一 `Image(bitmap)`，不再 `AsyncImage(file)` |
+| ZIP | 逐张 `addStream`：原始字节现场解扰 + 重编码；旧成品 / 未加扰 webp 在有损档也重压到官方量级，无损档原样流入 |
+| PDF | 按输出切片逐块解码 + 重排（`decodeDescrambledSlice`），无损用 `LosslessFactory`、有损用 `JPEGFactory(q90)` |
+| 旧缓存 | 新版本不再写 `reader-cache`；旧目录只用于「存储统计 / 清理缓存 / 删除本子」和下载时的一次性种子复用 |
+
+### 2. 旧文件兼容
+
+`t_jm_chapter_image` 新增 `storage_encoding`（v6 迁移，默认 0）：
+
+- `0` = 旧版本解扰后的成品（升级用户的 `library` 全是这种），直接用；
+- `1` = 新版本下载的站点原始字节，用前必须解扰。
+
+`replaceChapter` 整章替换时会按文件名把 `1` 带回来，避免重新拉清单把 RAW 洗成旧成品。
+阅读器 / 导出按这个标记分派，所以**升级不需要迁移或重下旧图**。
+
+### 3. 官方压缩率实测（36 页样本，960×1440）
+
+| 指标 | 数值 |
+|---|---|
+| 官方 ZIP 内图片总量 | 4,079,390 B（平均 113,316 B/页，0.656 bpp） |
+| 本工程无损重编码总量 | 37,507,214 B（平均 1,041,867 B/页，6.029 bpp） |
+| 无损 / 官方 | **9.194×**（逐页 8.36～10.06×） |
+| 官方文件编码 | 全部 `VP8 `（有损），`yuv420p`，无 ICC |
+| 本工程无损文件 | `VP8L` + sRGB ICCP |
+| libwebp q80 / q85 / q90 重压总量 | 3,657,348 / **4,141,144** / 4,962,972 B |
+
+结论：官方约等于 **libwebp q85**（q85 与官方总量差 1.5%）。所以有损档固定
+`LOSSY_WEBP_QUALITY = 85`；PDF 用 JPEG q90（线稿对 JPEG 伪影更敏感）。
+
+像素差异（官方 vs 无损）：YUV PSNR 平均 44.7 dB、SSIM 0.9886，肉眼几乎不可辨。
+**无损不是"多 9 倍画质"，而是"不引入第二次有损"**；有损档会在站点已损失一次的图上
+再压一次（第二代有损），这是选有损时必须接受的代价。
+
+### 4. 设置
+
+- 删除「阅读与显示 → 在线阅读图片保存方式」（两套取图管线已合并）；
+- 新增「导出 → 导出图片压缩」：**有损压缩（默认）** / 无损压缩；
+- 只影响 ZIP / PDF；`library` 里的下载产物永远是原始字节。
+
+### 5. 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `core/storage/ImageStorage.kt` | 新增：`DESCRAMBLED=0` / `RAW=1` |
+| `core/codec/ImageScramble.kt` | 新增：解扰块数唯一入口（原 `ImageDownloadTransform` 的 `blockNumOf`） |
+| `core/codec/ImageEncodeMode.kt` / `ChapterImagePlan.kt` | 新增：导出编码方式、每话解扰计划 |
+| `core/codec/ImageCodec.kt` | 新增 `descrambleToBytes` / `reencodeToBytes`；删除 `descrambleInPlace` 与 `ImageDownloadTransform` |
+| `core/codec/ArchiveWriter.kt` | 改为逐张 `addStream`；现场解扰 / 重编码 |
+| `core/codec/PdfWriter.kt` | 有损/无损编码；`decodeDescrambledSlice` 按切片逐块解扰 |
+| `core/database` | v6 迁移 + `storage_encoding` 列 + DAO 查询/标记 |
+| `feature/data/ImageStore.kt` | 下载原始字节到 `library`；`isRaw` / `displayBitmap`；旧缓存种子复用 |
+| `feature/data/DownloadManager.kt` / `core/download/FileDownloader.kt` | 去掉发布前解扰；下载完成标记 RAW |
+| `feature/ui/ReaderViewModel.kt` / `ReaderScreen.kt` | 统一从 `library` 源文件解码 + 解扰；删除 `ReaderCacheMode` |
+| `feature/data/ExportManager.kt` | 读取编码设置、构造 `ChapterImagePlan` |
+| `feature/ui/SettingsScreen.kt` | 删除旧取图设置，新增「导出图片压缩」 |
+| `feature/data/StorageStatsCollector.kt` 等 | `reader-cache` 只作旧版统计 / 清理，不再创建 |
+
+### 6. 验证
+
+- `:app:compileDebugKotlin` / `:app:compileDebugUnitTestKotlin` ✅
+- 相关单测：`ImageScrambleTest`、`ImageEncodingTest`、`ArchiveWriterTest`、`PdfWriterSpikeTest`、
+  `ImageStoreTest`、`ExportManagerTest`、`ReaderAndTaskLogicTest`、`DaoTest` ✅
+- `DownloadManagerTest` 的「追加章节」用例仍是**基线已知的 15s 超时 flake**（改动前 HEAD 同样失败）。
+- 真机验收待做：有损 ZIP / PDF 的体积、实际解扰画面、长图 PDF 切片内存。
+
 ## 改造：账号体系 v3（2026-10-21）
 
 用户要求：先把**登录**做进 App；「更多」页改造成「我的」；把**本机收藏页隐藏**；收藏改用**官方在线收藏**、

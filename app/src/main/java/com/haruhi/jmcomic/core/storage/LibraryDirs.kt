@@ -16,17 +16,16 @@ import java.io.File
  *       <章节文件夹>/           第N话
  *         00001.webp …
  *   covers/                    封面缓存（Coil 磁盘缓存）
- *   reader-cache/              阅读器**原图**缓存（新取图管线：站点原始字节，未解扰）
+ *   reader-cache/               **旧版**阅读缓存（升级用户可能还有；新版本不再写入）
  *     <aid>/<cid>/00001.webp
  *   tmp/                       下载中转（.tmp / .part）＋ PDF 生成临时文件（PDFBox*.tmp），可随时整体清理
  *   export/                    导出中转（打包完成后交给 SAF/MediaStore，随后删除）
  *   crash/                     崩溃日志
  * ```
  *
- * `reader-cache` 与 `tmp` / `export` 一样是"可以随便删"的目录：里面存的是**站点原始字节**
- * （解扰前），删掉只是下次再联网取一次，不丢任何用户资产。它和 `library` 分开正是为了
- * 让两套取图管线互不污染——`library` 里永远是**解扰后的成品**（下载产物、可直接导出），
- * `reader-cache` 里永远是原始字节（见 `core/settings/ReaderCacheMode.kt`）。
+ * 2026-10 起 `library/` 本身就是**站点原始字节**（阅读/导出时现场解扰），所以新版本
+ * **不再产生 `reader-cache`**：这个目录只作为旧安装的遗留缓存保留——统计页还能看到、
+ * 「清理缓存」还能一键清掉，但新代码一行都不往里写。
  *
  * `tmp` 与 `export` 是"可以随便删"的目录；`library` / `covers` 是用户资产，
  * 只有用户显式删除才会动它们（见计划 §9.1「清理缓存不删除漫画及导出成品」）。
@@ -42,10 +41,11 @@ class LibraryDirs(root: File) {
     val covers: File = File(root, "covers")
 
     /**
-     * 阅读器**原图**缓存根目录（新取图管线）：`reader-cache/<aid>/<cid>/<文件名>`。
+     * **旧版**阅读器缓存根目录：`reader-cache/<aid>/<cid>/<文件名>`。
      *
-     * 存的是站点原始字节（未解扰、未重编码）。这是纯缓存，不参与"是否已下载"的判断，
-     * 也不给导出用；`tmp` / `export` 一样随时可整体清理。
+     * 2026-10 起新版本不再写入：`library/` 直接存站点原始字节，阅读时现场解扰。
+     * 这里保留属性只为两件事：给升级用户一个**清理入口**（统计页 / `clearCache`），
+     * 以及下载时把旧缓存当作本地种子复用一次。
      */
     val readerCache: File = File(root, "reader-cache")
 
@@ -69,20 +69,19 @@ class LibraryDirs(root: File) {
     fun jmCoverFile(albumId: Long): File = File(File(covers, "jm"), "$albumId.jpg")
 
     /**
-     * 某本的阅读原图缓存目录：`reader-cache/<aid>`。
+     * 某本的**旧版**阅读缓存目录：`reader-cache/<aid>`。
      *
-     * 只用**本子号**（不用书库目录名）：原图缓存不参与"是否已下载"，也不该被
-     * 重命名 / 移出书库之类的动作影响。
+     * 新版本不再写它；保留只为统计/清理旧安装的遗留缓存。
      */
     fun readerCacheAlbumDir(albumId: Long): File = File(readerCache, albumId.toString())
 
-    /** 某一话的阅读原图缓存目录：`reader-cache/<aid>/<cid>`。 */
+    /** 某一话的**旧版**阅读缓存目录：`reader-cache/<aid>/<cid>`。 */
     fun readerCacheChapterDir(albumId: Long, chapterId: Long): File =
         File(readerCacheAlbumDir(albumId), chapterId.toString())
 
-    /** 一键建目录，App 启动时调用一次。 */
+    /** 一键建目录，App 启动时调用一次。**不再创建 `reader-cache`**（旧版遗留目录按需清理）。 */
     fun ensureAll(): LibraryDirs {
-        listOf(root, library, covers, readerCache, tmp, export, crash).forEach { dir ->
+        listOf(root, library, covers, tmp, export, crash).forEach { dir ->
             if (!dir.exists() && !dir.mkdirs()) {
                 error("无法创建目录：${dir.absolutePath}")
             }
@@ -94,10 +93,10 @@ class LibraryDirs(root: File) {
     fun newTempFile(prefix: String, suffix: String = ".tmp"): File = File.createTempFile(prefix, suffix, tmp.also { it.mkdirs() })
 
     /**
-     * 清理可释放空间：`tmp`、`export` 与 `reader-cache`（原图缓存）。
+     * 清理可释放空间：`tmp`、`export` 与**旧版** `reader-cache`（如果升级用户还留着）。
      * 返回释放的字节数。**不动** library / covers（用户资产）。
      *
-     * `reader-cache` 里是解扰前的原始字节，删掉只是下次再联网取一次，所以算"可缓存"。
+     * 新版本不写 `reader-cache`；清掉它只是删掉旧缓存，不丢任何用户资产。
      */
     fun clearCache(): Long {
         var freed = 0L
