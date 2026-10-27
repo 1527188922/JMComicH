@@ -1671,8 +1671,8 @@ data class ChapterRow(
     /** "已下载 / 部分下载 12/45 / 未下载"（计划 §9 第 7 条）。 */
     val statusText: String
         get() = when {
-            isDownloaded -> "已下载"
-            isPartial -> "部分下载 $downloadedImages/$totalImages"
+            isDownloaded -> "已缓存"
+            isPartial -> "部分缓存 $downloadedImages/$totalImages"
             else -> "未下载"
         }
 }

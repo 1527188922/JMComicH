@@ -11,7 +11,7 @@ import timber.log.Timber
 /** 「关于」页存储分段条的一段。声明顺序 = 条上从左到右的段序。 */
 enum class StorageKind(val label: String) {
     /** 已下载的漫画图片（`library/<本子目录>/`）。 */
-    LIBRARY("漫画图片"),
+    LIBRARY("图片缓存"),//现在不分下载的图片和阅读缓存了，下载的图片其实就是阅读缓存，都是原始图片字节
 
     /** 封面磁盘缓存（Coil 管理，含头像等，不按本归属）。 */
     COVERS("封面缓存"),

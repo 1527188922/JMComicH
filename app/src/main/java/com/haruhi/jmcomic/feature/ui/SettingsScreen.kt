@@ -1063,11 +1063,10 @@ private fun ExportSection(
     SettingsSection("导出") {
         ChoiceRow(
             title = "导出图片压缩",
-            hint = "ZIP 包内图片、PDF 内嵌图片在解扰后重新编码的方式",
-            help = "有损（默认）：WebP q85 / JPEG q90，体积接近官方下载包。" +
-                "实测 36 页样本用 q85 重压总量与官方包只差 1.5%，肉眼几乎无差。" +
+            hint = "ZIP 包内图片、PDF 内嵌图片在解扰后重编码时是否压缩",
+            help = "有损（默认）：约等于官方下载包内图片画质。" +
                 "\n无损：像素完全不变，但 ZIP 体积大约是官方包的 9.2 倍。" +
-                "\n只影响导出；已下载的原始图片不受影响。",
+                "\n该配置项只影响导出zip、pdf的画质，不影响下载漫画、在线阅读图片画质。",
             options = ImageEncoding.entries.map { it.label },
             selectedIndex = ImageEncoding.entries.indexOf(state.imageEncoding),
             onSelect = { onSetImageEncoding(ImageEncoding.entries[it]) },
