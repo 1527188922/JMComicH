@@ -203,7 +203,7 @@ object SettingLimits {
      */
     val DOWNLOAD_THREADS = 1..12
 
-    /** 同时下载官方 ZIP 的本子数范围（默认见 [SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY]）。 */
+    /** 同时下载官方 ZIP 的章节数范围（默认见 [SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY]）。 */
     val OFFICIAL_ZIP_CONCURRENCY = 1..4
 
     /**

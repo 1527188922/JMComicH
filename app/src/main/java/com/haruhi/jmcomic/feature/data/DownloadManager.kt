@@ -18,7 +18,10 @@ import com.haruhi.jmcomic.feature.api.AlbumDownloadDto
 import com.haruhi.jmcomic.feature.api.ApiJson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -53,9 +56,10 @@ interface DownloadEnvironment {
     suspend fun imageDomain(): String
 
     /**
-     * 同时下载**官方 ZIP** 的本子数量（默认 2，范围 1～4）。
+     * 同时执行**官方 ZIP 章节**的数量（默认 2，范围 1～4）。
      *
-     * 一个本子一个任务；同一任务内的多话顺序下，所以这个值实际控制"同时下几本"。
+     * 这是**全局**额度：不同本子的任务共用，同一本里多话并发也占额度。
+     * 它是"并发下载几话 ZIP"，不是"同时几本"——同一本会按章节顺序依次启动新话。
      */
     suspend fun officialZipConcurrency(): Int = 2
 
@@ -146,9 +150,22 @@ class DownloadManager(
 
     private val jobs = ConcurrentHashMap<Long, Job>()
 
-    /** 官方 ZIP 任务之间的并发闸门：一个本子一个任务，读设置里的“同时下载数量”。 */
-    private val officialZipGate = Mutex()
-    private var officialZipRunning = 0
+    /**
+     * 官方 ZIP **章节级**并发计数，所有本子共用（设置里的「同时下载官方 ZIP 数量」）。
+     *
+     * 用原子计数而不是 `Mutex` 名额，是因为释放发生在 `finally` 里：任务暂停/取消时
+     * 协程已经处于取消状态，`withLock` 这类挂起函数会立刻抛 `CancellationException`，
+     * 名额就永远还不回去（暂停几轮后额度掉到 0，官方 ZIP 再也启动不了）。
+     */
+    private val officialZipRunning = AtomicInteger(0)
+
+    /**
+     * 官方 ZIP 任务里**各话**的最新字节进度（taskId → chapterId → (已下, 总长)）。
+     *
+     * 任务级 `downloadedBytes/totalBytes` 用它们的和更新：多话并发时只写"当前这一话"
+     * 会让任务卡数字来回跳。任务结束时整条移除；回调发现任务已移除就直接忽略。
+     */
+    private val officialZipBytes = ConcurrentHashMap<Long, ConcurrentHashMap<Long, Pair<Long, Long>>>()
 
     // ------------------------------------------------------------------
     // 提交
@@ -206,10 +223,10 @@ class DownloadManager(
     }
 
     /**
-     * 提交官方 ZIP 下载：**一个本子一个任务**，任务内按章节顺序一个个取链、下载、落盘。
+     * 提交官方 ZIP 下载：**一个本子一个任务**，任务内按章节顺序依次启动、可并发多话。
      *
-     * 多本同时下载由 [officialZipGate] 按设置里的“同时下载官方 ZIP 数量”限流；
-     * 同一本已有任务时把新选的章节追加进去（与普通下载一致）。
+     * 全局同名额度由 [officialZipRunning] 按设置里的“同时下载官方 ZIP 数量”限流，
+     * 不同本子共用；同一本已有任务时把新选的章节追加进去（与普通下载一致）。
      */
     suspend fun submitOfficialZip(
         album: AlbumEntity,
@@ -449,10 +466,14 @@ class DownloadManager(
     // ------------------------------------------------------------------
 
     /**
-     * 官方 ZIP 任务：一个本子一个任务，任务内逐话取链 → 下载 → 落到公共下载目录。
+     * 官方 ZIP 任务：一个本子一个任务，但**同一任务内也可以并发多话**。
      *
-     * 并发由 [withOfficialZipPermit] 控制；同一任务内不并发下多话（官方链接一次只给
-     * 一个 zip），多本之间才并行。
+     * 并发额度是全局的（设置里的「同时下载官方 ZIP 数量」，默认 2），不同本子共用同一组
+     * 名额。同一本内按章节顺序**依次启动**：1、2 先跑；1 完成就启动 3（此时 2、3 在跑），
+     * 3 先于 2 完成就启动 4（2、4 在跑）；因此最终会自然形成 4、5 同时在跑。
+     *
+     * 实现用每任务一把 `order` 锁包住"拿全局名额"这一步：第 i 话必须等第 i-1 话已经
+     * 拿到名额/启动后才去抢名额，保证启动顺序；全局计数 [officialZipRunning] 保证总并发数。
      */
     private suspend fun runOfficialZipTask(taskId: Long, album: AlbumEntity) {
         val api = officialZipApi
@@ -461,28 +482,45 @@ class DownloadManager(
             tasks.markFailed(taskId, "当前构建未接入官方 ZIP 下载")
             return
         }
-        withOfficialZipPermit {
-            if (!isRunnable(taskId)) return@withOfficialZipPermit
-            tasks.markRunning(taskId)
-            tasks.updateProgress(taskId, stageText = STAGE_OFFICIAL_ZIP)
-            tasks.recomputeTaskTotals(taskId)
+        if (!isRunnable(taskId)) return
+        tasks.markRunning(taskId)
+        tasks.updateProgress(taskId, stageText = STAGE_OFFICIAL_ZIP)
+        tasks.recomputeTaskTotals(taskId)
 
-            var previousRemaining = Int.MAX_VALUE
-            while (true) {
-                if (!isRunnable(taskId)) return@withOfficialZipPermit
-                val pending = tasks.chapterList(taskId)
-                    .filter { it.status != DownloadStatus.SUCCESS }
-                if (pending.isEmpty()) break
-                // 一轮下来没有进展（失败的章节仍在）就停，交给用户点重试
-                if (pending.size >= previousRemaining) break
-                previousRemaining = pending.size
-                for (row in pending) {
-                    if (!isRunnable(taskId)) return@withOfficialZipPermit
-                    awaitNetworkPermission(taskId, STAGE_OFFICIAL_ZIP)
-                    if (!isRunnable(taskId)) return@withOfficialZipPermit
-                    downloadOfficialZipChapter(taskId, album, row)
-                    tasks.recomputeTaskTotals(taskId)
+        coroutineScope {
+            val pending = tasks.chapterList(taskId)
+                .filter { it.status != DownloadStatus.SUCCESS }
+            val order = Mutex()
+            // 本任务各话的最新字节进度；任务级进度取它们的和，否则多话并发时
+            // 任务卡会显示"最后报进度的那一话"的数字，看起来像进度倒退。
+            val bytes = ConcurrentHashMap<Long, Pair<Long, Long>>()
+            officialZipBytes[taskId] = bytes
+            val jobs = pending.map { row ->
+                // UNDISPATCHED：按列表顺序立刻进入 order 队列，避免调度器打乱启动顺序
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    val acquired = order.withLock {
+                        if (!isRunnable(taskId)) {
+                            false
+                        } else {
+                            acquireOfficialZipPermit(taskId)
+                        }
+                    }
+                    if (!acquired) return@async
+                    try {
+                        awaitNetworkPermission(taskId, STAGE_OFFICIAL_ZIP)
+                        if (isRunnable(taskId)) {
+                            downloadOfficialZipChapter(taskId, album, row, bytes)
+                            tasks.recomputeTaskTotals(taskId)
+                        }
+                    } finally {
+                        releaseOfficialZipPermit()
+                    }
                 }
+            }
+            try {
+                jobs.awaitAll()
+            } finally {
+                officialZipBytes.remove(taskId)
             }
         }
 
@@ -491,8 +529,8 @@ class DownloadManager(
         val unfinished = rows.filter { it.status != DownloadStatus.SUCCESS }
         if (unfinished.isEmpty()) {
             tasks.markSuccess(taskId)
-            // 官方 ZIP 的 totalBytes 只是"最后下的一话"的长度，完成后再留着会显示成
-            // 3.9 MB/4.3 MB 像没下完；清掉字节进度，任务卡只保留"N/N 话"。
+            // 完成后清掉字节进度：任务卡只保留"N/N 话"，否则会停在
+            // "3.9 MB/4.3 MB" 这种像没下完的数字（用户反馈）。
             tasks.updateProgress(taskId, downloadedBytes = 0, totalBytes = 0)
         } else {
             tasks.markFailed(
@@ -506,6 +544,7 @@ class DownloadManager(
         taskId: Long,
         album: AlbumEntity,
         row: DownloadTaskChapterEntity,
+        bytes: ConcurrentHashMap<Long, Pair<Long, Long>>?,
     ) {
         val chapterId = row.chapterId
         val api = officialZipApi ?: return
@@ -557,12 +596,18 @@ class DownloadManager(
                     val now = System.currentTimeMillis()
                     if (now - lastProgressAt >= PROGRESS_UPDATE_MS || progress.totalBytes <= 0) {
                         lastProgressAt = now
+                        // 汇总所有在跑的话：任务卡显示的是整本的总字节，不是当前这一话
+                        bytes?.set(chapterId, progress.downloadedBytes to progress.totalBytes)
+                        val done = bytes?.values?.sumOf { it.first } ?: progress.downloadedBytes
+                        val total = bytes?.values?.sumOf { it.second } ?: progress.totalBytes
                         scope.launch {
+                            // 任务收尾已经清过字节进度：迟到的回调不要再写回去
+                            if (officialZipBytes[taskId] !== bytes) return@launch
                             runCatching {
                                 tasks.updateProgress(
                                     taskId,
-                                    downloadedBytes = progress.downloadedBytes,
-                                    totalBytes = progress.totalBytes,
+                                    downloadedBytes = done,
+                                    totalBytes = total,
                                 )
                             }
                         }
@@ -640,29 +685,28 @@ class DownloadManager(
             .take(80)
 
     /**
-     * 官方 ZIP 并发闸门：每次拿到许可时才读设置，所以设置里改数字对**下一个**任务生效。
-     * 等待用 200ms 轮询（任务数很少，不值得为此引入 Channel/信号量重建）。
+     * 官方 ZIP 全局并发名额：每启动**一话**抢一个，所有本子共用。
+     * 每次抢名额时现读设置，所以设置改数字影响之后启动的章节。
+     * 等待用 200ms 轮询（任务/章节数量很少，不值得为它引入 Channel/信号量重建）。
+     *
+     * 返回 false = 等名额期间任务已暂停/取消，调用方不要再启动新章节。
      */
-    private suspend fun <T> withOfficialZipPermit(block: suspend () -> T): T {
+    private suspend fun acquireOfficialZipPermit(taskId: Long): Boolean {
         while (true) {
-            coroutineContext.ensureActive()
-            val acquired = officialZipGate.withLock {
-                val max = environment.officialZipConcurrency().coerceIn(1, 4)
-                if (officialZipRunning < max) {
-                    officialZipRunning++
-                    true
-                } else {
-                    false
-                }
+            if (!isRunnable(taskId)) return false
+            val max = environment.officialZipConcurrency().coerceIn(1, 4)
+            while (true) {
+                val current = officialZipRunning.get()
+                if (current >= max) break
+                if (officialZipRunning.compareAndSet(current, current + 1)) return true
             }
-            if (acquired) break
             delay(200)
         }
-        try {
-            return block()
-        } finally {
-            officialZipGate.withLock { officialZipRunning = (officialZipRunning - 1).coerceAtLeast(0) }
-        }
+    }
+
+    /** 不挂起：可以在取消中的 `finally` 里安全调用（见 [officialZipRunning] 的说明）。 */
+    private fun releaseOfficialZipPermit() {
+        officialZipRunning.updateAndGet { (it - 1).coerceAtLeast(0) }
     }
 
     /**
