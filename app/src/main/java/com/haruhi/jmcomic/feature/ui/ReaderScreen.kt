@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -79,6 +81,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.haruhi.jmcomic.ui.theme.JmTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
 
@@ -1030,15 +1033,26 @@ private fun <T> SettingChoiceRow(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { (value, text) ->
                 val isSelected = value == selected
-                TextButton(onClick = { onSelect(value) }) {
-                    Text(
-                        text = text,
-                        color = if (isSelected) {
+                TextButton(
+                    onClick = { onSelect(value) },
+                    // 选中项底色用 M3 的「按压」状态层（`pressedCardContainer`，与卡片按压态同一个
+                    // token）：一眼能看出当前选的是哪个，且深浅主题、动态取色都不用单独配色。
+                    // 颜色只在选中项出现；未选中保持透明，避免整排按钮都像"被按着"。
+                    colors = ButtonDefaults.textButtonColors(
+                        containerColor = if (isSelected) {
+                            JmTheme.colors.pressedCardContainer
+                        } else {
+                            Color.Transparent
+                        },
+                        contentColor = if (isSelected) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                    )
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Text(text = text)
                 }
             }
         }

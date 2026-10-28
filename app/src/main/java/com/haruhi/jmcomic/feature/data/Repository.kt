@@ -1272,7 +1272,15 @@ data class ChapterSummary(
      * [Repository.chapterFolderName] 会退回 `title → name → id` 的老规则。
      */
     val folderName: String? = null,
-)
+) {
+    /**
+     * 标题在本子内是否**重名**（同一个 `sort` 出现两次，例如 jmid=1486169 的两话都叫「第1话」）。
+     *
+     * 判据就是目录名是否被唯一化：只有重名时 [withUniqueChapterFolders] 才会加后缀。
+     * 界面据此决定"要不要用这一话自己的名字来区分"（阅读器顶栏，见 `ReaderUiState.chapterTitle`）。
+     */
+    val hasAmbiguousTitle: Boolean get() = folderName != null && folderName != title
+}
 
 /**
  * 给每条章节算一个**唯一的存储键**（[ChapterSummary.folderName]）。

@@ -96,6 +96,13 @@ data class ReaderUiState(
     val chapters: List<ChapterSummary> = emptyList(),
     val chapterIndex: Int = -1,
     val pages: List<ReaderPage> = emptyList(),
+    /**
+     * 当前这一话**自己的**名字（`/comic_read` 的 `name`，例如 `魔女集会 1.2`）。
+     *
+     * 来自 `t_jm_chapter_image.chapter_name`（随图片清单一并入的），还没拿到时为 null。
+     * 只在"标题重名"的章节上用来区分（见 [chapterTitle]）。
+     */
+    val chapterName: String? = null,
     /** 打开这一话时要跳到的页（来自上次的阅读位置）。 */
     val startPage: Int = 0,
     val startOffsetRatio: Float = 0f,
@@ -112,7 +119,32 @@ data class ReaderUiState(
     val collected: Boolean = false,
 ) {
     val currentChapter: ChapterSummary? get() = chapters.getOrNull(chapterIndex)
-    val chapterTitle: String get() = currentChapter?.title ?: "阅读"
+
+    /**
+     * 顶栏 / 底栏显示的章节名。
+     *
+     * 标题在本子内唯一时就是 `title`（`第N话`，与详情页一致）；
+     * **标题重名**时（同一个 `sort` 出现两次，例如 jmid=1486169 的两话都叫「第1话」）
+     * 改用这一话自己的名字（`魔女集会 1.2`）——否则两话在阅读器里完全分不出来。
+     * 官方阅读页顶部显示的也正是 `readList.name`（章节自己的名字）。
+     *
+     * 两种情况仍然退回 `title`：
+     * - 名字还没拿到（清单未入库 / 离线），不显示空白；
+     * - 名字就是本子标题（重复组的"第一话"常常如此，官方也这么显示，
+     *   但本工程顶栏只有一行，塞进去只会被截断，还不如「第1话」清楚）。
+     */
+    val chapterTitle: String
+        get() = currentChapter?.let { chapter -> distinguishingNameOf(chapter) ?: chapter.title } ?: "阅读"
+
+    /** 这一话的"可区分别名"；不需要 / 拿不到时返回 null（见 [chapterTitle]）。 */
+    private fun distinguishingNameOf(chapter: ChapterSummary): String? {
+        if (!chapter.hasAmbiguousTitle) return null
+        val ownName = chapterName?.takeIf { it.isNotBlank() } ?: return null
+        if (ownName == chapter.title) return null
+        if (ownName == album?.name) return null
+        return ownName
+    }
+
     val hasPreviousChapter: Boolean get() = chapterIndex > 0
     val hasNextChapter: Boolean get() = chapterIndex in 0 until chapters.lastIndex
     val totalPages: Int get() = pages.size
@@ -335,6 +367,7 @@ class ReaderViewModel(
                     _state.update {
                         it.copy(
                             chapterIndex = index,
+                            chapterName = null,
                             pages = emptyList(),
                             loading = false,
                             error = "获取图片清单失败，请检查网络或线路后重试",
@@ -347,6 +380,8 @@ class ReaderViewModel(
             val images = runCatching { reading.imagesOf(albumId, chapter.chapterId) }
                 .getOrDefault(emptyList())
             val chapterFolder = repo.chapterFolderName(chapter)
+            // 章节自己的名字（`魔女集会 1.2`）：标题重名时靠它区分两话
+            val chapterName = chapterNameOf(albumId, chapter, images)
             val pages = withContext(Dispatchers.IO) {
                 images.mapIndexed { pageIndex, entity ->
                     // 本地有就立刻可用；没有就标记成待取，由界面滚动到附近时按需联网取。
@@ -375,6 +410,7 @@ class ReaderViewModel(
             _state.update {
                 it.copy(
                     chapterIndex = index,
+                    chapterName = chapterName,
                     pages = pages,
                     startPage = if (restorePosition) startPage else 0,
                     startOffsetRatio = if (restorePosition) position?.offsetRatio ?: 0f else 0f,
@@ -384,6 +420,29 @@ class ReaderViewModel(
                 )
             }
         }
+    }
+
+    /**
+     * 这一话**自己的**名字（`/comic_read` 的 `name`，如 `魔女集会 1.2`）。
+     *
+     * 只对**标题重名**的章节有要求：升级前入库的 `chapter_name` 存的是 `series.name`
+     * （通常为空串），重复标题的两话因此完全分不出来。发现名字缺失就补拉一次清单
+     * （`fetchAndSaveChapter` 会把 `chapter.name` 写回去），下次打开就只用本地了。
+     *
+     * 其它章节不为此多发请求——它们用「第N话」已经足够区分。
+     */
+    private suspend fun chapterNameOf(
+        albumId: Long,
+        chapter: ChapterSummary,
+        images: List<com.haruhi.jmcomic.core.database.entity.ChapterImageEntity>,
+    ): String? {
+        val stored = images.firstOrNull()?.chapterName?.takeIf { it.isNotBlank() }
+        if (stored != null) return stored
+        if (!chapter.hasAmbiguousTitle) return null
+        runCatching { repo.fetchAndSaveChapter(albumId, chapter.chapterId) }
+        return runCatching { reading.imagesOf(albumId, chapter.chapterId) }
+            .getOrDefault(emptyList())
+            .firstOrNull()?.chapterName?.takeIf { it.isNotBlank() }
     }
 
     // ------------------------------------------------------------------
