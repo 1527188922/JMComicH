@@ -164,7 +164,7 @@ fun MyScreen(
                         // 「当前版本 vX.Y.Z」保持一致，装了两个包时一眼能分出是哪个。
                         MyEntryRow(
                             title = "关于",
-                            subtitle = "版本 v${BuildConfig.VERSION_NAME}",
+                            subtitle = "版本（v${BuildConfig.VERSION_NAME}）、存储占用",
                             onClick = onOpenAbout,
                         )
                     }

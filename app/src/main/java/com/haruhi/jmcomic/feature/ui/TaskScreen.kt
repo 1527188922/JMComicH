@@ -220,8 +220,7 @@ fun TaskScreen(
     pendingDeleteOfficialZip?.let { taskId ->
         ConfirmDialog(
             title = "删除官方 ZIP？",
-            text = "会删除这本漫画在官方zip目录里的全部 zip（约全部已下载章节），" +
-                "解压出来的章节文件夹不受影响；同时移除这条任务记录。",
+            text = "会删除这本漫画已下载的全部官方zip文件，已经解压的文件不会删除。",
             confirmText = "删除 ZIP",
             onConfirm = {
                 pendingDeleteOfficialZip = null
@@ -419,7 +418,7 @@ private fun TaskCard(
                                 contentDescription = "删除官方 ZIP",
                                 modifier = Modifier.size(ButtonDefaults.IconSize),
                             )
-                            Text("删除 ZIP")
+                            Text("删除")
                         }
                     }
                 }
@@ -459,7 +458,7 @@ private fun ChapterProgressRow(chapter: com.haruhi.jmcomic.core.database.entity.
                     "${chapter.doneImages}/${chapter.totalImages} 张"
                 } else {
                     // 官方 ZIP 的章节没有"图片张数"（totalImages = 0），不能显示 0/0 张
-                    "下载中"
+                    "下载中..."
                 }
                 DownloadStatus.PAUSED -> "已暂停"
                 DownloadStatus.WAITING_NETWORK -> "等待网络"

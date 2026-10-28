@@ -1039,9 +1039,9 @@ private fun DownloadSection(
         CardDivider()
         SliderRow(
             title = "同时下载官方 ZIP 数量",
-            hint = "默认 2；同时下载的官方 ZIP 章节数，多本漫画共用",
-            help = "同一本漫画里按章节顺序依次启动新话：某话下完空出名额就补下一话，" +
-                "所以最后可能同时在跑第 4、5 话。",
+            hint = "默认 2；可同时下载官方 ZIP 数量",
+//            help = "同一本漫画里按章节顺序依次启动新话：某话下完空出名额就补下一话，" +
+//                "所以最后可能同时在跑第 4、5 话。",
             value = state.officialZipConcurrency.toFloat(),
             range = SettingLimits.OFFICIAL_ZIP_CONCURRENCY.first.toFloat()..
                 SettingLimits.OFFICIAL_ZIP_CONCURRENCY.last.toFloat(),
