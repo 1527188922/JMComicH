@@ -32,8 +32,8 @@ android {
         // 且 Android 8 起前台服务/通知渠道语义稳定。
         minSdk = 26
         targetSdk = 37
-        versionCode = 11
-        versionName = "1.2.1"
+        versionCode = 12
+        versionName = "1.2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
