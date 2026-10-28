@@ -176,6 +176,25 @@ fun CategoryScreen(
                     onOpenAlbum = onOpenAlbum,
                 )
             }
+        } else if (maxWidth <= 0.dp) {
+            // 双栏 / 整屏切换时，**看不见的那一栏**会被测成 0 宽（它仍在组合里，只是宽高为 0）。
+            // 这时绝不能挂 `ModalNavigationDrawer`：抽屉的锚点按实测宽度算（0 宽时"开"和"关"
+            // 落在同一个位置上），`DrawerState` 会被算成"打开"——后果有两个（用户反馈）：
+            // 系统返回键先被抽屉的 `PredictiveBackHandler` 吃掉（返回要点两次），
+            // 以及这一页重新变宽时抽屉自己展开。
+            // 0 宽时这一页本来就看不见，只保留正文、不挂抽屉即可。
+            CategoryPageContent(
+                state = state,
+                permanentDrawer = false,
+                modifier = Modifier,
+                onOpenDrawer = {},
+                onSortChange = onSortChange,
+                onRefresh = onRefresh,
+                onLoadMore = onLoadMore,
+                onRetry = onRetry,
+                onToggleViewMode = onToggleViewMode,
+                onOpenAlbum = onOpenAlbum,
+            )
         } else {
             ModalNavigationDrawer(
                 drawerState = drawerState,

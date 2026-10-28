@@ -6,6 +6,8 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -362,19 +364,24 @@ fun ModeRoot(
     // 两个栈的左右站位；存进 rememberSaveable，配置变更后仍能还原
     val primaryOnLeftState = rememberSaveable { mutableStateOf(true) }
     val activeTabState = rememberSaveable { mutableStateOf(Routes.LIBRARY) }
-    val navigator = remember(navController, paneNavController) {
+    // `splitCapable` 进 remember 的 key：转屏 / 分屏拖动会改变它，
+    // 导航动作要跟着换"走双栏还是走单栈"，所以 navigator 必须重建一次。
+    val navigator = remember(navController, paneNavController, splitCapable) {
         CarouselNavigator(
             primaryNav = navController,
             secondaryNav = paneNavController,
             primaryOnLeftState = primaryOnLeftState,
             activeTabState = activeTabState,
+            splitPanes = splitCapable,
         )
     }
     // 主栈的动作：tab / 登录页 / 换到右栏后的页面都用它
     val primaryActions = remember(navigator) {
         PaneNavActions(
             openChild = { route -> navigator.openChild(CarouselHost.Primary, route) },
-            back = { navigator.back() },
+            // 页面左上角的返回按钮与系统返回键走**同一条**路（[CarouselNavigator.backAction]）：
+            // 手机上二级页压在主栈上，只退"右栏"的 [CarouselNavigator.back] 会什么都不做。
+            back = { navigator.backAction() },
             openLogin = { next -> navigator.openLogin(next) },
             openReadingFromTab = { albumId, chapterId ->
                 navigator.openReadingFromTab(albumId, chapterId)
@@ -385,7 +392,7 @@ fun ModeRoot(
     val secondaryActions = remember(navigator) {
         PaneNavActions(
             openChild = { route -> navigator.openChild(CarouselHost.Secondary, route) },
-            back = { navigator.back() },
+            back = { navigator.backAction() },
             openLogin = { next -> navigator.openLogin(next) },
             openReadingFromTab = { albumId, chapterId ->
                 navigator.openChild(CarouselHost.Secondary, Routes.reader(albumId, chapterId))
@@ -547,39 +554,20 @@ fun ModeRoot(
                         navController = navController,
                         startDestination = Routes.LIBRARY,
                         modifier = Modifier.fillMaxSize().clipToBounds(),
-                    // 页面切换动画。三种情形分开处理：
+                    // 页面切换动画（与 [pageEnter] 等四个函数共用一套）：
                     // 1. **底栏 tab 之间**：按目标 tab 在底栏里的位置决定方向——
                     //    往右边的 tab 切就从右侧滑入、往左边切就从左侧滑入，
                     //    与"底栏本身是一条从左到右的轴"一致，手指和视线都不用重新找方向；
                     // 2. **进入详情页/阅读器**（push）：新页面从右侧滑入，返回时反向；
                     // 3. 其余情况（例如从详情页返回底栏）走同一套反向动画。
                     enterTransition = {
-                        val shift = tabShift(initialState.destination.route, targetState.destination.route)
-                        slideInHorizontally(
-                            initialOffsetX = { fullWidth -> if (shift < 0) -fullWidth else fullWidth },
-                            animationSpec = tween(PAGE_TRANSITION_MS),
-                        ) + fadeIn(animationSpec = tween(PAGE_TRANSITION_MS))
+                        pageEnter(tabShift(initialState.destination.route, targetState.destination.route))
                     },
                     exitTransition = {
-                        val shift = tabShift(initialState.destination.route, targetState.destination.route)
-                        slideOutHorizontally(
-                            // 旧页面往反方向退，两页像一条传送带
-                            targetOffsetX = { fullWidth -> if (shift < 0) fullWidth / 4 else -fullWidth / 4 },
-                            animationSpec = tween(PAGE_TRANSITION_MS),
-                        ) + fadeOut(animationSpec = tween(PAGE_TRANSITION_MS))
+                        pageExit(tabShift(initialState.destination.route, targetState.destination.route))
                     },
-                    popEnterTransition = {
-                        slideInHorizontally(
-                            initialOffsetX = { fullWidth -> -fullWidth / 4 },
-                            animationSpec = tween(PAGE_TRANSITION_MS),
-                        ) + fadeIn(animationSpec = tween(PAGE_TRANSITION_MS))
-                    },
-                    popExitTransition = {
-                        slideOutHorizontally(
-                            targetOffsetX = { fullWidth -> fullWidth },
-                            animationSpec = tween(PAGE_TRANSITION_MS),
-                        ) + fadeOut(animationSpec = tween(PAGE_TRANSITION_MS))
-                    },
+                    popEnterTransition = { pagePopEnter() },
+                    popExitTransition = { pagePopExit() },
                 ) {
                     composable(Routes.LIBRARY) { entry ->
                         val vm: LibraryViewModel = viewModel(viewModelStoreOwner = entry, factory = factory)
@@ -1168,6 +1156,40 @@ internal fun tabShift(fromRoute: String?, toRoute: String?): Int {
 }
 
 /**
+ * 入栈时新页面的入场动画：从侧边整页滑入（[shift] > 0 从右、< 0 从左）。
+ *
+ * **两个导航宿主必须用同一套**（见 [CarouselPanes] 的两个 `NavHost`）：
+ * `NavHost` 不传这几个参数时走的是 framework 默认的 `fadeIn/fadeOut`，
+ * 于是同一份代码在"左栏 / 右栏"里切换就变成了渐入渐出（用户反馈的 bug）。
+ */
+private fun pageEnter(shift: Int): EnterTransition =
+    slideInHorizontally(
+        initialOffsetX = { fullWidth -> if (shift < 0) -fullWidth else fullWidth },
+        animationSpec = tween(PAGE_TRANSITION_MS),
+    ) + fadeIn(animationSpec = tween(PAGE_TRANSITION_MS))
+
+/** 入栈时旧页面的退场：往反方向退 1/4 宽，两页像一条传送带。 */
+private fun pageExit(shift: Int): ExitTransition =
+    slideOutHorizontally(
+        targetOffsetX = { fullWidth -> if (shift < 0) fullWidth / 4 else -fullWidth / 4 },
+        animationSpec = tween(PAGE_TRANSITION_MS),
+    ) + fadeOut(animationSpec = tween(PAGE_TRANSITION_MS))
+
+/** 返回时上一页的入场：从左侧 1/4 处滑回原位（[pageEnter] 的反向）。 */
+private fun pagePopEnter(): EnterTransition =
+    slideInHorizontally(
+        initialOffsetX = { fullWidth -> -fullWidth / 4 },
+        animationSpec = tween(PAGE_TRANSITION_MS),
+    ) + fadeIn(animationSpec = tween(PAGE_TRANSITION_MS))
+
+/** 返回时当前页的退场：整页往右滑走（[pageExit] 的反向）。 */
+private fun pagePopExit(): ExitTransition =
+    slideOutHorizontally(
+        targetOffsetX = { fullWidth -> fullWidth },
+        animationSpec = tween(PAGE_TRANSITION_MS),
+    ) + fadeOut(animationSpec = tween(PAGE_TRANSITION_MS))
+
+/**
  * 与 [composable] 相同，只是把页面内容套进 [CenteredContent]。
  *
  * 平板横屏时阅读型页面（设置、账号、我的、详情等）保持 840dp 的内容列；
@@ -1212,6 +1234,9 @@ private fun detailArguments(): List<NamedNavArgument> = listOf(
  * - 左栏列表点一本 → 详情进这里（显示在右）；
  * - 从右栏的页面再点进下一页时，当前页换到左边，新页进另一个宿主——页面实例保留。
  * - 这里始终从 [SPLIT_PANE_EMPTY] 起步，空态就是平板右栏的"在左侧选择一本漫画"提示。
+ *
+ * **手机上这个宿主不装页面**（窗口分不了栏时二级页一律压在主栈上，见
+ * [CarouselNavigator.openChild]）：它只在平板分栏时出任右栏。
  */
 @Composable
 private fun SecondaryPaneHost(
@@ -1236,6 +1261,13 @@ private fun SecondaryPaneHost(
         navController = paneNavController,
         startDestination = SPLIT_PANE_EMPTY,
         modifier = modifier,
+        // 与主栈**同一套**切换动画（[pageEnter] 等）。这里不传参的话就是 framework
+        // 默认的淡入淡出：手机上看不出问题，但平板分栏时右栏换页会变成渐入渐出。
+        // 右栏里没有底栏那条"从左到右的轴"，方向恒为"新页从右边进来"（shift = 1）。
+        enterTransition = { pageEnter(shift = 1) },
+        exitTransition = { pageExit(shift = 1) },
+        popEnterTransition = { pagePopEnter() },
+        popExitTransition = { pagePopExit() },
     ) {
         composable(SPLIT_PANE_EMPTY) {
             Box(
@@ -2143,12 +2175,17 @@ private class PaneNavActions(
  *
  * 两个 NavHost 始终留在组合里，换栏只是布局换宽度/位置，页面实例不销毁，
  * 因此详情、搜索结果、收藏夹、阅读进度都不会因为换栏而重载。
+ *
+ * **手机 / 分不了栏的窗口（[splitPanes] 为 false）不用双栏**：二级页压在主栈上，
+ * 与平板双栏之前的手机行为一致（见 [openChild]）。
  */
 private class CarouselNavigator(
     private val primaryNav: NavHostController,
     private val secondaryNav: NavHostController,
     private val primaryOnLeftState: MutableState<Boolean>,
     private val activeTabState: MutableState<String>,
+    /** 当前窗口是否够宽、真的能用"左列表 + 右页面"双栏。 */
+    private val splitPanes: Boolean,
 ) {
     val primaryOnLeft: Boolean get() = primaryOnLeftState.value
     val activeTabRoute: String get() = activeTabState.value
@@ -2174,13 +2211,31 @@ private class CarouselNavigator(
     private fun isTab(route: String?): Boolean =
         route != null && Tab.entries.any { it.route == route }
 
+    /** 辅栈里有没有页面（空态 [SPLIT_PANE_EMPTY] 不算）。 */
+    private fun secondaryHasPage(): Boolean {
+        val route = routeOf(CarouselHost.Secondary)
+        return route != null && route != SPLIT_PANE_EMPTY
+    }
+
     /**
      * 从 [from] 页面打开 [route]。
      *
+     * - **手机 / 分不了栏的窗口**：只有一页可见，二级页照旧压在主栈上（[from] 不重要）；
      * - [from] 是左栏：右栏有内容就替换，没有就直接推进去；
      * - [from] 是右栏（当前页）：左右换位，再把新页推进另一个栈（此时它在右边）。
      */
     fun openChild(from: CarouselHost, route: String) {
+        // 手机只有一页可见，别再"放进另一栏 + 把那一栏压成 0 宽"：
+        // 0 宽的那一栏仍活在组合里（分类页的抽屉、返回键回调、手势都在），
+        // 既会把抽屉的锚点算错（页面重新变宽时抽屉自己展开），
+        // 也让跨栏切换没有入场/退场动画可放（两个宿主各自 animate 自己的内容）。
+        // 例外：辅栈里还真的有页面——平板分栏后把窗口缩窄 / pad 竖起来就是这种状态，
+        // 那时它才是屏幕上那一页，交给下面的双栏逻辑处理。
+        if (!splitPanes && !secondaryHasPage()) {
+            primaryOnLeftState.value = true
+            navOf(CarouselHost.Primary).navigate(route)
+            return
+        }
         if (isLeft(from)) {
             val right = other(from)
             val rightRoute = routeOf(right)
