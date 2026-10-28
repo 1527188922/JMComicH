@@ -454,6 +454,9 @@ class DownloadManager(
         val unfinished = rows.filter { it.status != DownloadStatus.SUCCESS }
         if (unfinished.isEmpty()) {
             tasks.markSuccess(taskId)
+            // 官方 ZIP 的 totalBytes 只是"最后下的一话"的长度，完成后再留着会显示成
+            // 3.9 MB/4.3 MB 像没下完；清掉字节进度，任务卡只保留"N/N 话"。
+            tasks.updateProgress(taskId, downloadedBytes = 0, totalBytes = 0)
         } else {
             tasks.markFailed(
                 taskId,

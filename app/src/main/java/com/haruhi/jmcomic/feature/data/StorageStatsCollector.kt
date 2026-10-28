@@ -4,6 +4,7 @@ import com.haruhi.jmcomic.core.database.entity.AlbumBaseEntity
 import com.haruhi.jmcomic.core.storage.ExportPublisher
 import com.haruhi.jmcomic.core.storage.FileNaming
 import com.haruhi.jmcomic.core.storage.LibraryDirs
+import com.haruhi.jmcomic.core.storage.OfficialZipPublisher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -19,6 +20,9 @@ enum class StorageKind(val label: String) {
     EXPORT_ZIP("导出 ZIP"),
 
     EXPORT_PDF("导出 PDF"),
+
+    /** 官方 App 的整话 ZIP：`Download/JMComicH/官方zip/<本子>/`。 */
+    OFFICIAL_ZIP("官方 ZIP"),
 
     /** **旧版**阅读器缓存（`reader-cache/<aid>/`）；新版本不再产生，只保留清理入口。 */
     READER_CACHE("阅读缓存"),
@@ -82,6 +86,7 @@ class StorageStatsCollector(
     private val repo: Repository,
     private val dirs: LibraryDirs,
     private val exports: ExportPublisher,
+    private val officialZips: OfficialZipPublisher,
 ) {
 
     /** @return 统计结果；扫描失败返回 null（界面显示"读取失败 + 重试"）。 */
@@ -104,6 +109,7 @@ class StorageStatsCollector(
         val library = scanLibrary(byFolder, byId)
         val readerCache = scanReaderCache(byId)
         val (zips, pdfs) = scanExports(byFolder, byId)
+        val officialZip = scanOfficialZips(byFolder, byId)
 
         return StorageStats(
             segments = listOf(
@@ -111,6 +117,11 @@ class StorageStatsCollector(
                 SegmentStats(StorageKind.COVERS, dirs.sizeOf(dirs.covers), null),
                 SegmentStats(StorageKind.EXPORT_ZIP, zips.sumOf { it.sizeBytes }, zips),
                 SegmentStats(StorageKind.EXPORT_PDF, pdfs.sumOf { it.sizeBytes }, pdfs),
+                SegmentStats(
+                    StorageKind.OFFICIAL_ZIP,
+                    officialZip.sumOf { it.sizeBytes },
+                    officialZip,
+                ),
                 SegmentStats(StorageKind.READER_CACHE, readerCache.sumOf { it.sizeBytes }, readerCache),
             ),
         )
@@ -185,6 +196,32 @@ class StorageStatsCollector(
         }
         return zips.sortedByDescending { it.sizeBytes } to pdfs.sortedByDescending { it.sizeBytes }
     }
+
+    /**
+     * 官方 ZIP：只统计**直接放在** `官方zip/<本子>/` 下的 `.zip`，按本子聚合。
+     *
+     * 解压出来的文件夹（`官方zip/<本子>/<解压目录>/`）不会被 [OfficialZipPublisher.listAll]
+     * 返回，所以既不进总量，也不会被删除。
+     */
+    private fun scanOfficialZips(
+        byFolder: Map<String, AlbumBaseEntity>,
+        byId: Map<Long, AlbumBaseEntity>,
+    ): List<AlbumUsage> =
+        officialZips.listAll()
+            .filter { it.sizeBytes > 0L }
+            .groupBy { it.albumFolder }
+            .map { (folder, files) ->
+                val aid = aidFromFolderName(folder)
+                val album = byFolder[folder] ?: aid?.let { byId[it] }
+                AlbumUsage(
+                    albumId = album?.id ?: aid,
+                    title = album?.let(::titleOf) ?: folder,
+                    sizeBytes = files.sumOf { it.sizeBytes },
+                    detail = "${files.size} 个 zip",
+                    folderName = folder,
+                )
+            }
+            .sortedByDescending { it.sizeBytes }
 
     companion object {
         /** 本子目录名的尾缀约定：`<清洗后的标题>_JM<aid>`（后缀不参与截断）。 */

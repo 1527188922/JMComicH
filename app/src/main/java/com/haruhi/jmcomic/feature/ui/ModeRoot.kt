@@ -2573,6 +2573,7 @@ class ViewModelFactory(
                 repo = container.jmRepository,
                 exports = container.jmExports,
                 collector = container.storageStatsCollector,
+                officialZips = container.officialZipPublisher,
                 releaseChecker = container.releaseChecker,
                 downloads = container.appDownloadGateway,
             ) as T

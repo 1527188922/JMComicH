@@ -104,4 +104,5 @@ val StorageLibrary = Color(0xFF1E88E5) // 蓝：下载的漫画图片（通常�
 val StorageCovers = Color(0xFFF9A825) // 琥珀：封面缓存
 val StorageExportZip = Color(0xFF8E24AA) // 紫：导出 ZIP
 val StorageExportPdf = Color(0xFFE53935) // 红：导出 PDF
+val StorageOfficialZip = Color(0xFF43A047) // 绿：官方 ZIP
 val StorageReaderCache = Color(0xFF00897B) // 青：阅读缓存

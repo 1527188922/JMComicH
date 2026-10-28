@@ -62,11 +62,6 @@ class JmComicApp : Application() {
         container.appScope.launch {
             runCatching {
                 val recovered = container.downloadTasks.recoverInterrupted { task ->
-                    // 官方 ZIP 的进度是「章节是否已发布」，不是 library 里的图片数；
-                    // 不要走图片清单重算，交给任务表把未完成章节打回队列即可。
-                    if (task.type == com.haruhi.jmcomic.core.database.entity.DownloadType.JM_OFFICIAL_ZIP) {
-                        return@recoverInterrupted emptyList()
-                    }
                     val albumId = task.bizKey.toLongOrNull() ?: return@recoverInterrupted emptyList()
                     val album = container.database.albumDao().findById(albumId)
                         ?: return@recoverInterrupted emptyList()

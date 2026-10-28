@@ -454,12 +454,13 @@ class AppContainer(private val appContext: Context) {
         )
     }
 
-    /** 「关于」页的本地存储统计：五类占用（图片库 / 封面 / zip / pdf / 阅读缓存）。 */
+    /** 「关于」页的本地存储统计：六类占用（图片库 / 封面 / 导出 zip/pdf / 官方 ZIP / 阅读缓存）。 */
     val storageStatsCollector: com.haruhi.jmcomic.feature.data.StorageStatsCollector by lazy {
         com.haruhi.jmcomic.feature.data.StorageStatsCollector(
             repo = jmRepository,
             dirs = libraryDirs,
             exports = exportPublisher,
+            officialZips = officialZipPublisher,
         )
     }
 

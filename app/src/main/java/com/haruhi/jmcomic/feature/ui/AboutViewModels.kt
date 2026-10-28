@@ -93,6 +93,7 @@ class AboutViewModel(
     private val repo: Repository,
     private val exports: ExportManager,
     private val collector: StorageStatsCollector,
+    private val officialZips: com.haruhi.jmcomic.core.storage.OfficialZipPublisher,
     private val releaseChecker: ReleaseChecker,
     private val downloads: AppDownloadGateway,
 ) : ViewModel() {
@@ -174,6 +175,17 @@ class AboutViewModel(
                                 "删除失败，文件可能已经不在了"
                             },
                         )
+                    }
+                }
+            }
+
+            // 只删 `官方zip/<本子>/` 下的 .zip；解压出来的目录不动
+            StorageKind.OFFICIAL_ZIP -> usage.folderName?.let { folder ->
+                viewModelScope.launch {
+                    val freed = officialZips.deleteAlbum(folder)
+                    rescan()
+                    _state.update {
+                        it.copy(message = "已删除官方 ZIP（${formatBytes(freed)}）")
                     }
                 }
             }

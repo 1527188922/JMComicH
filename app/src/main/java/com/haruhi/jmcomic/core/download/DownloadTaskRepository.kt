@@ -442,7 +442,34 @@ class DownloadTaskRepository(
             }.onFailure { Timber.tag("task").w(it, "清理导出任务失败：%d", task.id) }
         }
 
-        for (task in downloadTasks) {
+        // 官方 ZIP 的进度是"章节是否已发布"，不是 library 图片数，不能走 chapterResolver；
+        // 只把卡在 RUNNING 的章节打回队列，并按任务自己的章节行保留已完成数。
+        val (officialZipTasks, imageDownloadTasks) = downloadTasks.partition {
+            it.type == DownloadType.JM_OFFICIAL_ZIP
+        }
+        for (task in officialZipTasks) {
+            runCatching {
+                val now = System.currentTimeMillis()
+                val rows = dao.chapters(task.id)
+                dao.requeueUnfinishedChapters(task.id, now)
+                dao.update(
+                    task.copy(
+                        status = DownloadStatus.PAUSED,
+                        doneChapters = rows.count { it.status == DownloadStatus.SUCCESS },
+                        totalChapters = if (rows.isNotEmpty()) rows.size else task.totalChapters,
+                        doneImages = 0,
+                        totalImages = 0,
+                        downloadedBytes = 0,
+                        totalBytes = 0,
+                        message = null,
+                        stageText = STAGE_PAUSED_ON_RECOVERY,
+                        updateTime = now,
+                    ),
+                )
+            }.onFailure { Timber.tag("task").w(it, "恢复官方 ZIP 任务失败：%d", task.id) }
+        }
+
+        for (task in imageDownloadTasks) {
             runCatching {
                 // 章节明细里卡在 RUNNING 的那一条也要打回队列，否则界面永远显示"下载中"
                 dao.requeueUnfinishedChapters(task.id, System.currentTimeMillis())

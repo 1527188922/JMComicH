@@ -65,6 +65,7 @@ import com.haruhi.jmcomic.ui.theme.StorageCovers
 import com.haruhi.jmcomic.ui.theme.StorageExportPdf
 import com.haruhi.jmcomic.ui.theme.StorageExportZip
 import com.haruhi.jmcomic.ui.theme.StorageLibrary
+import com.haruhi.jmcomic.ui.theme.StorageOfficialZip
 import com.haruhi.jmcomic.ui.theme.StorageReaderCache
 
 /**
@@ -215,6 +216,7 @@ fun AboutScreen(
             title = when (kind) {
                 StorageKind.LIBRARY -> "删除这本的下载图片？"
                 StorageKind.READER_CACHE -> "删除这本的阅读缓存？"
+                StorageKind.OFFICIAL_ZIP -> "删除这本的官方 ZIP？"
                 else -> "删除导出文件？"
             },
             text = when (kind) {
@@ -224,6 +226,9 @@ fun AboutScreen(
                 StorageKind.READER_CACHE ->
                     "会删除《$title》的阅读器缓存（约 ${formatBytes(usage.sizeBytes)}）。" +
                         "下次阅读时重新联网获取。"
+                StorageKind.OFFICIAL_ZIP ->
+                    "会删除《$title》在官方zip目录里的 ${usage.detail ?: "zip 包"}" +
+                        "（约 ${formatBytes(usage.sizeBytes)}）。解压出来的文件夹不受影响。"
                 else ->
                     "会删除 ${fileName ?: usage.title}（约 ${formatBytes(usage.sizeBytes)}）。此操作不可撤销。"
             },
@@ -657,12 +662,13 @@ private fun DrawScope.drawLeaderLines(
     }
 }
 
-/** 五类各一色，色值在 `ui/theme/Color.kt`（浅色主题专用，见那里的注释）。 */
+/** 六类各一色，色值在 `ui/theme/Color.kt`（浅色主题专用，见那里的注释）。 */
 private fun storageColorOf(kind: StorageKind): Color = when (kind) {
     StorageKind.LIBRARY -> StorageLibrary
     StorageKind.COVERS -> StorageCovers
     StorageKind.EXPORT_ZIP -> StorageExportZip
     StorageKind.EXPORT_PDF -> StorageExportPdf
+    StorageKind.OFFICIAL_ZIP -> StorageOfficialZip
     StorageKind.READER_CACHE -> StorageReaderCache
 }
 

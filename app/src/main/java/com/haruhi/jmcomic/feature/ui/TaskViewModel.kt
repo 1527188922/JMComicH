@@ -248,7 +248,11 @@ fun taskStatusLabel(task: DownloadTaskEntity): String = when (task.status) {
 fun taskProgressText(task: DownloadTaskEntity): String {
     val images = if (task.totalImages > 0) "${task.doneImages}/${task.totalImages} 张" else null
     val chapters = if (task.totalChapters > 0) "${task.doneChapters}/${task.totalChapters} 话" else null
-    val bytes = if (task.totalBytes > 0) {
+    // 官方 ZIP 完成后隐藏字节数：它的 totalBytes 只是"当前这一话"的长度，
+    // 下载结束后再显示 3.9/4.3 MB 会让人以为任务还没完（用户反馈）。
+    val bytes = if (task.totalBytes > 0 &&
+        !(task.type == DownloadType.JM_OFFICIAL_ZIP && task.status.isFinished)
+    ) {
         "${formatBytes(task.downloadedBytes)}/${formatBytes(task.totalBytes)}"
     } else {
         null
