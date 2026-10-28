@@ -1505,6 +1505,7 @@ private fun AlbumDetailDestination(
             }
         },
         onDownloadChapters = vm::downloadChapters,
+        onDownloadOfficialZip = vm::downloadOfficialZip,
         onDeleteChapterFiles = vm::deleteChapterFiles,
         onDeleteAlbumFiles = vm::deleteAlbumFiles,
         // 简介下方两个 tab（章节 / 评论）：切到评论时才去拉第一页，
@@ -1853,6 +1854,7 @@ private fun SettingsDestination(
         onSetTextPrivacy = onSetTextPrivacy,
         // 下载
         onSetDownloadThreads = vm::setDownloadThreads,
+        onSetOfficialZipConcurrency = vm::setOfficialZipConcurrency,
         onSetDownloadNetwork = vm::setDownloadNetwork,
         // 语言：接口返回的中文用简中还是繁中（默认简中）
         onSetApiLanguage = vm::setApiLanguage,

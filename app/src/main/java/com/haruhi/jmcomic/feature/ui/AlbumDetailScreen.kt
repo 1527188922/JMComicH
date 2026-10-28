@@ -224,6 +224,8 @@ fun AlbumDetailScreen(
     onDeleteComment: (CommentRow) -> Unit,
     /** 下载面板提交（选中的章节 id）。 */
     onDownloadChapters: (List<Long>) -> Unit,
+    /** 官方 ZIP 面板提交（选中的章节 id；需要登录）。 */
+    onDownloadOfficialZip: (List<Long>) -> Unit,
     onDeleteChapterFiles: (Long) -> Unit,
     onDeleteAlbumFiles: () -> Unit,
     onDeleteAlbumRecord: () -> Unit,
@@ -272,6 +274,7 @@ fun AlbumDetailScreen(
     // var showFavoriteSheet by remember { mutableStateOf(false) }
     // 面板的展开状态由本页自己管：它是纯界面状态，不需要活过页面重建
     var showDownloadSheet by remember { mutableStateOf(false) }
+    var showOfficialZipSheet by remember { mutableStateOf(false) }
     // 待删除的导出成品文件名（null = 没有待确认的删除）
     var pendingDeleteExport by remember { mutableStateOf<String?>(null) }
     // 待删除的自己的一条留言（null = 没有待确认的删除）
@@ -419,6 +422,19 @@ fun AlbumDetailScreen(
                             text = { Text("下载漫画") },
                             enabled = state.chapters.isNotEmpty(),
                             onClick = { menuExpanded = false; showDownloadSheet = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("下载官方zip") },
+                            enabled = state.chapters.isNotEmpty(),
+                            onClick = {
+                                menuExpanded = false
+                                if (state.accountSignedIn) {
+                                    showOfficialZipSheet = true
+                                } else {
+                                    onMessage("官方 ZIP 需要先登录账号")
+                                    onRequireLogin()
+                                }
+                            },
                         )
                         DropdownMenuItem(
                             text = { Text("导出 ZIP") },
@@ -594,6 +610,14 @@ fun AlbumDetailScreen(
                                         chapter = chapter,
                                         onOpen = { onReadChapter(chapter.chapterId) },
                                         onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
+                                        onDownloadOfficialZip = {
+                                            if (state.accountSignedIn) {
+                                                onDownloadOfficialZip(listOf(chapter.chapterId))
+                                            } else {
+                                                onMessage("官方 ZIP 需要先登录账号")
+                                                onRequireLogin()
+                                            }
+                                        },
                                         onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
                                     )
                                 }
@@ -631,6 +655,14 @@ fun AlbumDetailScreen(
                                                 chapter = chapter,
                                                 onOpen = { onReadChapter(chapter.chapterId) },
                                                 onDownload = { onDownloadChapters(listOf(chapter.chapterId)) },
+                                                onDownloadOfficialZip = {
+                                                    if (state.accountSignedIn) {
+                                                        onDownloadOfficialZip(listOf(chapter.chapterId))
+                                                    } else {
+                                                        onMessage("官方 ZIP 需要先登录账号")
+                                                        onRequireLogin()
+                                                    }
+                                                },
                                                 onDeleteFiles = { onDeleteChapterFiles(chapter.chapterId) },
                                             )
                                         }
@@ -663,6 +695,18 @@ fun AlbumDetailScreen(
                 onDownloadChapters(chapterIds)
             },
             onDismiss = { showDownloadSheet = false },
+        )
+    }
+
+    if (showOfficialZipSheet) {
+        DownloadSheet(
+            state = state,
+            officialZip = true,
+            onDownload = { chapterIds ->
+                showOfficialZipSheet = false
+                onDownloadOfficialZip(chapterIds)
+            },
+            onDismiss = { showOfficialZipSheet = false },
         )
     }
 
@@ -2313,6 +2357,7 @@ private fun ChapterRowItem(
     chapter: ChapterRow,
     onOpen: () -> Unit,
     onDownload: () -> Unit,
+    onDownloadOfficialZip: () -> Unit,
     onDeleteFiles: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -2376,6 +2421,22 @@ private fun ChapterRowItem(
                             }
                         },
                         onClick = { menuExpanded = false; onDownload() },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = DownloadIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                                Text("下载官方zip")
+                            }
+                        },
+                        onClick = { menuExpanded = false; onDownloadOfficialZip() },
                     )
                     if (chapter.downloadedImages > 0) {
                         DropdownMenuItem(
@@ -2546,12 +2607,23 @@ private fun DownloadSheet(
     state: AlbumDetailUiState,
     onDownload: (List<Long>) -> Unit,
     onDismiss: () -> Unit,
+    officialZip: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selected by remember(state.chapters) {
-        mutableStateOf(state.defaultDownloadSelection)
+    val defaultSelection = if (officialZip) {
+        state.defaultOfficialZipSelection
+    } else {
+        state.defaultDownloadSelection
     }
-    val queued = state.queuedChapterIds
+    var selected by remember(state.chapters, officialZip) {
+        mutableStateOf(defaultSelection)
+    }
+    val queued = if (officialZip) state.officialZipQueuedChapterIds else state.queuedChapterIds
+    val selectAll = if (officialZip) {
+        state.chapters.filterNot { it.chapterId in queued }.map { it.chapterId }.toSet()
+    } else {
+        defaultSelection
+    }
     val listState = rememberLazyListState()
 
     // 内容区（标题、全选按钮行、章节列表）不响应上下滑动，只有把手能拖着关（详见 SheetGestures.kt）
@@ -2561,12 +2633,16 @@ private fun DownloadSheet(
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Text(
-                text = "下载章节",
+                text = if (officialZip) "下载官方 ZIP" else "下载章节",
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
             Text(
-                text = "默认勾选还没下完的章节；已经在下载队列里的章节不能再选。",
+                text = if (officialZip) {
+                    "需要登录账号；每话一个官方 zip，保存到 下载/JMComicH/官方zip/。"
+                } else {
+                    "默认勾选还没下完的章节；已经在下载队列里的章节不能再选。"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -2575,8 +2651,8 @@ private fun DownloadSheet(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                TextButton(onClick = { selected = state.defaultDownloadSelection }) {
-                    Text("全选可下载")
+                TextButton(onClick = { selected = selectAll }) {
+                    Text(if (officialZip) "全选未在队列的章节" else "全选可下载")
                 }
                 TextButton(onClick = { selected = emptySet() }) { Text("全不选") }
             }
@@ -2623,7 +2699,13 @@ private fun DownloadSheet(
                                     overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    text = if (inQueue) "已在下载队列" else chapter.statusText,
+                                    text = if (inQueue) {
+                                        if (officialZip) "已在官方 ZIP 队列" else "已在下载队列"
+                                    } else if (officialZip) {
+                                        "官方 ZIP"
+                                    } else {
+                                        chapter.statusText
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = if (inQueue) {
                                         MaterialTheme.colorScheme.tertiary
@@ -2647,7 +2729,13 @@ private fun DownloadSheet(
                     enabled = selected.isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text(if (selected.isEmpty()) "请选择章节" else "下载选中的 ${selected.size} 话")
+                    Text(
+                        when {
+                            selected.isEmpty() -> "请选择章节"
+                            officialZip -> "下载选中的 ${selected.size} 话官方 ZIP"
+                            else -> "下载选中的 ${selected.size} 话"
+                        },
+                    )
                 }
                 OutlinedButton(onClick = onDismiss) { Text("取消") }
             }

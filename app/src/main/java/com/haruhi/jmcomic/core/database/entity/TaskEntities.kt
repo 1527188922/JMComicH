@@ -8,6 +8,9 @@ import androidx.room.PrimaryKey
 /** 下载任务类型。 */
 enum class DownloadType {
     JM_ALBUM,
+
+    /** 官方 App 的整话/整部 ZIP，原样下载到 `Download/JMComicH/官方zip/...`。 */
+    JM_OFFICIAL_ZIP,
     JM_EXPORT_ZIP,
     JM_EXPORT_PDF,
     ;

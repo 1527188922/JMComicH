@@ -146,6 +146,9 @@ data class SettingsUiState(
     /** 同时下载图片数（**没有"自动"档**）；默认 4 就是滑杆的初始位置。 */
     val downloadThreads: Int = SettingDefaults.Jm.DOWNLOAD_THREADS,
 
+    /** 同时下载几本官方 ZIP：默认 2。 */
+    val officialZipConcurrency: Int = SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY,
+
     // 语言
     /**
      * 接口语言（请求里的 `lang`）：默认简中。
@@ -329,6 +332,13 @@ class SettingsViewModel(
             // 老版本存过的 0（当时那一档"自动"）在这里就折成默认值 4，
             // 否则滑杆最小值是 1、state 却是 0，拇指位置和右侧数字会对不上
             .let { SettingDefaults.Jm.normalizeDownloadThreads(it) }
+        val officialZipConcurrency = settings
+            .jmInt(
+                SettingKeys.Jm.OFFICIAL_ZIP_CONCURRENCY,
+                SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY,
+            )
+            .first()
+            .let { SettingDefaults.Jm.normalizeOfficialZipConcurrency(it) }
         val proxyType = ResolvedNetworkConfig.proxyTypeOf(
             settings.jmInt(SettingKeys.Jm.PROXY_TYPE, SettingDefaults.Jm.PROXY_NONE).first(),
         )
@@ -365,6 +375,7 @@ class SettingsViewModel(
                 keepScreenOn = keepScreenOn,
                 imageEncoding = imageEncoding,
                 downloadThreads = threads,
+                officialZipConcurrency = officialZipConcurrency,
                 apiLanguage = apiLanguage,
                 zipPassword = zipPassword,
                 pdfPassword = pdfPassword,
@@ -439,6 +450,13 @@ class SettingsViewModel(
         val value = SettingDefaults.Jm.normalizeDownloadThreads(threads)
         _state.update { it.copy(downloadThreads = value) }
         viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.DOWNLOAD_THREADS, value) }
+    }
+
+    /** 同时下载几本官方 ZIP：1～4，默认 2。 */
+    fun setOfficialZipConcurrency(count: Int) {
+        val value = SettingDefaults.Jm.normalizeOfficialZipConcurrency(count)
+        _state.update { it.copy(officialZipConcurrency = value) }
+        viewModelScope.launch { settings.putJmInt(SettingKeys.Jm.OFFICIAL_ZIP_CONCURRENCY, value) }
     }
 
     /** [index] 是 `DownloadNetwork.entries` 的下标：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
@@ -767,6 +785,8 @@ fun SettingsScreen(
     onSetTextPrivacy: (Boolean) -> Unit,
     // 下载
     onSetDownloadThreads: (Int) -> Unit,
+    /** 同时下载几本官方 ZIP（1～4，默认 2）。 */
+    onSetOfficialZipConcurrency: (Int) -> Unit,
     /** 下标对应 `DownloadNetwork.entries`：0 = 仅 Wi-Fi，1 = 允许移动网络。 */
     onSetDownloadNetwork: (Int) -> Unit,
     /** 切换接口语言（`lang`）：选中即生效，下一次请求就带新语言。 */
@@ -859,6 +879,7 @@ fun SettingsScreen(
                 DownloadSection(
                     state = state,
                     onSetDownloadThreads = onSetDownloadThreads,
+                    onSetOfficialZipConcurrency = onSetOfficialZipConcurrency,
                     onSetDownloadNetwork = onSetDownloadNetwork,
                 )
                 LanguageSection(
@@ -996,6 +1017,7 @@ private fun PrivacySection(
 private fun DownloadSection(
     state: SettingsUiState,
     onSetDownloadThreads: (Int) -> Unit,
+    onSetOfficialZipConcurrency: (Int) -> Unit,
     onSetDownloadNetwork: (Int) -> Unit,
 ) {
     SettingsSection("下载") {
@@ -1013,6 +1035,19 @@ private fun DownloadSection(
             steps = SettingLimits.DOWNLOAD_THREADS.last - SettingLimits.DOWNLOAD_THREADS.first - 1,
             label = { "${it.roundToInt()}" },
             onCommit = { onSetDownloadThreads(it.roundToInt()) },
+        )
+        CardDivider()
+        SliderRow(
+            title = "同时下载官方 ZIP 数量",
+            hint = "默认 2；同时下载多本漫画的官方 ZIP 时生效",
+            help = "只影响官方 ZIP 任务；同一本里的多话仍然按顺序下载。",
+            value = state.officialZipConcurrency.toFloat(),
+            range = SettingLimits.OFFICIAL_ZIP_CONCURRENCY.first.toFloat()..
+                SettingLimits.OFFICIAL_ZIP_CONCURRENCY.last.toFloat(),
+            steps = SettingLimits.OFFICIAL_ZIP_CONCURRENCY.last -
+                SettingLimits.OFFICIAL_ZIP_CONCURRENCY.first - 1,
+            label = { "${it.roundToInt()}" },
+            onCommit = { onSetOfficialZipConcurrency(it.roundToInt()) },
         )
         CardDivider()
         ChoiceRow(

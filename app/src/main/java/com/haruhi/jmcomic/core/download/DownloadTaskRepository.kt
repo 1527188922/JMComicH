@@ -77,7 +77,14 @@ class DownloadTaskRepository(
      * "没有任务"和"任务里没有章节"。
      */
     fun observeQueuedChapters(albumId: Long): Flow<Set<Long>> =
-        dao.observeActiveTask(DownloadType.JM_ALBUM, albumId.toString())
+        observeQueuedChapters(DownloadType.JM_ALBUM, albumId)
+
+    /** 官方 ZIP 队列里某本的章节（与普通图片下载队列分开）。 */
+    fun observeOfficialZipQueuedChapters(albumId: Long): Flow<Set<Long>> =
+        observeQueuedChapters(DownloadType.JM_OFFICIAL_ZIP, albumId)
+
+    private fun observeQueuedChapters(type: DownloadType, albumId: Long): Flow<Set<Long>> =
+        dao.observeActiveTask(type, albumId.toString())
             .flatMapLatest { task ->
                 if (task == null) {
                     flowOf(emptySet())

@@ -15,6 +15,7 @@ import com.haruhi.jmcomic.core.settings.SettingDefaults
 import com.haruhi.jmcomic.core.settings.SettingKeys
 import com.haruhi.jmcomic.core.settings.SettingsRepository
 import com.haruhi.jmcomic.core.storage.LibraryDirs
+import com.haruhi.jmcomic.core.storage.OfficialZipPublisher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -219,6 +220,9 @@ class AppContainer(private val appContext: Context) {
             dirs = libraryDirs,
             environment = jmDownloadEnvironment,
             scope = appScope,
+            fileDownloader = fileDownloader,
+            officialZipApi = { chapterId -> jmApi.albumDownload(chapterId) },
+            officialZipPublisher = officialZipPublisher,
             onTaskStarted = {
                 // 长下载必须有前台服务，否则息屏后会被系统掐掉（计划 §8）
                 com.haruhi.jmcomic.core.download.DownloadForegroundService.ensureRunning(appContext)
@@ -244,6 +248,14 @@ class AppContainer(private val appContext: Context) {
 
             override suspend fun imageDomain(): String =
                 LineCatalog.imageLineOf(settings.jmString(SettingKeys.Jm.IMAGE_DOMAINS).first()).host
+
+            override suspend fun officialZipConcurrency(): Int {
+                val configured = settings.jmInt(
+                    SettingKeys.Jm.OFFICIAL_ZIP_CONCURRENCY,
+                    SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY,
+                ).first()
+                return SettingDefaults.Jm.normalizeOfficialZipConcurrency(configured)
+            }
 
             override suspend fun allowsTransfer(metered: Boolean): Boolean {
                 val policy = settings.resolveJmNetwork(secrets).downloadNetwork
@@ -395,6 +407,11 @@ class AppContainer(private val appContext: Context) {
     /** 成品交付：API 29+ 走 MediaStore 的下载目录，老系统退到应用外部私有目录。 */
     val exportPublisher: com.haruhi.jmcomic.core.storage.ExportPublisher by lazy {
         com.haruhi.jmcomic.core.storage.AndroidExportPublisher(appContext)
+    }
+
+    /** 官方 ZIP 落盘：`Download/JMComicH/官方zip/<本子>/<第几话>.zip`。 */
+    val officialZipPublisher: OfficialZipPublisher by lazy {
+        OfficialZipPublisher(appContext)
     }
 
     /** 导出编排（复用下载任务表，进度进任务页）。 */

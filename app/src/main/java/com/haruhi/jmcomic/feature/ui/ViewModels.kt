@@ -1728,6 +1728,9 @@ data class AlbumDetailUiState(
      */
     val queuedChapterIds: Set<Long> = emptySet(),
 
+    /** 已经在**官方 ZIP** 队列里的章节 id（与普通图片下载队列分开）。 */
+    val officialZipQueuedChapterIds: Set<Long> = emptySet(),
+
     // ---------------- 阅读进度（用户第十一轮要求第 1 点） ----------------
 
     /**
@@ -1880,6 +1883,15 @@ data class AlbumDetailUiState(
             .filter { !it.isDownloaded && it.chapterId !in queuedChapterIds }
             .map { it.chapterId }
             .toSet()
+
+    /**
+     * 官方 ZIP 面板的默认勾选：**空**。
+     *
+     * 官方 ZIP 是整话打包、单体体积大，默认全选容易误触下载整本；让用户自己勾。
+     * 已经在官方 ZIP 队列里的章节在面板里仍然不可选。
+     */
+    val defaultOfficialZipSelection: Set<Long>
+        get() = emptySet()
 }
 
 /**
@@ -2051,6 +2063,14 @@ class AlbumDetailViewModel(
                 .catch { e -> Timber.tag("jm").w(e, "观察下载队列失败") }
                 .collect { queued ->
                     _state.update { it.copy(queuedChapterIds = queued) }
+                }
+        }
+
+        viewModelScope.launch {
+            tasks.observeOfficialZipQueuedChapters(albumId)
+                .catch { e -> Timber.tag("jm").w(e, "观察官方 ZIP 队列失败") }
+                .collect { queued ->
+                    _state.update { it.copy(officialZipQueuedChapterIds = queued) }
                 }
         }
 
@@ -3077,6 +3097,49 @@ class AlbumDetailViewModel(
                 }
                 _state.update { it.copy(message = text) }
                 refreshLocalStats()
+            }.onFailure { e ->
+                _state.update { it.copy(message = e.toUserMessage()) }
+            }
+        }
+    }
+
+    /**
+     * 下载官方 ZIP（官方 App 的整话/整部打包）。
+     *
+     * 与普通图片下载完全分开：一个本子一个 `JM_OFFICIAL_ZIP` 任务，落到
+     * `Download/JMComicH/官方zip/<本子>/第N话.zip`；多本并发由设置里的
+     * 「同时下载官方 ZIP 数量」控制。必须先登录，匿名拿不到下载链接。
+     */
+    fun downloadOfficialZip(chapterIds: List<Long>) {
+        if (chapterIds.isEmpty()) {
+            _state.update { it.copy(message = "请先选择要下载官方 ZIP 的章节") }
+            return
+        }
+        if (!account.isSignedIn) {
+            _state.update { it.copy(message = "官方 ZIP 需要先登录账号") }
+            return
+        }
+        viewModelScope.launch {
+            val current = _state.value
+            val usable = chapterIds.filterNot { it in current.officialZipQueuedChapterIds }
+            val selected = current.chapters.filter { it.chapterId in usable }
+            if (selected.isEmpty()) {
+                _state.update { it.copy(message = "选中的章节都已经在官方 ZIP 队列里了") }
+                return@launch
+            }
+            runCatching {
+                val album = ensureInLibrary()
+                val summaries = repo.chaptersOf(album).filter { it.chapterId in usable }
+                downloads.submitOfficialZip(album, summaries)
+            }.onSuccess { result ->
+                val text = when (result) {
+                    is com.haruhi.jmcomic.core.download.DownloadTaskRepository.SubmitResult.Created ->
+                        "已加入官方 ZIP 队列（${selected.size} 话），可在「任务」里查看进度"
+
+                    is com.haruhi.jmcomic.core.download.DownloadTaskRepository.SubmitResult.AlreadyRunning ->
+                        "这本漫画已有官方 ZIP 任务，已把选中的 ${selected.size} 话加进去"
+                }
+                _state.update { it.copy(message = text) }
             }.onFailure { e ->
                 _state.update { it.copy(message = e.toUserMessage()) }
             }

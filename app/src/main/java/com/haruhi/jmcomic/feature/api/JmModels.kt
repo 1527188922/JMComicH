@@ -166,6 +166,25 @@ data class ComicReadImageDto(
     @SerialName("image") val image: String? = null,
 )
 
+/**
+ * `GET /album_download_2/{chapterId}` 的 `data` 解密后的 JSON。
+ *
+ * 已登录：`title` / `fileSize` / `download_url` / `img_url`；
+ * 匿名或登录失效：`{"status":"0","msg":"請先登入"}`，**没有下载地址**。
+ * `download_url` 带 `expires`，约 1 天有效，不能缓存。
+ */
+@Serializable
+data class AlbumDownloadDto(
+    @SerialName("title") val title: String? = null,
+    @SerialName("fileSize") val fileSize: String? = null,
+    @SerialName("download_url") val downloadUrl: String? = null,
+    @SerialName("img_url") val imgUrl: String? = null,
+    @SerialName("status")
+    @Serializable(with = LooseStringSerializer::class)
+    val status: String? = null,
+    @SerialName("msg") val msg: String? = null,
+)
+
 /** 搜索结果（`/search` 的 `data` 解密后的 JSON）。 */
 @Serializable
 data class SearchRespDto(

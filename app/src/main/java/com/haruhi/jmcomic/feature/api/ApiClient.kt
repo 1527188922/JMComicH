@@ -308,6 +308,19 @@ class ApiClient(
     }
 
     /**
+     * 官方整话/整部的 ZIP 下载地址。
+     *
+     * **必须登录**：匿名调用返回 `{"status":"0","msg":"請先登入"}`，没有 `download_url`。
+     * `download_url` 带 `expires`，每次下载/重试都要重新调用本方法取新链接。
+     */
+    suspend fun albumDownload(chapterId: Long): AlbumDownloadDto = getDecrypted(
+        path = "/album_download_2/$chapterId",
+        params = withAccountCacheBuster(emptyList()),
+        retry = retryProvider(),
+        decode = { json -> ApiJson.decodeFromString(AlbumDownloadDto.serializer(), json) },
+    )
+
+    /**
      * `/comic_read`：官方 2.1.11 的阅读接口，一次返回图片清单与 `scramble_id`。
      *
      * 响应里 `images[].image` 是**完整 URL**（指向接口当时给的 CDN），本工程只用它取文件名：

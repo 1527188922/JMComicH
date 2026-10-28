@@ -4,12 +4,16 @@ import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadTaskChapterEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadType
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
+import com.haruhi.jmcomic.core.download.DownloadOutcome
 import com.haruhi.jmcomic.core.download.DownloadTaskRepository
+import com.haruhi.jmcomic.core.download.FileDownloader
 import com.haruhi.jmcomic.core.download.ParallelImageDownloader
 import com.haruhi.jmcomic.core.protocol.Defaults
 import com.haruhi.jmcomic.core.network.NetworkState
 import com.haruhi.jmcomic.core.network.toUserMessage
 import com.haruhi.jmcomic.core.storage.LibraryDirs
+import com.haruhi.jmcomic.core.storage.OfficialZipPublisher
+import com.haruhi.jmcomic.feature.api.AlbumDownloadDto
 import com.haruhi.jmcomic.feature.api.ApiJson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -20,11 +24,14 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import timber.log.Timber
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipFile
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.coroutineContext
 
@@ -42,6 +49,13 @@ interface DownloadEnvironment {
 
     /** 图片线路域名。 */
     suspend fun imageDomain(): String
+
+    /**
+     * 同时下载**官方 ZIP** 的本子数量（默认 2，范围 1～4）。
+     *
+     * 一个本子一个任务；同一任务内的多话顺序下，所以这个值实际控制"同时下几本"。
+     */
+    suspend fun officialZipConcurrency(): Int = 2
 
     /**
      * 当前策略下，这个网络是否允许开始新的传输。
@@ -118,11 +132,21 @@ class DownloadManager(
     private val dirs: LibraryDirs,
     private val environment: DownloadEnvironment,
     private val scope: CoroutineScope,
+    /** 单文件下载引擎（官方 ZIP 用；普通图片走 [downloader]）。 */
+    private val fileDownloader: FileDownloader? = null,
+    /** 官方 ZIP 链接入口；调用时必须带登录态（`ApiClient.authProvider` 已接账号）。 */
+    private val officialZipApi: (suspend (Long) -> AlbumDownloadDto)? = null,
+    /** 官方 ZIP 落盘器；null = 当前构建不支持官方 ZIP。 */
+    private val officialZipPublisher: OfficialZipPublisher? = null,
     /** 有任务开始执行时回调（用来拉起前台服务与常驻通知）。 */
     private val onTaskStarted: () -> Unit = {},
 ) {
 
     private val jobs = ConcurrentHashMap<Long, Job>()
+
+    /** 官方 ZIP 任务之间的并发闸门：一个本子一个任务，读设置里的“同时下载数量”。 */
+    private val officialZipGate = Mutex()
+    private var officialZipRunning = 0
 
     // ------------------------------------------------------------------
     // 提交
@@ -179,6 +203,52 @@ class DownloadManager(
         return result
     }
 
+    /**
+     * 提交官方 ZIP 下载：**一个本子一个任务**，任务内按章节顺序一个个取链、下载、落盘。
+     *
+     * 多本同时下载由 [officialZipGate] 按设置里的“同时下载官方 ZIP 数量”限流；
+     * 同一本已有任务时把新选的章节追加进去（与普通下载一致）。
+     */
+    suspend fun submitOfficialZip(
+        album: AlbumEntity,
+        chapters: List<ChapterSummary>,
+    ): DownloadTaskRepository.SubmitResult {
+        require(chapters.isNotEmpty()) { "至少要选一章" }
+        val bizKey = album.id.toString()
+        val payload = DownloadPayload(album.id, chapters.map { it.chapterId })
+        val specs = chapters.map { chapter ->
+            DownloadTaskRepository.ChapterSpec(
+                chapterId = chapter.chapterId,
+                chapterTitle = repo.chapterFolderName(chapter),
+                sort = chapter.sort?.toIntOrNull() ?: 0,
+                totalImages = 0,
+            )
+        }
+        val displayName = album.name?.takeIf { it.isNotBlank() } ?: "JM${album.id}"
+
+        val existing = tasks.activeTask(DownloadType.JM_OFFICIAL_ZIP, bizKey)
+        if (existing != null) {
+            appendChapters(existing.id, specs)
+            if (existing.status == DownloadStatus.PAUSED) tasks.markQueued(existing.id)
+            start(existing.id)
+            return DownloadTaskRepository.SubmitResult.AlreadyRunning(existing.id, existing.status)
+        }
+
+        val result = tasks.submit(
+            type = DownloadType.JM_OFFICIAL_ZIP,
+            bizKey = bizKey,
+            displayName = displayName,
+            payload = payload.encode(),
+            totalChapters = chapters.size,
+        )
+        if (result is DownloadTaskRepository.SubmitResult.Created) {
+            tasks.upsertChapters(result.taskId, specs)
+            tasks.recomputeTaskTotals(result.taskId)
+            start(result.taskId)
+        }
+        return result
+    }
+
     /** 追加章节到已有任务（已存在的章节不覆盖，避免把进度清零）。 */
     private suspend fun appendChapters(taskId: Long, specs: List<DownloadTaskRepository.ChapterSpec>) {
         val known = tasks.chapterList(taskId).map { it.chapterId }.toSet()
@@ -186,6 +256,7 @@ class DownloadManager(
         if (missing.isEmpty()) return
         tasks.upsertChapters(taskId, missing)
         tasks.recomputeTaskTotals(taskId)
+        tasks.updateProgress(taskId, totalChapters = tasks.chapterList(taskId).size)
         Timber.tag("dl").i("任务 %d 追加 %d 个章节", taskId, missing.size)
     }
 
@@ -233,7 +304,7 @@ class DownloadManager(
      * 不需要保存任何额外的断点信息。
      */
     suspend fun pauseAllForExit() {
-        tasks.pauseActive(listOf(DownloadType.JM_ALBUM))
+        tasks.pauseActive(listOf(DownloadType.JM_ALBUM, DownloadType.JM_OFFICIAL_ZIP))
         jobs.values.forEach { it.cancel() }
     }
 
@@ -286,8 +357,16 @@ class DownloadManager(
             return
         }
         val album = repo.findAlbum(payload.albumId)
-        val folderName = album?.albumFolderName
-        if (album == null || folderName.isNullOrBlank()) {
+        if (album == null) {
+            tasks.markFailed(taskId, "这本漫画不在书库，请重新加入书库后再下载")
+            return
+        }
+        if (task.type == DownloadType.JM_OFFICIAL_ZIP) {
+            runOfficialZipTask(taskId, album)
+            return
+        }
+        val folderName = album.albumFolderName
+        if (folderName.isNullOrBlank()) {
             tasks.markFailed(taskId, "这本漫画不在书库或目录名缺失，请重新加入书库后再下载")
             return
         }
@@ -325,6 +404,224 @@ class DownloadManager(
                 taskId,
                 "${unfinished.size} 话没有下完（$doneImages/$totalImages 张），可点重试补下",
             )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 官方 ZIP
+    // ------------------------------------------------------------------
+
+    /**
+     * 官方 ZIP 任务：一个本子一个任务，任务内逐话取链 → 下载 → 落到公共下载目录。
+     *
+     * 并发由 [withOfficialZipPermit] 控制；同一任务内不并发下多话（官方链接一次只给
+     * 一个 zip），多本之间才并行。
+     */
+    private suspend fun runOfficialZipTask(taskId: Long, album: AlbumEntity) {
+        val api = officialZipApi
+        val publisher = officialZipPublisher
+        if (api == null || publisher == null || fileDownloader == null) {
+            tasks.markFailed(taskId, "当前构建未接入官方 ZIP 下载")
+            return
+        }
+        withOfficialZipPermit {
+            if (!isRunnable(taskId)) return@withOfficialZipPermit
+            tasks.markRunning(taskId)
+            tasks.updateProgress(taskId, stageText = STAGE_OFFICIAL_ZIP)
+            tasks.recomputeTaskTotals(taskId)
+
+            var previousRemaining = Int.MAX_VALUE
+            while (true) {
+                if (!isRunnable(taskId)) return@withOfficialZipPermit
+                val pending = tasks.chapterList(taskId)
+                    .filter { it.status != DownloadStatus.SUCCESS }
+                if (pending.isEmpty()) break
+                // 一轮下来没有进展（失败的章节仍在）就停，交给用户点重试
+                if (pending.size >= previousRemaining) break
+                previousRemaining = pending.size
+                for (row in pending) {
+                    if (!isRunnable(taskId)) return@withOfficialZipPermit
+                    awaitNetworkPermission(taskId, STAGE_OFFICIAL_ZIP)
+                    if (!isRunnable(taskId)) return@withOfficialZipPermit
+                    downloadOfficialZipChapter(taskId, album, row)
+                    tasks.recomputeTaskTotals(taskId)
+                }
+            }
+        }
+
+        if (!isRunnable(taskId)) return
+        val rows = tasks.chapterList(taskId)
+        val unfinished = rows.filter { it.status != DownloadStatus.SUCCESS }
+        if (unfinished.isEmpty()) {
+            tasks.markSuccess(taskId)
+        } else {
+            tasks.markFailed(
+                taskId,
+                "${unfinished.size} 话官方 ZIP 没有下完，可点重试补下",
+            )
+        }
+    }
+
+    private suspend fun downloadOfficialZipChapter(
+        taskId: Long,
+        album: AlbumEntity,
+        row: DownloadTaskChapterEntity,
+    ) {
+        val chapterId = row.chapterId
+        val api = officialZipApi ?: return
+        val publisher = officialZipPublisher ?: return
+        val singleDownloader = fileDownloader ?: return
+        val albumFolder = album.albumFolderName?.takeIf { it.isNotBlank() } ?: "JM${album.id}"
+        val rows = tasks.chapterList(taskId)
+        val zipName = officialZipName(row, rows)
+        val stage = "$STAGE_OFFICIAL_ZIP · ${row.chapterTitle?.takeIf { it.isNotBlank() } ?: chapterId}"
+        tasks.updateProgress(taskId, stageText = stage)
+        tasks.updateChapterProgress(
+            taskId = taskId,
+            chapterId = chapterId,
+            doneImages = 0,
+            status = DownloadStatus.RUNNING,
+            allowRegression = true,
+        )
+
+        if (publisher.exists(albumFolder, zipName)) {
+            tasks.updateChapterProgress(
+                taskId = taskId,
+                chapterId = chapterId,
+                doneImages = 0,
+                status = DownloadStatus.SUCCESS,
+                allowRegression = true,
+            )
+            return
+        }
+
+        val target = File(dirs.tmp, "official_zip_${album.id}_${chapterId}.zip")
+        if (target.exists()) target.delete()
+        var cachedUrl: String? = null
+        try {
+            val first = api(chapterId)
+            if (first.status == "0" || first.downloadUrl.isNullOrBlank()) {
+                throw OfficialZipLoginRequired(first.msg)
+            }
+            cachedUrl = first.downloadUrl
+            var lastProgressAt = 0L
+            val outcome = singleDownloader.download(
+                urlProvider = {
+                    val url = cachedUrl ?: api(chapterId).downloadUrl
+                        ?: throw OfficialZipLoginRequired(null)
+                    cachedUrl = null // 下一次重试必须重新取链（链接会过期）
+                    url
+                },
+                target = target,
+                onProgress = { progress ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastProgressAt >= PROGRESS_UPDATE_MS || progress.totalBytes <= 0) {
+                        lastProgressAt = now
+                        scope.launch {
+                            runCatching {
+                                tasks.updateProgress(
+                                    taskId,
+                                    downloadedBytes = progress.downloadedBytes,
+                                    totalBytes = progress.totalBytes,
+                                )
+                            }
+                        }
+                    }
+                },
+                expectedTotal = 0L,
+                // 官方 zip 不是"已存在即完整"的图片：target 只是本地中转，
+                // 真正的去重看公共目录里的同名 zip。
+                skipIfComplete = false,
+            )
+            when (outcome) {
+                is DownloadOutcome.Cancelled -> return
+                is DownloadOutcome.Failed -> throw outcome.error
+                is DownloadOutcome.Downloaded, is DownloadOutcome.Skipped -> {
+                    if (!isValidZip(target)) {
+                        target.delete()
+                        throw IllegalStateException("官方 ZIP 内容无效（可能链接已过期）")
+                    }
+                    publisher.publish(target, albumFolder, zipName)
+                }
+            }
+            tasks.updateChapterProgress(
+                taskId = taskId,
+                chapterId = chapterId,
+                doneImages = 0,
+                status = DownloadStatus.SUCCESS,
+                allowRegression = true,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            tasks.updateChapterProgress(
+                taskId = taskId,
+                chapterId = chapterId,
+                doneImages = 0,
+                status = DownloadStatus.FAIL,
+                message = e.toUserMessage(),
+                allowRegression = true,
+            )
+        } finally {
+            // 只删已发布的 zip；`.part` 留着，下一次重试可以 Range 续传
+            runCatching { target.delete() }
+        }
+    }
+
+    private class OfficialZipLoginRequired(message: String?) : Exception(
+        message?.takeIf { it.isNotBlank() } ?: "请先登录后再下载官方 ZIP",
+    )
+
+    private fun isValidZip(file: File): Boolean =
+        file.isFile && file.length() > 0 && runCatching { ZipFile(file).use { true } }.getOrDefault(false)
+
+    /**
+     * `第{sort}话.zip`；没有 sort 时用章节标题。同一任务里重名（极少）追加章节 id。
+     */
+    private fun officialZipName(
+        row: DownloadTaskChapterEntity,
+        allRows: List<DownloadTaskChapterEntity>,
+    ): String {
+        val clean = zipBase(row)
+        val duplicate = allRows.any { other ->
+            other.chapterId != row.chapterId && zipBase(other) == clean
+        }
+        return if (duplicate) "$clean-${row.chapterId}.zip" else "$clean.zip"
+    }
+
+    private fun zipBase(row: DownloadTaskChapterEntity): String =
+        (row.sort.takeIf { it > 0 }?.let { "第${it}话" }
+            ?: row.chapterTitle?.takeIf { it.isNotBlank() }
+            ?: row.chapterId.toString())
+            .removeSuffix(".zip")
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .trim()
+            .ifBlank { "第${row.chapterId}话" }
+            .take(80)
+
+    /**
+     * 官方 ZIP 并发闸门：每次拿到许可时才读设置，所以设置里改数字对**下一个**任务生效。
+     * 等待用 200ms 轮询（任务数很少，不值得为此引入 Channel/信号量重建）。
+     */
+    private suspend fun <T> withOfficialZipPermit(block: suspend () -> T): T {
+        while (true) {
+            coroutineContext.ensureActive()
+            val acquired = officialZipGate.withLock {
+                val max = environment.officialZipConcurrency().coerceIn(1, 4)
+                if (officialZipRunning < max) {
+                    officialZipRunning++
+                    true
+                } else {
+                    false
+                }
+            }
+            if (acquired) break
+            delay(200)
+        }
+        try {
+            return block()
+        } finally {
+            officialZipGate.withLock { officialZipRunning = (officialZipRunning - 1).coerceAtLeast(0) }
         }
     }
 
@@ -564,5 +861,11 @@ class DownloadManager(
 
         /** 任务的阶段文案，任务页与通知共用。 */
         const val STAGE_DOWNLOADING = "下载图片"
+
+        /** 官方 ZIP 的阶段文案。 */
+        const val STAGE_OFFICIAL_ZIP = "下载官方 ZIP"
+
+        /** 单文件下载进度写库的最小间隔（毫秒）：避免每个 chunk 都写一次任务行。 */
+        private const val PROGRESS_UPDATE_MS = 500L
     }
 }

@@ -34,10 +34,10 @@ data class TaskRow(
     /** 只有漫画任务有封面（`bizKey` 就是 JM 号）；导出任务也是，**生成成品的那本**。 */
     val albumId: Long?
         get() = when (task.type) {
-            DownloadType.JM_ALBUM, DownloadType.JM_EXPORT_ZIP, DownloadType.JM_EXPORT_PDF ->
-                task.bizKey.toLongOrNull()
-
-            else -> null
+            DownloadType.JM_ALBUM,
+            DownloadType.JM_OFFICIAL_ZIP,
+            DownloadType.JM_EXPORT_ZIP,
+            DownloadType.JM_EXPORT_PDF -> task.bizKey.toLongOrNull()
         }
 
     /** 导出任务：**不能续做**，只能取消后重新生成（计划 §9 第 9 条），所以不给「重试」与「暂停」。 */
@@ -50,6 +50,7 @@ data class TaskRow(
      */
     val typeLabel: String?
         get() = when (task.type) {
+            DownloadType.JM_OFFICIAL_ZIP -> "官方 ZIP"
             DownloadType.JM_EXPORT_ZIP -> "生成 ZIP"
             DownloadType.JM_EXPORT_PDF -> "生成 PDF"
             else -> null

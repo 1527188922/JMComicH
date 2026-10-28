@@ -121,6 +121,12 @@ object SettingDefaults {
         fun normalizeDownloadThreads(value: Int): Int =
             if (value in SettingLimits.DOWNLOAD_THREADS) value else DOWNLOAD_THREADS
 
+        /** 同时下载几本官方 ZIP：默认 2，范围 1～4。 */
+        const val OFFICIAL_ZIP_CONCURRENCY = 2
+
+        fun normalizeOfficialZipConcurrency(value: Int): Int =
+            if (value in SettingLimits.OFFICIAL_ZIP_CONCURRENCY) value else OFFICIAL_ZIP_CONCURRENCY
+
         /** [参考 `jm.operation.parallel.enabled=false`] */
         const val PARALLEL_ALBUMS = false
 
@@ -196,6 +202,9 @@ object SettingLimits {
      * 滑杆能拉到的最大值与业务侧的收敛都用这一个范围，改它就两处一起生效。
      */
     val DOWNLOAD_THREADS = 1..12
+
+    /** 同时下载官方 ZIP 的本子数范围（默认见 [SettingDefaults.Jm.OFFICIAL_ZIP_CONCURRENCY]）。 */
+    val OFFICIAL_ZIP_CONCURRENCY = 1..4
 
     /**
      * [用户要求] 导出默认密码（ZIP / PDF）的**最大字符数**。

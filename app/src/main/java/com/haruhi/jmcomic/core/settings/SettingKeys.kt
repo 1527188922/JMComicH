@@ -67,6 +67,9 @@ internal object SettingKeys {
          */
         const val DOWNLOAD_THREADS = "download_threads"
 
+        /** 同时下载几本官方 ZIP（1～4，默认 2）。 */
+        const val OFFICIAL_ZIP_CONCURRENCY = "official_zip_concurrency"
+
         /** 是否允许同时下载多本漫画 */
         const val PARALLEL_ALBUMS = "parallel_albums"
 

@@ -112,6 +112,7 @@ class DownloadForegroundService : Service() {
     ): String = when (task.type) {
         // core 层不反向依赖 feature，所以这里的文案与 DownloadManager.STAGE_DOWNLOADING 同字面量
         DownloadType.JM_ALBUM -> "下载图片"
+        DownloadType.JM_OFFICIAL_ZIP -> "下载官方 ZIP"
         DownloadType.JM_EXPORT_ZIP -> "生成 ZIP"
         DownloadType.JM_EXPORT_PDF -> "生成 PDF"
     }
