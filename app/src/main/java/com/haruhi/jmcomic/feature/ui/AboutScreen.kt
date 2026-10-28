@@ -164,8 +164,7 @@ fun AboutScreen(
                                     text = if (segment == null) {
                                         "统计中…"
                                     } else {
-                                        "封面缓存共 ${formatBytes(segment.totalBytes)}，由图片加载器统一管理" +
-                                            "（含头像等图片），不区分单本漫画。"
+                                        "封面缓存共 ${formatBytes(segment.totalBytes)}（含头像等图片）"
                                     },
                                 )
                             }

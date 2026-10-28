@@ -88,6 +88,10 @@ interface ExportPublisher {
      *
      * 供"按有没有 zip/pdf 筛选书库"使用：一次查询拿全，避免每本漫画各查一次
      * （一页 60 本的话就是 120 次 MediaStore 查询）。
+     *
+     * **只含直接放在成品目录下的文件**（`Download/JMComicH/`；老系统是应用外部
+     * 私有目录里的同名子目录）：官方 ZIP 在 `JMComicH/官方zip/<本子>/` 子目录里，
+     * 由 [OfficialZipPublisher] 单独统计，不算这里的"导出成品"。
      */
     fun listAll(): List<ExportFile>
 
@@ -257,6 +261,11 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
      *
      * `displayName` 传 null 就是"列出全部"（书库筛选、存储统计用）；
      * 传名字则按**确切**文件名查——需要容忍系统重名序号的调用方用 [FileNaming.matchesExportName]。
+     *
+     * **只认直接放在成品目录下的文件**：官方 ZIP 落在
+     * `Download/JMComicH/官方zip/<本子>/`，它们在「关于」页是**官方 ZIP** 那一段
+     * （[OfficialZipPublisher]）。`RELATIVE_PATH LIKE '%JMComicH%'` 会把子目录一起扫进来，
+     * 于是"下载过官方 ZIP"的本子也会被算成有导出 ZIP、官方 ZIP 的字节被统计两遍（用户报的 bug）。
      */
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun findRows(displayName: String?): List<ExportPublisher.ExportFile> = runCatching {
@@ -265,6 +274,7 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
             MediaStore.Downloads.DISPLAY_NAME,
             MediaStore.Downloads.SIZE,
             MediaStore.Downloads.DATE_MODIFIED,
+            MediaStore.Downloads.RELATIVE_PATH,
         )
         val selection = buildString {
             append("${MediaStore.Downloads.RELATIVE_PATH} LIKE ?")
@@ -283,7 +293,15 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
             args,
             null,
         )?.use { cursor ->
-            while (cursor.moveToNext()) rows += cursor.toExportFile()
+            val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.RELATIVE_PATH)
+            while (cursor.moveToNext()) {
+                // LIKE 只是粗筛（顺带兼容大小写）；归属靠这一句：
+                // MediaStore 有的版本存 `Download/JMComicH/`、有的存 `Download/JMComicH`，
+                // 去掉首尾 `/` 后必须**正好**是成品目录，子目录（官方 zip）一律不算。
+                val path = cursor.getString(pathCol)?.trim('/') ?: continue
+                if (!path.equals(EXPORT_RELATIVE_PATH, ignoreCase = true)) continue
+                rows += cursor.toExportFile()
+            }
         }
         rows
     }.onFailure { Timber.tag("export").w(it, "查询导出文件失败：%s", displayName) }
@@ -324,6 +342,13 @@ class AndroidExportPublisher(private val context: Context) : ExportPublisher {
     companion object {
         /** 下载目录下的子目录名，避免和用户自己的文件混在一起。 */
         const val SUBFOLDER = "JMComicH"
+
+        /**
+         * 导出成品所在目录的 `RELATIVE_PATH`（不带结尾 `/`；MediaStore 落盘时可能带）。
+         *
+         * 官方 ZIP 在它的子目录 `官方zip/<本子>/` 里，不能算成品。
+         */
+        private val EXPORT_RELATIVE_PATH = "${Environment.DIRECTORY_DOWNLOADS}/$SUBFOLDER"
 
         /** 系统"外部存储"文档提供者；`primary:` 就是主共享存储，覆盖绝大多数机器。 */
         const val EXTERNAL_STORAGE_PROVIDER = "com.android.externalstorage.documents"

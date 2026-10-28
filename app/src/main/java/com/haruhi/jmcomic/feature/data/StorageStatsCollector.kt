@@ -167,7 +167,12 @@ class StorageStatsCollector(
             }
             .sortedByDescending { it.sizeBytes }
 
-    /** 导出成品：一次 MediaStore 查询拿全（`listAll` 内部已兜底为空表）。 */
+    /**
+     * 导出成品：一次 MediaStore 查询拿全（`listAll` 内部已兜底为空表）。
+     *
+     * `listAll` **只返回成品目录下的文件**，`官方zip/<本子>/` 里的官方 ZIP 不算导出成品
+     * （它们归 [StorageKind.OFFICIAL_ZIP]，否则下过官方 zip 的本子会被统计两遍）。
+     */
     private fun scanExports(
         byFolder: Map<String, AlbumBaseEntity>,
         byId: Map<Long, AlbumBaseEntity>,
@@ -217,7 +222,7 @@ class StorageStatsCollector(
                     albumId = album?.id ?: aid,
                     title = album?.let(::titleOf) ?: folder,
                     sizeBytes = files.sumOf { it.sizeBytes },
-                    detail = "${files.size} 个 zip",
+                    detail = "包含 ${files.size} 个 zip",
                     folderName = folder,
                 )
             }
