@@ -68,9 +68,17 @@ class JmComicApp : Application() {
                     val folderName = album.albumFolderName
                         ?: return@recoverInterrupted emptyList()
 
+                    // 章节目录名要用**当前**章节列表算出来的唯一存储键：章节行里的
+                    // `chapter_title` 是展示名，重名章节（同一个 sort 出现两次）会指向同一个
+                    // 目录，按它算进度会张冠李戴。取不到才退回章节行里的名字。
+                    val chapterFolders = runCatching {
+                        container.jmRepository.chapterFolders(albumId)
+                    }.getOrDefault(emptyMap())
+
                     val chapters = container.database.chapterDao().chapterList(albumId)
                     chapters.map { chapter ->
-                        val chapterFolder = chapter.chapterTitle
+                        val chapterFolder = chapterFolders[chapter.chapterId]
+                            ?: chapter.chapterTitle
                             ?: chapter.chapterName
                             ?: chapter.chapterId.toString()
                         val imageFiles = container.database.chapterDao()

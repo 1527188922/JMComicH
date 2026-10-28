@@ -101,7 +101,9 @@ class PdfWriter(
      * @param out      输出文件（会被覆盖）
      * @param password 打开密码；`null`/空串表示不加密
      * @param mode     解扰后图片的编码方式（无损 Flate / 有损 JPEG）
-     * @param chapterPlans 按章节目录名索引的解扰信息；缺省表示全是旧成品
+     * @param chapterPlans 按章节目录名索引的解扰信息；缺省表示全是旧成品。
+     *        非空时同时当**章节白名单**用（见 [exportChapterDirs]），
+     *        磁盘上遗留的、已不属于任何一话的目录不会混进 PDF
      * @param onProgress 进度回调 `(已完成页数, 总页数, 当前章节名)`；总页数未知时为 -1
      * @param isCancelled 每张图开始前询问一次；返回 true 时抛出 [CancellationException]
      */
@@ -114,7 +116,7 @@ class PdfWriter(
         onProgress: ((done: Int, total: Int, chapter: String) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
     ): Result {
-        val chapters = chapterDirs(albumDir)
+        val chapters = exportChapterDirs(chapterDirs(albumDir), chapterPlans)
         require(chapters.isNotEmpty()) { "本子目录下没有章节文件夹：${albumDir.absolutePath}" }
 
         // 页数要先把每张图的切片方案算出来（超长图会占多页）

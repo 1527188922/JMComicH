@@ -816,7 +816,9 @@ fun AlbumDetailScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
-                        items(precheck.missingChapters, key = { it.title }) { row ->
+                        // key 用 chapterId 而不是 title：重复标题的两话（都叫「第1话」）
+                        // 用 title 当 key 会撞 key（Compose 直接抛异常）
+                        items(precheck.missingChapters, key = { it.chapterId }) { row ->
                             Text(
                                 text = if (row.hasImageList) {
                                     "${row.title}　缺 ${row.missing}/${row.total} 张"

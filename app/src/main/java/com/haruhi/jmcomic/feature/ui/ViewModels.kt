@@ -342,7 +342,7 @@ class LibraryViewModel(
         val album = runCatching { repo.findAlbum(position.albumId) }.getOrNull()
             ?: runCatching { repo.localAlbumDetail(position.albumId)?.album }.getOrNull()
             ?: return null
-        val chapterTitle = runCatching { reading.chapterFolderName(position.albumId, chapterId) }
+        val chapterTitle = runCatching { reading.chapterTitle(position.albumId, chapterId) }
             .getOrNull()
             ?: chapterId.toString()
         return ContinueReadingCard(
@@ -1663,6 +1663,12 @@ data class ChapterRow(
     val sortIndex: Int,
     val totalImages: Int,
     val downloadedImages: Int,
+    /**
+     * 这一话在 `library/` 里的目录名（`Repository.chapterFolderName` 算出来的**唯一**存储键）。
+     *
+     * 标题重名时它会带 `-<chapterId>`，所以"删这一话的图片"必须用它，不能用 [title]。
+     */
+    val folderName: String = title,
 ) {
     val isDownloaded: Boolean get() = totalImages > 0 && downloadedImages >= totalImages
     val isPartial: Boolean get() = downloadedImages in 1 until totalImages
@@ -2138,7 +2144,7 @@ class AlbumDetailViewModel(
                 .catch { e -> Timber.tag("jm").w(e, "观察阅读进度失败") }
                 .collect { position ->
                     val chapterTitle = position?.chapterId?.let { id ->
-                        runCatching { reading.chapterFolderName(albumId, id) }.getOrNull()
+                        runCatching { reading.chapterTitle(albumId, id) }.getOrNull()
                     }
                     _state.update {
                         it.copy(
@@ -2378,6 +2384,8 @@ class AlbumDetailViewModel(
                     sortIndex = chapter.sort?.toIntOrNull() ?: 0,
                     totalImages = images.size,
                     downloadedImages = have,
+                    // 唯一存储键：重名章节带 -<chapterId>，与下载/阅读用的目录名同源
+                    folderName = folder,
                 )
             }
             Triple(rows, repo.localSize(album.albumFolderName), repo.favoriteIdsOf(albumId))
@@ -3153,7 +3161,8 @@ class AlbumDetailViewModel(
             val folder = album.albumFolderName
             if (folder.isNullOrBlank()) return@launch
             val chapter = _state.value.chapters.firstOrNull { it.chapterId == chapterId } ?: return@launch
-            runCatching { repo.deleteChapterFiles(album.id, chapterId, folder, chapter.title) }
+            // 用唯一存储键，不能用标题：标题重名时两话会指向同一个目录（删一个等于删两个）
+            runCatching { repo.deleteChapterFiles(album.id, chapterId, folder, chapter.folderName) }
                 .onSuccess { freed ->
                     _state.update { it.copy(message = "已删除这一话的本地文件（${formatBytes(freed)}）") }
                     refreshLocalStats()
@@ -3203,12 +3212,16 @@ class AlbumDetailViewModel(
     /** 缺图对话框里点「先补下载」：把缺图的那些话排进下载队列。 */
     fun downloadMissingChapters() {
         val album = _state.value.album ?: return
-        val missing = _state.value.exportPrecheck?.missingChapters?.map { it.title }.orEmpty()
+        // 按 chapterId 找，不能按标题：重复标题的两话会互相牵连（都会/都不会被选中）
+        val missing = _state.value.exportPrecheck?.missingChapters
+            ?.map { it.chapterId }
+            ?.toSet()
+            .orEmpty()
         _state.update { it.copy(exportPrecheck = null) }
         viewModelScope.launch {
             val chapters = runCatching { repo.chaptersOf(album) }
                 .getOrDefault(emptyList())
-                .filter { it.title in missing }
+                .filter { it.chapterId in missing }
             if (chapters.isEmpty()) return@launch
             runCatching {
                 val library = ensureInLibrary()

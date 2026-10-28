@@ -637,8 +637,10 @@ class Repository(
                 chapterId = chapter.id,
                 chapterSort = effectiveSeries?.sort,
                 chapterTitle = title,
-                // 参考实现：有 series 时用 series.name，否则用 chapter.name
-                chapterName = if (effectiveSeries != null) effectiveSeries.name else chapter.name,
+                // `/comic_read` 的 `name` 才是**这一话自己的名字**（`108P 1.2`、`魔女集会 1.2`
+                // 这类正是重复标题下唯一的区分信息），不能拿常常是空串的 `series.name` 覆盖它。
+                // 单话本子两边都是本子标题，行为不变（参考实现同时保留 series.name 与 chapter.name）。
+                chapterName = chapter.name?.takeIf { it.isNotBlank() } ?: effectiveSeries?.name,
                 chapterAddTime = chapter.addTime,
                 seriesId = chapter.seriesId,
                 liked = chapter.liked,
@@ -659,9 +661,11 @@ class Repository(
     /**
      * 单话本子合成的 series 条目；不是单话本子时返回 null。
      *
-     * 为什么必须有它：章节目录名由 `chapterTitle` 决定（`chapterFolderName` 的规则）。
-     * 单话本子没有 series，`chapterTitle` 会退化成接口给的 `chapter.name`
-     * ——那往往就是**本子标题**，而下载时用的目录名是合成的「第1话」。
+     * 为什么必须有它：单话本子的章节目录名固定是「第1话」（见 `chaptersOf` 的兜底），
+     * 而章节行里的 `chapterTitle` 想与它一致，就得在入库时先合成一条
+     * `series(sort=1, title="第1话")`。
+     * 不合成的话 `chapterTitle` 会退化成接口给的 `chapter.name`
+     * ——那往往就是**本子标题**，而下载时用的目录名是「第1话」。
      * 两边对不上，已经下好的图片会被 `downloadedImageCount` 判成"未下载"，
      * 界面上永远显示 0/1 已下载（模拟器实测踩到）。
      * 参考实现 `downloadAlbumWithoutLock` 第 866～872 行也是先合成 `Series` 再入库。
@@ -686,6 +690,11 @@ class Repository(
      *
      * 优先用 `album.series`（在线数据），为空时回落到章节图片表（本地已下载的章节），
      * 与参考实现 `listChapters` 的分支一致。
+     *
+     * **每条都带一个唯一的 `folderName`**（见 [withUniqueChapterFolders]）：`series` 里
+     * 同一个 `sort` 可能重复（重传、补档、`1.2` / `22.5` 这类追加话，实测 jmid=1486169、
+     * jmid=1224005 都是），标题会重名，而章节目录又是按标题落盘的。唯一化只在这一层做，
+     * 其余地方一律通过 [chapterFolderName] 取目录名。
      */
     suspend fun chaptersOf(album: AlbumEntity): List<ChapterSummary> {
         val series = album.series
@@ -696,21 +705,23 @@ class Repository(
                 }.getOrNull()
             }
         if (!series.isNullOrEmpty()) {
-            return series
-                .filter { !it.id.isNullOrBlank() }
-                .map { dto ->
-                    val chapterId = dto.id!!.toLongOrNull() ?: return@map null
-                    ChapterSummary(
-                        chapterId = chapterId,
-                        sort = dto.sort,
-                        name = dto.name,
-                        title = dto.title?.takeIf { it.isNotBlank() }
-                            ?: dto.sort?.takeIf { it.isNotBlank() }?.let { "第${it}话" }
-                            ?: dto.name
-                            ?: chapterId.toString(),
-                    )
-                }
-                .filterNotNull()
+            return withUniqueChapterFolders(
+                series
+                    .filter { !it.id.isNullOrBlank() }
+                    .map { dto ->
+                        val chapterId = dto.id!!.toLongOrNull() ?: return@map null
+                        ChapterSummary(
+                            chapterId = chapterId,
+                            sort = dto.sort,
+                            name = dto.name,
+                            title = dto.title?.takeIf { it.isNotBlank() }
+                                ?: dto.sort?.takeIf { it.isNotBlank() }?.let { "第${it}话" }
+                                ?: dto.name
+                                ?: chapterId.toString(),
+                        )
+                    }
+                    .filterNotNull(),
+            )
         }
 
         val local = chapterDao.chapterList(album.id).map { row ->
@@ -721,14 +732,31 @@ class Repository(
                 title = chapterTitleOfRow(row.chapterId, row.chapterTitle, row.chapterName, album.id),
             )
         }
-        if (local.isNotEmpty()) return local
+        if (local.isNotEmpty()) return withUniqueChapterFolders(local)
 
         // 单话本子：`/album` 不返回 series，本地也还没下过任何一话。
         // JM 的约定是"**章节 id 就是本子 id**"，`/chapter?id=<aid>` 能取到这一话的图片清单
         // （参考实现 `downloadAlbumWithoutLock` 第 866～872 行就是这么做兜底的）。
         // 不补这一条的话，单话本子在 App 里会显示"共 0 话"，永远下不动。
-        return listOf(SINGLE_CHAPTER)
-            .map { it.copy(chapterId = album.id, name = album.name) }
+        return withUniqueChapterFolders(
+            listOf(SINGLE_CHAPTER).map { it.copy(chapterId = album.id, name = album.name) },
+        )
+    }
+
+    /**
+     * `chapterId → 章节目录名`（下载执行与启动恢复用）。
+     *
+     * 任务行里的 `chapterTitle` 只是"提交那一刻"算出来的目录名：升级前提交的旧任务里
+     * 可能还是没带 `-<chapterId>` 的老名字。真正落盘前用它问一次**当前**的目录名，
+     * 避免旧任务继续往那个可能被两话共享的老目录里写。
+     *
+     * 读不到本子（没缓存/没入库）时返回空表，调用方自行回落到任务行里的值。
+     */
+    suspend fun chapterFolders(albumId: Long): Map<Long, String> {
+        val album = albumDao.findById(albumId)?.toReadModel() ?: return emptyMap()
+        return runCatching { chaptersOf(album) }
+            .getOrDefault(emptyList())
+            .associate { it.chapterId to chapterFolderName(it) }
     }
 
     /**
@@ -788,9 +816,16 @@ class Repository(
         return imageFiles.count { name -> File(dir, name).let { it.isFile && it.length() > 0 } }
     }
 
-    /** 章节目录名：`title` → `name` → `chapterId`（对齐参考实现 `getChapterFolderName`）。 */
+    /**
+     * 章节目录名（存储键）：`folderName` → `title` → `name` → `chapterId`。
+     *
+     * `folderName` 由 [chaptersOf] 经 [withUniqueChapterFolders] 算好，**保证本子内唯一**；
+     * 只有"临时拼出来的 [ChapterSummary]"（没经过 chaptersOf）才会走到后面几级兜底，
+     * 那是参考实现 `getChapterFolderName` 的 title → name → id 顺序。
+     */
     fun chapterFolderName(summary: ChapterSummary): String =
-        summary.title.takeIf { it.isNotBlank() }
+        summary.folderName?.takeIf { it.isNotBlank() }
+            ?: summary.title.takeIf { it.isNotBlank() }
             ?: summary.name?.takeIf { it.isNotBlank() }
             ?: summary.chapterId.toString()
 
@@ -1227,7 +1262,56 @@ data class ChapterSummary(
     val sort: String?,
     val name: String?,
     val title: String,
+    /**
+     * 这一话在 `library/` 里的**目录名（存储键）**，由 [withUniqueChapterFolders] 算好。
+     *
+     * - 标题在本子内唯一 → 就是标题本身（老目录、已下好的图片不受影响）；
+     * - 标题重名 → `<标题>-<chapterId>`，两话各占一个目录。
+     *
+     * 为 `null` 表示"没经过 [Repository.chaptersOf] 的临时对象"，
+     * [Repository.chapterFolderName] 会退回 `title → name → id` 的老规则。
+     */
+    val folderName: String? = null,
 )
+
+/**
+ * 给每条章节算一个**唯一的存储键**（[ChapterSummary.folderName]）。
+ *
+ * ## 为什么不能直接拿标题当目录名
+ *
+ * JM 的 `series` 里**同一个 `sort` 可能出现多次**（重传、补档、`1.2` 这类追加话），
+ * 而 `series[].name` 又常常是空串，于是两条都退化成「第N话」。官方 App 直接把它们
+ * 并排显示 —— 它的"话"从列表到阅读到下载全部按 `chapterId` 寻址，重名对它没有影响；
+ * 本工程却要落盘到 `library/<本子>/<章节>/`，按标题建目录就会让两话共用一个目录：
+ * 内容看起来一样、删一个等于删两个，而且解扰块数由 `md5(chapterId + 文件名)` 决定
+ * （两话块数不同），所以共享目录里只可能有一话是对的，另一话必然花屏。
+ *
+ * ## 规则
+ *
+ * 只对**冲突**的标题追加 `-<chapterId>`（与本工程官方 ZIP 的
+ * `第N话-<chapterId>.zip` 同一命名法）；不冲突的章节保持原标题，升级用户的已有
+ * 目录与已下图片完全不受影响。
+ *
+ * "冲突的每一话都追加"是刻意的：老版本已经把两话的图片混在同一个目录里了，
+ * 那份字节只对其中一话有效、也无法判断属于谁。让两话都换到新目录，等于把那份
+ * 有歧义的旧目录整个作废（不再被任何一话当成"已缓存"），而不是赌它属于哪一话。
+ *
+ * 唯一的副作用：章节列表变了、某一话从"重名"变成"不重名"（或反过来）时，目录名会跟着变，
+ * 它已经下好的图片会被判成"未下载"、需要重下一次。这比"两话永远共用一个目录"安全得多，
+ * 而且只影响真正重名的那几话。
+ */
+internal fun withUniqueChapterFolders(chapters: List<ChapterSummary>): List<ChapterSummary> {
+    val counts = chapters.groupingBy { it.title }.eachCount()
+    return chapters.map { chapter ->
+        chapter.copy(
+            folderName = if ((counts[chapter.title] ?: 0) > 1) {
+                "${chapter.title}-${chapter.chapterId}"
+            } else {
+                chapter.title
+            },
+        )
+    }
+}
 
 /**
  * 详情页的本地数据。

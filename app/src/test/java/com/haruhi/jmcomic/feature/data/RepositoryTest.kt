@@ -320,6 +320,90 @@ class RepositoryTest {
         assertThat(repo.chapterFolderName(idOnly)).isEqualTo("1")
     }
 
+    /**
+     * 真机数据：jmid=1486169 的 `series` 是
+     * `[{id:1486169, sort:"1", name:""}, {id:1486172, sort:"1", name:""}]`
+     * —— 两话都退化成「第1话」，但它们其实是 1 和 1.2，页数、解扰块数都不同。
+     *
+     * 目录名必须带上 chapterId，否则两话共用一个目录：内容看起来一样、删一个等于删两个、
+     * 第二话还会用别话的字节解扰（花屏）。
+     */
+    @Test
+    fun `duplicate chapter titles get distinct folder names`() = runTest {
+        repo.saveAlbum(
+            albumFixture().copy(
+                series = listOf(
+                    SeriesDto(id = "1486169", name = "", sort = "1", title = ""),
+                    SeriesDto(id = "1486172", name = "", sort = "1", title = ""),
+                ),
+            ),
+        )
+
+        val chapters = repo.chaptersOf(repo.findAlbum(480854L)!!)
+
+        // 展示名照官方 App 的做法保持一致（两个「第1话」），身份靠 chapterId
+        assertThat(chapters.map { it.title }).containsExactly("第1话", "第1话").inOrder()
+        val folders = chapters.map { repo.chapterFolderName(it) }
+        assertThat(folders).containsExactly("第1话-1486169", "第1话-1486172").inOrder()
+        // 这条修复的全部意义就是这一句
+        assertThat(folders.toSet()).hasSize(2)
+    }
+
+    /** 标题不冲突的章节必须保持老目录名，升级用户的已下图片不能被判成"未下载"。 */
+    @Test
+    fun `unique chapter titles keep the old folder names`() = runTest {
+        repo.saveAlbum(albumFixture())
+
+        val folders = repo.chaptersOf(repo.findAlbum(480854L)!!).map { repo.chapterFolderName(it) }
+
+        assertThat(folders).containsExactly("第1话", "第2话").inOrder()
+    }
+
+    /**
+     * `chapterId -> 目录名`：下载执行与启动恢复都靠它拿**当前**目录名，
+     * 不能再用任务行/章节行里存的展示名（重名时会指向共享目录）。
+     */
+    @Test
+    fun `chapter folders map exposes the unique storage key per chapter`() = runTest {
+        repo.saveAlbum(
+            albumFixture().copy(
+                series = listOf(
+                    SeriesDto(id = "1486169", name = "", sort = "1", title = ""),
+                    SeriesDto(id = "1486172", name = "", sort = "1", title = ""),
+                ),
+            ),
+        )
+
+        val folders = repo.chapterFolders(480854L)
+
+        assertThat(folders[1486169L]).isEqualTo("第1话-1486169")
+        assertThat(folders[1486172L]).isEqualTo("第1话-1486172")
+    }
+
+    /**
+     * `/comic_read` 的 `name` 是这一话**自己的**名字（`108P 1.2`、`魔女集会 1.2`），
+     * 重复标题下它是唯一的区分信息。`series.name` 常常是空串，不能拿它覆盖掉。
+     */
+    @Test
+    fun `a series chapter keeps its own name from comic read`() = runTest {
+        repo.saveAlbum(albumFixture())
+
+        repo.saveChapterImages(
+            480854,
+            ChapterDto(id = 500002, images = listOf("00001.webp"), name = "第2话 番外"),
+            SeriesDto(id = "500002", sort = "2", name = ""),
+        )
+        // series.name 非空、chapter.name 为空时，退回 series.name（老行为）
+        repo.saveChapterImages(
+            480854,
+            ChapterDto(id = 500003, images = listOf("00001.webp"), name = ""),
+            SeriesDto(id = "500003", sort = "3", name = "3.5"),
+        )
+
+        assertThat(repo.imagesOf(480854, 500002)[0].chapterName).isEqualTo("第2话 番外")
+        assertThat(repo.imagesOf(480854, 500003)[0].chapterName).isEqualTo("3.5")
+    }
+
     @Test
     fun `downloaded image count only counts non empty files on disk`() = runTest {
         repo.saveAlbum(albumFixture())

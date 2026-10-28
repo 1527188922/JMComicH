@@ -188,7 +188,9 @@ class DownloadManager(
         val specs = chapters.map { chapter ->
             DownloadTaskRepository.ChapterSpec(
                 chapterId = chapter.chapterId,
-                // 章节文件夹名就是 title（`chapterFolderName` 的规则：title 优先且永不为空）
+                // 落盘目录名（唯一存储键）：重名章节会带 `-<chapterId>`。
+                // 任务页/通知栏把它当这一话的标签显示；真正落盘前还会用
+                // `Repository.chapterFolders` 再问一次当前值（见 downloadPendingChapters）。
                 chapterTitle = repo.chapterFolderName(chapter),
                 sort = chapter.sort?.toIntOrNull() ?: 0,
                 totalImages = 0,
@@ -238,6 +240,8 @@ class DownloadManager(
         val specs = chapters.map { chapter ->
             DownloadTaskRepository.ChapterSpec(
                 chapterId = chapter.chapterId,
+                // 官方 ZIP 不落图片目录，这里只当"这一话的标签"用；
+                // zip 文件名由 `officialZipName` 按 sort 生成（重名再追加 chapterId）
                 chapterTitle = repo.chapterFolderName(chapter),
                 sort = chapter.sort?.toIntOrNull() ?: 0,
                 totalImages = 0,
@@ -717,6 +721,9 @@ class DownloadManager(
      * 由 [runTask] 统一决定要不要走收尾分支。
      */
     private suspend fun downloadPendingChapters(taskId: Long, albumId: Long, folderName: String) {
+        // 章节目录名以**当前**章节列表为准：任务行里的 `chapterTitle` 可能是升级前算的，
+        // 那时重名章节还没带 `-<chapterId>`（会落进两话共享的老目录）。取不到就退回任务行。
+        val chapterFolders = runCatching { repo.chapterFolders(albumId) }.getOrDefault(emptyMap())
         var previousRemaining = Int.MAX_VALUE
         while (true) {
             coroutineContext.ensureActive()
@@ -734,7 +741,7 @@ class DownloadManager(
             for (row in pending) {
                 coroutineContext.ensureActive()
                 if (!isRunnable(taskId)) return
-                downloadChapter(taskId, albumId, folderName, row)
+                downloadChapter(taskId, albumId, folderName, row, chapterFolders)
                 tasks.recomputeTaskTotals(taskId)
             }
         }
@@ -745,6 +752,7 @@ class DownloadManager(
         albumId: Long,
         albumFolder: String,
         row: DownloadTaskChapterEntity,
+        chapterFolders: Map<Long, String>,
     ) {
         val chapterId = row.chapterId
         awaitNetworkPermission(taskId)
@@ -773,7 +781,10 @@ class DownloadManager(
         // 任务卡按"totalImages > 0"判断要不要画进度条，就会整话都不显示（用户反馈第 1 点）
         tasks.recomputeTaskTotals(taskId)
 
-        val folder = row.chapterTitle?.takeIf { it.isNotBlank() } ?: chapterId.toString()
+        // 唯一存储键优先（重名章节带 -<chapterId>），任务行里的老名字只作兜底
+        val folder = chapterFolders[chapterId]?.takeIf { it.isNotBlank() }
+            ?: row.chapterTitle?.takeIf { it.isNotBlank() }
+            ?: chapterId.toString()
         val chapterDir = dirs.chapterDir(albumFolder, folder)
 
         val concurrency = environment.concurrency()

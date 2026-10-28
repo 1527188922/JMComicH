@@ -128,8 +128,8 @@ class ReadingRepositoryTest {
     }
 
     @Test
-    fun `chapter folder name follows title then name then id`() = runTest {
-        assertThat(reading.chapterFolderName(albumId, chapterId)).isNull()
+    fun `chapter title follows title then name then id`() = runTest {
+        assertThat(reading.chapterTitle(albumId, chapterId)).isNull()
 
         db.chapterDao().replaceChapter(
             albumId,
@@ -145,6 +145,6 @@ class ReadingRepositoryTest {
                 ),
             ),
         )
-        assertThat(reading.chapterFolderName(albumId, chapterId)).isEqualTo(chapterId.toString())
+        assertThat(reading.chapterTitle(albumId, chapterId)).isEqualTo(chapterId.toString())
     }
 }

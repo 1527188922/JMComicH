@@ -43,7 +43,9 @@ class ArchiveWriter {
      * @param out      输出文件（已存在会被覆盖）
      * @param password 打开密码；`null`/空串表示不加密（用户点「不设密码」）
      * @param mode     解扰后重新编码的方式（有损 / 无损）；旧成品与未加扰图片不受影响
-     * @param chapterPlans 按章节目录名索引的解扰信息；缺省表示全是旧成品
+     * @param chapterPlans 按章节目录名索引的解扰信息；缺省表示全是旧成品。
+     *        非空时同时当**章节白名单**用（见 [exportChapterDirs]），
+     *        磁盘上遗留的、已不属于任何一话的目录不会被打进包里
      * @param onProgress `(已打包张数, 总张数, 当前章节名)`
      */
     fun albumToZip(
@@ -54,7 +56,7 @@ class ArchiveWriter {
         chapterPlans: Map<String, ChapterImagePlan> = emptyMap(),
         onProgress: ((done: Int, total: Int, chapter: String) -> Unit)? = null,
     ): Result {
-        val chapters = chapterDirs(albumDir)
+        val chapters = exportChapterDirs(chapterDirs(albumDir), chapterPlans)
         require(chapters.isNotEmpty()) { "本子目录下没有章节文件夹：${albumDir.absolutePath}" }
 
         val chapterImages = chapters.map { it to imagesOf(it) }.filter { it.second.isNotEmpty() }

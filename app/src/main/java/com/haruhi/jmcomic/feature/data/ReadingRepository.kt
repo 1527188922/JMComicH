@@ -76,11 +76,18 @@ class ReadingRepository(
     // 目录与文件
     // ------------------------------------------------------------------
 
-    /** 某一话的章节文件夹名。章节清单为空时返回 null（还没拉过清单）。 */
-    suspend fun chapterFolderName(albumId: Long, chapterId: Long): String? {
-        // 单话本子：章节 id 就是本子 id，目录名固定「第1话」。
-        // 这条规则与 Repository.chaptersOf 一致——否则"下载写到哪个目录"和
-        // "阅读器去哪个目录找图"会对不上。
+    /**
+     * 某一话的**展示用**章节名（"上次读到 第2话"这类文案）。
+     *
+     * **不是磁盘目录名**：目录名由 `Repository.chaptersOf` 算好的
+     * `ChapterSummary.folderName` 决定（标题重名时会带 `-<chapterId>`），
+     * 两者刻意分开——之前这里叫 `chapterFolderName` 并被当成目录名用，
+     * 正是"两话共用一个目录"那类 bug 的温床。
+     *
+     * 章节清单为空时返回 null（还没拉过清单）。
+     */
+    suspend fun chapterTitle(albumId: Long, chapterId: Long): String? {
+        // 单话本子：章节 id 就是本子 id，展示名固定「第1话」。
         if (chapterId == albumId) return Repository.SINGLE_CHAPTER_TITLE
         val first = chapterDao.images(albumId, chapterId).firstOrNull() ?: return null
         return first.chapterTitle?.takeIf { it.isNotBlank() }

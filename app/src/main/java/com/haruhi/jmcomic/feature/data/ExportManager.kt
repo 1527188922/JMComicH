@@ -139,12 +139,16 @@ class ExportManager(
      *
      * [hasImageList] = false 表示**这一话还没下载过**（图片清单都还没拉取），
      * 此时 [missing]/[total] 都是 0：缺几张要等清单拉下来才知道，界面不要显示"0/0"。
+     *
+     * [chapterId] 是这一话的**身份**：`title` 可能重复（同一个 `sort` 出现两次时两话
+     * 都叫「第1话」），所以列表 key 与"补下载"都必须按 id 来。
      */
     data class MissingChapter(
         val title: String,
         val missing: Int,
         val total: Int,
         val hasImageList: Boolean = true,
+        val chapterId: Long = 0,
     )
 
     suspend fun precheck(album: AlbumEntity): Precheck = withContext(Dispatchers.IO) {
@@ -159,14 +163,25 @@ class ExportManager(
             if (images.isEmpty()) {
                 // 没清单 = 这一话从没下载过：导出包里不会有它，必须报出来
                 // （不能 continue 跳过，那正是"完全没下载的本子预检通过"的原因）
-                missing += MissingChapter(chapter.title, missing = 0, total = 0, hasImageList = false)
+                missing += MissingChapter(
+                    title = chapter.title,
+                    missing = 0,
+                    total = 0,
+                    hasImageList = false,
+                    chapterId = chapter.chapterId,
+                )
                 continue
             }
             val have = repo.downloadedImageCount(folder, repo.chapterFolderName(chapter), images)
             total += images.size
             ready += have
             if (have < images.size) {
-                missing += MissingChapter(chapter.title, images.size - have, images.size)
+                missing += MissingChapter(
+                    title = chapter.title,
+                    missing = images.size - have,
+                    total = images.size,
+                    chapterId = chapter.chapterId,
+                )
             }
         }
         Precheck(total, ready, missing)
