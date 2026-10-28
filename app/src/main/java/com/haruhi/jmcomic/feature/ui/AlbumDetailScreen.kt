@@ -2639,9 +2639,9 @@ private fun DownloadSheet(
             )
             Text(
                 text = if (officialZip) {
-                    "需要登录账号；每话一个官方 zip，保存到 下载/JMComicH/官方zip/。"
+                    "JM官方下载zip是一话一个zip包，保存到 下载/JMComicH/官方zip。（已下载过的就算再次勾选也不会重复下载）"
                 } else {
-                    "默认勾选还没下完的章节；已经在下载队列里的章节不能再选。"
+                    "默认勾选还没下完的章节，已经在下载队列里的章节不能再选。"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

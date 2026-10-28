@@ -2,6 +2,7 @@ package com.haruhi.jmcomic.feature.data
 
 import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadTaskChapterEntity
+import com.haruhi.jmcomic.core.database.entity.DownloadTaskEntity
 import com.haruhi.jmcomic.core.database.entity.DownloadType
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
 import com.haruhi.jmcomic.core.download.DownloadOutcome
@@ -18,6 +19,7 @@ import com.haruhi.jmcomic.feature.api.ApiJson
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -249,6 +251,32 @@ class DownloadManager(
         return result
     }
 
+    /**
+     * 删除某本漫画在公共目录里的**全部官方 ZIP**（只删直接 `.zip`，解压文件夹不动）。
+     * 返回释放字节数；任务记录由调用方删除。
+     */
+    suspend fun deleteOfficialZipFiles(taskId: Long): Long {
+        val task = tasks.findById(taskId) ?: return 0L
+        val payload = DownloadPayload.decode(task.payload)
+        val albumId = payload?.albumId ?: task.bizKey.toLongOrNull() ?: return 0L
+        val album = repo.findAlbum(albumId) ?: return 0L
+        val folder = album.albumFolderName?.takeIf { it.isNotBlank() } ?: "JM$albumId"
+        return officialZipPublisher?.deleteAlbum(folder) ?: 0L
+    }
+
+    /** 取消官方 ZIP 时清掉这一任务所有章节的临时 `.zip` / `.part`（暂停不调用）。 */
+    private suspend fun cleanupOfficialZipTemp(task: DownloadTaskEntity) {
+        val payload = DownloadPayload.decode(task.payload)
+        val albumId = payload?.albumId ?: task.bizKey.toLongOrNull() ?: return
+        val chapterIds = (payload?.chapterIds.orEmpty() +
+            tasks.chapterList(task.id).map { it.chapterId }).distinct()
+        chapterIds.forEach { chapterId ->
+            val base = File(dirs.tmp, "official_zip_${albumId}_${chapterId}.zip")
+            runCatching { base.delete() }
+            runCatching { File(base.absolutePath + ".part").delete() }
+        }
+    }
+
     /** 追加章节到已有任务（已存在的章节不覆盖，避免把进度清零）。 */
     private suspend fun appendChapters(taskId: Long, specs: List<DownloadTaskRepository.ChapterSpec>) {
         val known = tasks.chapterList(taskId).map { it.chapterId }.toSet()
@@ -320,11 +348,20 @@ class DownloadManager(
         }
     }
 
-    /** 取消：**不自动复活**（§D.3）。已下载的图片保留。 */
+    /**
+     * 取消：**不自动复活**（§D.3）。已下载的图片/ZIP 保留。
+     *
+     * 官方 ZIP 取消时额外清掉 `files/tmp/` 里这一任务所有章节的 `.part` 与中止文件；
+     * **暂停不清**（暂停后还要续传）。
+     */
     fun cancel(taskId: Long) {
         scope.launch {
+            val task = tasks.findById(taskId)
             runCatching { tasks.markCancelled(taskId) }
-            jobs[taskId]?.cancel()
+            jobs[taskId]?.cancelAndJoin()
+            if (task?.type == DownloadType.JM_OFFICIAL_ZIP) {
+                cleanupOfficialZipTemp(task)
+            }
         }
     }
 

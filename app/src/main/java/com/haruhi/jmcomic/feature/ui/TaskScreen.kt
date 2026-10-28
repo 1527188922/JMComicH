@@ -2,6 +2,8 @@ package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -71,6 +74,9 @@ fun TaskScreen(
     onRetry: (Long) -> Unit,
     onRemove: (Long) -> Unit,
     onClearFinished: () -> Unit,
+    onSetFilter: (TaskFilter) -> Unit,
+    /** 官方 ZIP 完成/取消后删除全部 ZIP + 任务记录。 */
+    onDeleteOfficialZip: (Long) -> Unit,
     /** 点封面进这本漫画的详情页（只有漫画任务有封面）。 */
     onOpenAlbum: (Long) -> Unit,
     /** 导出成品的「打开至」：用其他应用打开。 */
@@ -83,6 +89,7 @@ fun TaskScreen(
 ) {
     // 删成品是不可撤销的（20MB 的 PDF 重新生成要花时间），所以先确认一次
     var pendingDelete by remember { mutableStateOf<Pair<Long, String>?>(null) }
+    var pendingDeleteOfficialZip by remember { mutableStateOf<Long?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         Row(
@@ -107,6 +114,22 @@ fun TaskScreen(
             }
         }
 
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TaskFilter.entries.forEach { filter ->
+                FilterChip(
+                    selected = state.filter == filter,
+                    onClick = { onSetFilter(filter) },
+                    label = { Text(filter.label) },
+                )
+            }
+        }
+
         if (state.failedCount > 0) {
             Text(
                 text = "有 ${state.failedCount} 个任务没下完，展开后可以重试补下",
@@ -125,7 +148,11 @@ fun TaskScreen(
             when {
                 state.loading -> LoadingBox()
                 state.isEmpty -> EmptyBox(
-                    title = "还没有下载任务",
+                    title = if (state.filter == TaskFilter.ALL) {
+                        "还没有下载任务"
+                    } else {
+                        "没有${state.filter.label}任务"
+                    },
                     hint = "在漫画详情页选好章节后点「下载」",
                 )
                 else -> LazyColumn(
@@ -148,6 +175,7 @@ fun TaskScreen(
                                 onOpenOutput = onOpenOutput,
                                 onSendOutput = onSendOutput,
                                 onDeleteOutput = onDeleteOutput,
+                                onRequestDeleteOfficialZip = { pendingDeleteOfficialZip = it },
                             )
                         }
                     }
@@ -166,6 +194,7 @@ fun TaskScreen(
                                 onOpenOutput = onOpenOutput,
                                 onSendOutput = onSendOutput,
                                 onDeleteOutput = { id, name -> pendingDelete = id to name },
+                                onRequestDeleteOfficialZip = { pendingDeleteOfficialZip = it },
                             )
                         }
                     }
@@ -185,6 +214,21 @@ fun TaskScreen(
             },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
             onDismiss = { pendingDelete = null },
+        )
+    }
+
+    pendingDeleteOfficialZip?.let { taskId ->
+        ConfirmDialog(
+            title = "删除官方 ZIP？",
+            text = "会删除这本漫画在官方zip目录里的全部 zip（约全部已下载章节），" +
+                "解压出来的章节文件夹不受影响；同时移除这条任务记录。",
+            confirmText = "删除 ZIP",
+            onConfirm = {
+                pendingDeleteOfficialZip = null
+                onDeleteOfficialZip(taskId)
+            },
+            confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            onDismiss = { pendingDeleteOfficialZip = null },
         )
     }
 }
@@ -212,6 +256,7 @@ private fun TaskCard(
     onOpenOutput: (String) -> Unit,
     onSendOutput: (String) -> Unit,
     onDeleteOutput: (Long, String) -> Unit,
+    onRequestDeleteOfficialZip: (Long) -> Unit,
 ) {
     val task = row.task
     // 文字隐私：漫画任务显示 JM 号；没有 albumId 的任务（非 JM 类型）保留原名
@@ -343,7 +388,9 @@ private fun TaskCard(
 
             // 底部的动作行只剩"任务还在跑"相关的操作；删除记录已经移到右上角的叉叉，
             // 所以一条动作都不剩时整行不占高度（否则卡片底部会多出一截空白）。
-            if (row.canPause || row.canResume || row.canRetry || row.canCancel) {
+            if (row.canPause || row.canResume || row.canRetry || row.canCancel ||
+                row.canDeleteOfficialZip
+            ) {
                 Spacer(Modifier.height(4.dp))
                 Row( modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
@@ -359,6 +406,21 @@ private fun TaskCard(
                     }
                     if (row.canCancel) {
                         TextButton(onClick = { onCancel(task.id) }) { Text("取消") }
+                    }
+                    if (row.canDeleteOfficialZip) {
+                        TextButton(
+                            onClick = { onRequestDeleteOfficialZip(task.id) },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "删除官方 ZIP",
+                                modifier = Modifier.size(ButtonDefaults.IconSize),
+                            )
+                            Text("删除 ZIP")
+                        }
                     }
                 }
             }
@@ -393,7 +455,12 @@ private fun ChapterProgressRow(chapter: com.haruhi.jmcomic.core.database.entity.
             text = when (chapter.status) {
                 DownloadStatus.SUCCESS -> "已完成"
                 DownloadStatus.FAIL -> chapter.message ?: "未完成"
-                DownloadStatus.RUNNING -> "${chapter.doneImages}/${chapter.totalImages} 张"
+                DownloadStatus.RUNNING -> if (chapter.totalImages > 0) {
+                    "${chapter.doneImages}/${chapter.totalImages} 张"
+                } else {
+                    // 官方 ZIP 的章节没有"图片张数"（totalImages = 0），不能显示 0/0 张
+                    "下载中"
+                }
                 DownloadStatus.PAUSED -> "已暂停"
                 DownloadStatus.WAITING_NETWORK -> "等待网络"
                 DownloadStatus.CANCELLED -> "已取消"

@@ -70,6 +70,31 @@ data class TaskRow(
     val canCancel: Boolean get() = task.status.isActive
     val canRetry: Boolean
         get() = !isExport && (task.status == DownloadStatus.FAIL || task.status == DownloadStatus.CANCELLED)
+
+    val isOfficialZip: Boolean get() = task.type == DownloadType.JM_OFFICIAL_ZIP
+
+    /** 完成/取消后允许"删除官方 ZIP"（删文件 + 任务记录，需二次确认）。 */
+    val canDeleteOfficialZip: Boolean
+        get() = isOfficialZip &&
+            (task.status == DownloadStatus.SUCCESS || task.status == DownloadStatus.CANCELLED)
+}
+
+/** 任务页类型筛选。 */
+enum class TaskFilter(val label: String) {
+    ALL("全部"),
+    ALBUM("下载漫画"),
+    EXPORT_ZIP("导出 ZIP"),
+    EXPORT_PDF("导出 PDF"),
+    OFFICIAL_ZIP("下载官方 ZIP"),
+    ;
+
+    fun matches(type: DownloadType): Boolean = when (this) {
+        ALL -> true
+        ALBUM -> type == DownloadType.JM_ALBUM
+        EXPORT_ZIP -> type == DownloadType.JM_EXPORT_ZIP
+        EXPORT_PDF -> type == DownloadType.JM_EXPORT_PDF
+        OFFICIAL_ZIP -> type == DownloadType.JM_OFFICIAL_ZIP
+    }
 }
 
 /**
@@ -85,6 +110,7 @@ data class TaskUiState(
     val failedCount: Int = 0,
     val loading: Boolean = true,
     val message: String? = null,
+    val filter: TaskFilter = TaskFilter.ALL,
 ) {
     val isEmpty: Boolean get() = !loading && active.isEmpty() && finished.isEmpty()
 }
@@ -103,6 +129,7 @@ class TaskViewModel(
 
     private val expanded = MutableStateFlow<Long?>(null)
     private val message = MutableStateFlow<String?>(null)
+    private val filter = MutableStateFlow(TaskFilter.ALL)
 
     private val chaptersOfExpanded = expanded.flatMapLatest { taskId ->
         if (taskId == null) flowOf(emptyList()) else tasks.observeChapters(taskId)
@@ -129,14 +156,22 @@ class TaskViewModel(
         expanded,
         chaptersOfExpanded,
         message,
-    ) { current, expandedId, chapters, hint ->
+        filter,
+    ) { current, expandedId, chapters, hint, selectedFilter ->
+        val active = current.active
+            .filter { selectedFilter.matches(it.type) }
+            .map { it.toRow(expandedId, chapters) }
+        val finished = current.finished
+            .filter { selectedFilter.matches(it.type) }
+            .map { it.toRow(expandedId, chapters) }
         TaskUiState(
-            active = current.active.map { it.toRow(expandedId, chapters) },
-            finished = current.finished.map { it.toRow(expandedId, chapters) },
+            active = active,
+            finished = finished,
             badgeCount = current.badge,
             failedCount = current.failed,
             loading = false,
             message = hint,
+            filter = selectedFilter,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -157,6 +192,10 @@ class TaskViewModel(
         expanded.update { if (it == taskId) null else taskId }
     }
 
+    fun setFilter(value: TaskFilter) {
+        filter.value = value
+    }
+
     fun pause(taskId: Long) {
         downloads.pause(taskId)
         message.value = "已暂停，可随时继续"
@@ -170,15 +209,20 @@ class TaskViewModel(
     fun cancel(taskId: Long) {
         // 导出任务由导出管理器负责取消：两边各有一份"正在跑的 Job"，
         // 只标记状态而不取消协程的话，打包/生成还会继续跑下去。
-        val isExport = state.value.let { current ->
-            (current.active + current.finished).firstOrNull { it.task.id == taskId }?.isExport == true
+        val row = state.value.let { current ->
+            (current.active + current.finished).firstOrNull { it.task.id == taskId }
         }
-        if (isExport) {
+        if (row?.isExport == true) {
             exports.cancel(taskId)
             message.value = "已取消导出（未完成的输出已清理）"
         } else {
+            // DownloadManager 对官方 ZIP 会在取消后清掉 .part/临时 zip；暂停不清。
             downloads.cancel(taskId)
-            message.value = "已取消（已下载的图片保留）"
+            message.value = if (row?.isOfficialZip == true) {
+                "已取消官方 ZIP（未完成的临时文件已清理，已下载的 ZIP 保留）"
+            } else {
+                "已取消（已下载的图片保留）"
+            }
         }
     }
 
@@ -207,6 +251,20 @@ class TaskViewModel(
         viewModelScope.launch {
             val ok = runCatching { exports.deleteOutput(displayName) }.getOrDefault(false)
             message.value = if (ok) "已删除文件" else "文件已经不在了"
+        }
+    }
+
+    /**
+     * 删除这本漫画的全部官方 ZIP（只删 `官方zip/<本子>/` 下的 .zip，
+     * 解压出来的文件夹不动），随后移除任务记录。界面已二次确认。
+     */
+    fun deleteOfficialZip(taskId: Long) {
+        viewModelScope.launch {
+            val freed = runCatching { downloads.deleteOfficialZipFiles(taskId) }
+                .getOrDefault(0L)
+            runCatching { tasks.delete(taskId) }
+                .onFailure { Timber.tag("dl").w(it, "删除官方 ZIP 任务记录失败") }
+            message.value = "已删除官方 ZIP（${formatBytes(freed)}）"
         }
     }
 

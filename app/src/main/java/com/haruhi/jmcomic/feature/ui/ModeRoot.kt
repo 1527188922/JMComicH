@@ -1807,6 +1807,8 @@ private fun TasksDestination(
         onRetry = taskViewModel::retry,
         onRemove = taskViewModel::remove,
         onClearFinished = taskViewModel::clearFinished,
+        onSetFilter = taskViewModel::setFilter,
+        onDeleteOfficialZip = taskViewModel::deleteOfficialZip,
         // 点封面进详情页（用户要求第 1 点）
         onOpenAlbum = onOpenAlbum,
         // 导出成品的「打开至 / 发送至」（用户要求第 4 点）
