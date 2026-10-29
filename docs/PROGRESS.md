@@ -1,4 +1,4 @@
-﻿# 实施进度台账
+# 实施进度台账
 
 > 计划原文：`docs/android-app-plan.md`（= `2026-10-05-android-jm-bilibili-app.md`）
 > 跨功能硬约束：`docs/CONVENTIONS.md`（封面加载规范等）
@@ -2849,7 +2849,7 @@ debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
 | 点画面 | 照旧显隐控件栏；右侧控件跟着**一起出现 / 消失** |
 | 按在右侧控件上 | **立刻**跳到手指所在位置对应的页（不用先对准拇指），拇指与浮动的「12/34」标签跟手走 |
 | 按住上下拖 | 阅读区一页页跳过去；平板双页模式按"张号 / 2"换算成跨页 |
-| 松手 | 不再多跳一次（拖动中已经跳到位）；这一页才开始取图 |
+| 松手 | 不再多跳一次（拖动中已经跳到位）；这一页**立刻**取图 + 解扰 |
 | 按在"当前页"的区间里 | 不跳（纵向模式下 `scrollToItem` 会把正在看的长图弹回页首） |
 | 手势被系统打断（返回手势 / 来电） | `finally` 里照样收尾，不会卡在"拖动中" |
 
@@ -2861,14 +2861,23 @@ debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
   页码标签用 `inverseSurface` / `inverseOnSurface`（任何背景上都读得清）；
 - 无障碍：`contentDescription = "阅读进度滑块"` + `stateDescription = "12/34 页"`。
 
-### 2. 拖动期间不取图（关键取舍）
+### 2. 拖动期间照常取图，只加防抖（关键取舍）
 
-阅读区每换一页，`ReaderPageItem` 的 `LaunchedEffect` 就会 `onRequest` 取图（本地优先、没有就联网）。
-拖动时手指一帧一页地扫，**一次拖动就会把路过的几十页全部下下来**，还会把「同时下载图片数」的
-名额占满——松手后真正停留的那一页反而要排队，看起来就是"跳过去一直转圈"。
+阅读区每换一页，`ReaderPageItem` 的 `LaunchedEffect` 就会 `onRequest` 取图（本地优先、没有就联网，
+回来后在内存里解码 + 解扰）。拖动时手指一帧一页地扫，如果每页都立刻发请求，
+**一次拖动就会把路过的几十页全部下下来**，还会把「同时下载图片数」的名额占满——
+停下来真正要看的那一页反而排在后面，看起来就是"跳过去一直转圈"。
 
-所以拖动期间把 `holdRequests` 传下去：`ReaderPageItem` 的 `LaunchedEffect` 把它放进 key、这段时间不取图；
-松手（含手势取消）后 key 变化、自动补一次，**只取真正停留的那一页**。拖动中已经加载过的页照旧显示。
+所以拖动期间（`scrubbing = true`）给取图加一层**防抖**，而不是干脆不取：
+
+| 情形 | 行为 |
+|---|---|
+| 手指扫过某页（150ms 内又跳走） | 页面注销 → `LaunchedEffect` 里的 `delay(150ms)` 一起取消，**不产生请求** |
+| 手指在某一页停住 ≥150ms | 正常 `onRequest`：取图 + 解扰照走，**拖动中也能加载出图** |
+| 松手 / 手势被取消 | `scrubbing` 变回 false → key 变化、立刻重跑一次，**不再等**，松手的那一页马上取 |
+
+防抖时长是 `SCRUB_FETCH_DEBOUNCE_MS = 150`（`ReaderScreen.kt`）。这样"拖动期间也取图和解扰，
+但不会把路过的每一页都下一遍"两件事都成立；拖动中已经加载过的页照旧显示，不需要重新取。
 
 ### 3. 两种阅读方式怎么跳
 
@@ -2885,7 +2894,7 @@ debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
 
 | 文件 | 改动 |
 |---|---|
-| `feature/ui/ReaderScreen.kt` | 新增 `ReaderPageScrubber`（Canvas 画轨道 + 拇指、`awaitEachGesture` 按下即跳 + 跟手拖动、浮动页码标签、语义、`placeAt` 绝对摆位）；`ReaderScreen` 持有 `scrubbing` / `jump` / `jumpSeq`，控件与控件栏同显同隐；`VerticalReader` / `HorizontalReader` 接 `jump` / `holdRequests` / `onJumpHandled`；`ReaderPageItem` 新增 `holdRequests`；新增纯函数 `scrubPageAt` / `scrubFractionOf` / `scrubFractionAtY` |
+| `feature/ui/ReaderScreen.kt` | 新增 `ReaderPageScrubber`（Canvas 画轨道 + 拇指、`awaitEachGesture` 按下即跳 + 跟手拖动、浮动页码标签、语义、`placeAt` 绝对摆位）；`ReaderScreen` 持有 `scrubbing` / `jump` / `jumpSeq`，控件与控件栏同显同隐；`VerticalReader` / `HorizontalReader` 接 `jump` / `scrubbing` / `onJumpHandled`；`ReaderPageItem` 新增 `scrubbing`（拖动期间取图防抖 `SCRUB_FETCH_DEBOUNCE_MS`）；新增纯函数 `scrubPageAt` / `scrubFractionOf` / `scrubFractionAtY` |
 | `test/.../feature/ui/ReaderScrubberTest.kt`（新） | 6 个用例：两端可及 / 每页唯一且单调 / 按在拇指上不跳页 / 轨道外收敛到两端 / 往下拖不回跳 / 单页与空清单 |
 
 ### 5. 验证状态（如实记录）
@@ -2897,4 +2906,5 @@ debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
   `MediaStore.Downloads.EXTERNAL_CONTENT_URI`（minSdk 26 / 需要 29）的 `NewApi` 错误，
   本次一行未碰；报告里 `ReaderScreen.kt` 没有任何新增 lint 项；
 - 本机**没有连接设备**，拖动跟手程度与观感由用户真机验收（重点看：两种翻页方式下控件都在右侧、
-  拖动时拇指与标签跟手、松手后停在目标页、右边缘触摸不误触返回手势）。
+  拖动时拇指与标签跟手、松手后停在目标页、**拖动停住 / 松手后目标页能正常取图 + 解扰**、
+  拖动时不要因为防抖而一直转圈、右边缘触摸不误触返回手势）。

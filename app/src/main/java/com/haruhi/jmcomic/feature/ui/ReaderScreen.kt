@@ -96,6 +96,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.haruhi.jmcomic.ui.theme.JmTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -169,8 +170,9 @@ fun ReaderScreen(
         }
 
         // 右侧「上下拖动跳页」控件的状态（用户要求）：
-        // - [scrubbing] 拖动进行中：阅读区每帧都可能跳到新的一页，这段时间**先不取图**
-        //   （`ReaderPageItem` 的 holdRequests），否则一次拖动会把沿途几十页全下下来；
+        // - [scrubbing] 拖动进行中：阅读区每帧都可能跳到新的一页，这段时间的**取图要防抖**
+        //   （`ReaderPageItem` 里等 [SCRUB_FETCH_DEBOUNCE_MS] 再取），否则一次拖动会把
+        //   沿途几十页全下下来、还把下载名额占满；手指停住或松手后照常取图 + 解扰；
         // - [jump] 上一次「跳到第 N 页」的请求；[jumpSeq] 让"再跳到同一页"也能生效
         //   （`LaunchedEffect` 的 key 只按值比较）。
         var scrubbing by remember { mutableStateOf(false) }
@@ -223,7 +225,7 @@ fun ReaderScreen(
                         state.preferences.mode == ReadingMode.HORIZONTAL -> HorizontalReader(
                             state = state,
                             jump = jump,
-                            holdRequests = scrubbing,
+                            scrubbing = scrubbing,
                             onJumpHandled = { jump = null },
                             onPositionChanged = onPositionChanged,
                             onRequestPage = onRequestPage,
@@ -233,7 +235,7 @@ fun ReaderScreen(
                         else -> VerticalReader(
                             state = state,
                             jump = jump,
-                            holdRequests = scrubbing,
+                            scrubbing = scrubbing,
                             onJumpHandled = { jump = null },
                             onPositionChanged = onPositionChanged,
                             onRequestPage = onRequestPage,
@@ -354,7 +356,7 @@ fun ReaderScreen(
 private fun VerticalReader(
     state: ReaderUiState,
     jump: PageJump?,
-    holdRequests: Boolean,
+    scrubbing: Boolean,
     onJumpHandled: () -> Unit,
     onPositionChanged: (Int, Float) -> Unit,
     onRequestPage: (Int) -> Unit,
@@ -413,7 +415,7 @@ private fun VerticalReader(
                 page = page,
                 onRequest = { onRequestPage(page.index) },
                 onRetry = { onTapRetry(page.index) },
-                holdRequests = holdRequests,
+                scrubbing = scrubbing,
             )
         }
     }
@@ -423,7 +425,7 @@ private fun VerticalReader(
 private fun HorizontalReader(
     state: ReaderUiState,
     jump: PageJump?,
-    holdRequests: Boolean,
+    scrubbing: Boolean,
     onJumpHandled: () -> Unit,
     onPositionChanged: (Int, Float) -> Unit,
     onRequestPage: (Int) -> Unit,
@@ -483,7 +485,7 @@ private fun HorizontalReader(
                 onRequest = { onRequestPage(page.index) },
                 onRetry = { onTapRetry(page.index) },
                 fillHeight = true,
-                holdRequests = holdRequests,
+                scrubbing = scrubbing,
             )
         } else {
             // 并排两页：RTL 由外层 CompositionLocalProvider(LocalLayoutDirection) 处理——
@@ -503,7 +505,7 @@ private fun HorizontalReader(
                                 onRequest = { onRequestPage(page.index) },
                                 onRetry = { onTapRetry(page.index) },
                                 fillHeight = true,
-                                holdRequests = holdRequests,
+                                scrubbing = scrubbing,
                             )
                         }
                     }
@@ -530,8 +532,8 @@ private fun HorizontalReader(
  * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
  *   （用户要求：双指放大是整个页面一起放大，不是单张图片单独放大）。
  *
- * [holdRequests] 是右侧拖动跳页控件专用：拖动期间阅读区会一页页跳过去，
- * 这时**不许取图**，否则手指扫过的每一页都会联网（见 [ReaderPageScrubber]）。
+ * [scrubbing] 是右侧拖动跳页控件专用：拖动期间页面是"扫"过去的，
+ * 取图不能每页都立刻发出去（见 [ReaderPageItem] 里的防抖，以及 [SCRUB_FETCH_DEBOUNCE_MS]）。
  */
 @Composable
 private fun ReaderPageItem(
@@ -539,14 +541,19 @@ private fun ReaderPageItem(
     onRequest: () -> Unit,
     onRetry: () -> Unit,
     fillHeight: Boolean = false,
-    holdRequests: Boolean = false,
+    scrubbing: Boolean = false,
 ) {
     // 进入可视范围（被组合）就取图；本地已有、正在取、失败过时 requestPage 是空操作。
     // rawFile 也在 key 里：预取把字节取回来之后，本页立刻接着解扰。
     // 位图被内存窗口回收时状态会回到 Pending（rawFile 仍在），这一页重新可见就再解一次。
-    // holdRequests 也在 key 里：拖动结束（变回 false）时这一页才会真的去取。
-    LaunchedEffect(page.imageFile, page.state, page.rawFile, holdRequests) {
-        if (!holdRequests && !page.available && page.state == ReaderPage.PageState.Pending) onRequest()
+    //
+    // 拖动跳页时加一层**防抖**：手指还在这一页上停着才算"真的要看它"，
+    // `await` 一下再取；扫过去的页会被下一次跳页注销掉（`LaunchedEffect` 一起取消），
+    // 不会把路过的每一页都下一遍。松手（[scrubbing] 变回 false）立刻重跑一次、不再等。
+    LaunchedEffect(page.imageFile, page.state, page.rawFile, scrubbing) {
+        if (page.available || page.state != ReaderPage.PageState.Pending) return@LaunchedEffect
+        if (scrubbing) delay(SCRUB_FETCH_DEBOUNCE_MS)
+        onRequest()
     }
 
     val modifier = Modifier
@@ -794,11 +801,11 @@ internal fun scrubFractionAtY(y: Float, trackHeightPx: Float, thumbHeightPx: Flo
  * - **按住即跳**：手指落在哪一页的区间就跳到哪一页，不用先对准拇指；
  *   之后手指上下移动，拇指与页码标签跟手走，阅读区一页页跳过去；
  * - 落在"当前这一页"的区间里不动（否则纵向模式会把正在看的长图弹回页首）；
- * - 松手（含手势被系统取消）一定回调 [onScrubEnd]，外层靠它恢复"可以取图"。
+ * - 松手（含手势被系统取消）一定回调 [onScrubEnd]，外层靠它把取图的防抖去掉。
  *
- * 为什么拖动期间要"不取图"（[ReaderScreen] 里的 `holdRequests`）：拖动一次会经过
- * 很多页，每页都联网的话，一次拖动就能把整话下完、还把下载名额占满，
- * 松手后真正停留的那一页反而要排队。
+ * 拖动期间**照常取图 + 解扰**，只是加了防抖（见 [SCRUB_FETCH_DEBOUNCE_MS]）：
+ * 拖着手指一路扫过去时不必把路过的每一页都下下来，手指在某一页停住、或者松手之后，
+ * 那一页立刻就取。
  */
 @Composable
 private fun ReaderPageScrubber(
@@ -875,7 +882,7 @@ private fun ReaderPageScrubber(
                         }
                     } finally {
                         // 手势被系统取消（返回手势、来电…）也要收尾：
-                        // 否则外层会一直以为"还在拖"，一直不取图。
+                        // 否则外层会一直以为"还在拖"，取图一直被防抖拖着不取。
                         draggingPage = null
                         latestOnScrubEnd()
                     }
@@ -990,6 +997,17 @@ private val ReaderScrubberBottomInset = 92.dp
 private val ReaderScrubberLabelWidth = 64.dp
 private val ReaderScrubberLabelHeight = 26.dp
 private val ReaderScrubberLabelGap = 8.dp
+
+/**
+ * 拖动跳页时的**取图防抖**（毫秒）。
+ *
+ * 拖动时页面是"扫"过去的：每一页都立刻联网 + 解扰的话，一次拖动就能把整话下完，
+ * 还会把「同时下载图片数」的名额占满，真正停下来要看的那一页反而排在后面。
+ * 所以手指在同一页上停住这么久才算"要看它"、才开始取；一路扫过去的页会随页面注销
+ * 一起取消（`LaunchedEffect` 里的 `delay` 被取消），不产生请求。
+ * **松手不看这个时间**：`scrubbing` 变回 false，这一页立刻取（用户要求）。
+ */
+private const val SCRUB_FETCH_DEBOUNCE_MS = 150L
 
 // ======================================================================
 // 控件栏
