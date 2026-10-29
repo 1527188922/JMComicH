@@ -1,4 +1,4 @@
-# 实施进度台账
+﻿# 实施进度台账
 
 > 计划原文：`docs/android-app-plan.md`（= `2026-10-05-android-jm-bilibili-app.md`）
 > 跨功能硬约束：`docs/CONVENTIONS.md`（封面加载规范等）
@@ -2836,3 +2836,65 @@ debug 包「我的 → 关于」的副标题带 `-debug` 后缀。
 路由 / ViewModel / 接口一行未动。`:app:assembleDebug` ✅；
 按用户要求**本次未执行任何测试用例**，视觉由真机验收。
 
+
+## 功能：阅读器右侧「上下拖动跳页」控件（2026-10-29）
+
+用户要求：阅读页**展示控件时**，右侧加一个上下拖动的翻页控件，**按住拖动即可快速跳跃进度**；
+上下翻页与左右翻页都要有。
+
+### 1. 交互
+
+| 行为 | 结果 |
+|---|---|
+| 点画面 | 照旧显隐控件栏；右侧控件跟着**一起出现 / 消失** |
+| 按在右侧控件上 | **立刻**跳到手指所在位置对应的页（不用先对准拇指），拇指与浮动的「12/34」标签跟手走 |
+| 按住上下拖 | 阅读区一页页跳过去；平板双页模式按"张号 / 2"换算成跨页 |
+| 松手 | 不再多跳一次（拖动中已经跳到位）；这一页才开始取图 |
+| 按在"当前页"的区间里 | 不跳（纵向模式下 `scrollToItem` 会把正在看的长图弹回页首） |
+| 手势被系统打断（返回手势 / 来电） | `finally` 里照样收尾，不会卡在"拖动中" |
+
+- 位置必须在**物理右侧**：`Alignment.CenterEnd` 会被 Rtl 布局（左右翻页选"从右到左"）甩到左边，
+  所以外层用 `AbsoluteAlignment.CenterRight`；页码标签用 `Modifier.placeAt()`（`place` 而不是
+  `placeRelative`）+ `AbsoluteAlignment.TopLeft`，与布局方向无关；
+- 触摸区宽 32dp（拇指只有 7dp 宽，太窄按不住），上下各让开 60dp / 92dp，不盖顶栏、底栏；
+- 轨道 3dp、拇指 7×44dp，颜色取 `readerContentColor`（深浅两套背景都看得见），拖动时加深；
+  页码标签用 `inverseSurface` / `inverseOnSurface`（任何背景上都读得清）；
+- 无障碍：`contentDescription = "阅读进度滑块"` + `stateDescription = "12/34 页"`。
+
+### 2. 拖动期间不取图（关键取舍）
+
+阅读区每换一页，`ReaderPageItem` 的 `LaunchedEffect` 就会 `onRequest` 取图（本地优先、没有就联网）。
+拖动时手指一帧一页地扫，**一次拖动就会把路过的几十页全部下下来**，还会把「同时下载图片数」的
+名额占满——松手后真正停留的那一页反而要排队，看起来就是"跳过去一直转圈"。
+
+所以拖动期间把 `holdRequests` 传下去：`ReaderPageItem` 的 `LaunchedEffect` 把它放进 key、这段时间不取图；
+松手（含手势取消）后 key 变化、自动补一次，**只取真正停留的那一页**。拖动中已经加载过的页照旧显示。
+
+### 3. 两种阅读方式怎么跳
+
+| 方式 | 实现 |
+|---|---|
+| 上下翻页（纵向连续） | `LazyListState.scrollToItem(page)`（不是 `animateScrollToItem`：拖动时每帧都可能换目标页，动画只会追在手指后面） |
+| 左右翻页（横向分页） | `PagerState.scrollToPage(page)`；平板横屏并排两页时换算成跨页序号（第 5 张 → 第 3 个跨页），与既有进度换算一致 |
+
+跳页请求用 `PageJump(page, seq)` 而不是裸页码：`LaunchedEffect` 的 key 只按值比较，
+"先手动滚开、又拖回同一页"没有序号就不会重新触发；阅读区消费后回调 `onJumpHandled` 清空，
+避免切换阅读方式时把旧请求再执行一遍。
+
+### 4. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `feature/ui/ReaderScreen.kt` | 新增 `ReaderPageScrubber`（Canvas 画轨道 + 拇指、`awaitEachGesture` 按下即跳 + 跟手拖动、浮动页码标签、语义、`placeAt` 绝对摆位）；`ReaderScreen` 持有 `scrubbing` / `jump` / `jumpSeq`，控件与控件栏同显同隐；`VerticalReader` / `HorizontalReader` 接 `jump` / `holdRequests` / `onJumpHandled`；`ReaderPageItem` 新增 `holdRequests`；新增纯函数 `scrubPageAt` / `scrubFractionOf` / `scrubFractionAtY` |
+| `test/.../feature/ui/ReaderScrubberTest.kt`（新） | 6 个用例：两端可及 / 每页唯一且单调 / 按在拇指上不跳页 / 轨道外收敛到两端 / 往下拖不回跳 / 单页与空清单 |
+
+### 5. 验证状态（如实记录）
+
+- `:app:compileDebugKotlin` ✅、`:app:compileDebugUnitTestKotlin` ✅；
+- `:app:assembleDebug` ✅；
+- `:app:testDebugUnitTest --tests "*ReaderScrubberTest"` ✅（6/6）；
+- `:app:lintDebug` ❌，但**全是既有问题**：`core/storage/OfficialZipPublisher.kt` 5 处
+  `MediaStore.Downloads.EXTERNAL_CONTENT_URI`（minSdk 26 / 需要 29）的 `NewApi` 错误，
+  本次一行未碰；报告里 `ReaderScreen.kt` 没有任何新增 lint 项；
+- 本机**没有连接设备**，拖动跟手程度与观感由用户真机验收（重点看：两种翻页方式下控件都在右侧、
+  拖动时拇指与标签跟手、松手后停在目标页、右边缘触摸不误触返回手势）。

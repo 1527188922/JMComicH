@@ -1,10 +1,13 @@
 package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +20,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -36,6 +40,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
@@ -59,13 +64,16 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -76,14 +84,21 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.haruhi.jmcomic.ui.theme.JmTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 漫画阅读器（计划 §9 第 8 条）。
@@ -153,6 +168,15 @@ fun ReaderScreen(
             if (state.preferences.mode == ReadingMode.HORIZONTAL) zoom.resetPan()
         }
 
+        // 右侧「上下拖动跳页」控件的状态（用户要求）：
+        // - [scrubbing] 拖动进行中：阅读区每帧都可能跳到新的一页，这段时间**先不取图**
+        //   （`ReaderPageItem` 的 holdRequests），否则一次拖动会把沿途几十页全下下来；
+        // - [jump] 上一次「跳到第 N 页」的请求；[jumpSeq] 让"再跳到同一页"也能生效
+        //   （`LaunchedEffect` 的 key 只按值比较）。
+        var scrubbing by remember { mutableStateOf(false) }
+        var jump by remember { mutableStateOf<PageJump?>(null) }
+        var jumpSeq by remember { mutableIntStateOf(0) }
+
         Box(
             modifier = modifier
                 .fillMaxSize()
@@ -198,6 +222,9 @@ fun ReaderScreen(
 
                         state.preferences.mode == ReadingMode.HORIZONTAL -> HorizontalReader(
                             state = state,
+                            jump = jump,
+                            holdRequests = scrubbing,
+                            onJumpHandled = { jump = null },
                             onPositionChanged = onPositionChanged,
                             onRequestPage = onRequestPage,
                             onTapRetry = onRetryPage,
@@ -205,6 +232,9 @@ fun ReaderScreen(
 
                         else -> VerticalReader(
                             state = state,
+                            jump = jump,
+                            holdRequests = scrubbing,
+                            onJumpHandled = { jump = null },
                             onPositionChanged = onPositionChanged,
                             onRequestPage = onRequestPage,
                             onTapRetry = onRetryPage,
@@ -243,6 +273,26 @@ fun ReaderScreen(
                     onNextChapter = onNextChapter,
                     onDownloadChapter = onDownloadChapter,
                     onSetReadingMode = onSetReadingMode,
+                )
+            }
+            // 右侧「上下拖动跳页」控件（用户要求）：与控件栏同显同隐，
+            // **上下翻页 / 左右翻页都有它**——它只上报"目标页"，由各自的阅读方式负责滚过去。
+            // 用 `AbsoluteAlignment.CenterRight` 而不是 `Alignment.CenterEnd`：左右翻页选了
+            // "从右到左"时整个阅读器是 Rtl 布局，`End` 会把它甩到左边去。
+            AnimatedVisibility(
+                visible = state.controlsVisible && state.pages.isNotEmpty(),
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(AbsoluteAlignment.CenterRight).zIndex(2f),
+            ) {
+                ReaderPageScrubber(
+                    currentPage = state.currentPage,
+                    totalPages = state.totalPages,
+                    contentColor = contentColor,
+                    onScrubStart = { scrubbing = true },
+                    // 只有目标页真的变了才会回调（见 ReaderPageScrubber），这里直接派发一次跳页
+                    onScrub = { page -> jump = PageJump(page = page, seq = jumpSeq++) },
+                    onScrubEnd = { scrubbing = false },
                 )
             }
 
@@ -303,6 +353,9 @@ fun ReaderScreen(
 @Composable
 private fun VerticalReader(
     state: ReaderUiState,
+    jump: PageJump?,
+    holdRequests: Boolean,
+    onJumpHandled: () -> Unit,
     onPositionChanged: (Int, Float) -> Unit,
     onRequestPage: (Int) -> Unit,
     onTapRetry: (Int) -> Unit,
@@ -323,6 +376,15 @@ private fun VerticalReader(
                 listState.scrollToItem(target, (height * state.startOffsetRatio).toInt())
             }
         }
+    }
+
+    // 右侧拖动控件要求的跳页。用 `scrollToItem`（不是 `animateScrollToItem`）：
+    // 拖动时每帧都可能换目标页，动画只会让它一直追在手指后面。
+    LaunchedEffect(jump) {
+        val request = jump ?: return@LaunchedEffect
+        if (state.pages.isEmpty()) return@LaunchedEffect
+        listState.scrollToItem(request.page.coerceIn(0, state.pages.lastIndex))
+        onJumpHandled()
     }
 
     // 当前页与页内比例：用 snapshotFlow 主动观察，而不是在 composition 里读 layoutInfo
@@ -351,6 +413,7 @@ private fun VerticalReader(
                 page = page,
                 onRequest = { onRequestPage(page.index) },
                 onRetry = { onTapRetry(page.index) },
+                holdRequests = holdRequests,
             )
         }
     }
@@ -359,6 +422,9 @@ private fun VerticalReader(
 @Composable
 private fun HorizontalReader(
     state: ReaderUiState,
+    jump: PageJump?,
+    holdRequests: Boolean,
+    onJumpHandled: () -> Unit,
     onPositionChanged: (Int, Float) -> Unit,
     onRequestPage: (Int) -> Unit,
     onTapRetry: (Int) -> Unit,
@@ -397,6 +463,14 @@ private fun HorizontalReader(
             }
     }
 
+    // 右侧拖动控件要求的跳页：页码按"张"给，双页时换算成跨页序号（第 5 张 → 第 3 个跨页）。
+    LaunchedEffect(jump, twoPage) {
+        val request = jump ?: return@LaunchedEffect
+        val target = if (twoPage) request.page / 2 else request.page
+        pagerState.scrollToPage(target.coerceIn(0, (pageCount - 1).coerceAtLeast(0)))
+        onJumpHandled()
+    }
+
     HorizontalPager(
         state = pagerState,
         modifier = Modifier.fillMaxSize(),
@@ -409,6 +483,7 @@ private fun HorizontalReader(
                 onRequest = { onRequestPage(page.index) },
                 onRetry = { onTapRetry(page.index) },
                 fillHeight = true,
+                holdRequests = holdRequests,
             )
         } else {
             // 并排两页：RTL 由外层 CompositionLocalProvider(LocalLayoutDirection) 处理——
@@ -428,6 +503,7 @@ private fun HorizontalReader(
                                 onRequest = { onRequestPage(page.index) },
                                 onRetry = { onTapRetry(page.index) },
                                 fillHeight = true,
+                                holdRequests = holdRequests,
                             )
                         }
                     }
@@ -453,6 +529,9 @@ private fun HorizontalReader(
  * - 取的过程中显示进度圈，只有真的失败才显示"取不回来 + 重试"；
  * - 点击 / 缩放这类手势**不在这里**：由阅读器外层统一处理，缩放作用于整块阅读区域
  *   （用户要求：双指放大是整个页面一起放大，不是单张图片单独放大）。
+ *
+ * [holdRequests] 是右侧拖动跳页控件专用：拖动期间阅读区会一页页跳过去，
+ * 这时**不许取图**，否则手指扫过的每一页都会联网（见 [ReaderPageScrubber]）。
  */
 @Composable
 private fun ReaderPageItem(
@@ -460,12 +539,14 @@ private fun ReaderPageItem(
     onRequest: () -> Unit,
     onRetry: () -> Unit,
     fillHeight: Boolean = false,
+    holdRequests: Boolean = false,
 ) {
     // 进入可视范围（被组合）就取图；本地已有、正在取、失败过时 requestPage 是空操作。
     // rawFile 也在 key 里：预取把字节取回来之后，本页立刻接着解扰。
     // 位图被内存窗口回收时状态会回到 Pending（rawFile 仍在），这一页重新可见就再解一次。
-    LaunchedEffect(page.imageFile, page.state, page.rawFile) {
-        if (!page.available && page.state == ReaderPage.PageState.Pending) onRequest()
+    // holdRequests 也在 key 里：拖动结束（变回 false）时这一页才会真的去取。
+    LaunchedEffect(page.imageFile, page.state, page.rawFile, holdRequests) {
+        if (!holdRequests && !page.available && page.state == ReaderPage.PageState.Pending) onRequest()
     }
 
     val modifier = Modifier
@@ -661,6 +742,254 @@ private const val ZOOM_EPSILON = 0.01f
 
 /** 超过这个倍数才算"放大状态"（浮点误差容差），放大后才处理平移。 */
 private const val ZOOMED_THRESHOLD = 1.01f
+
+// ======================================================================
+// 右侧拖动跳页（控件显示时，按住上下拖动快速跳进度）
+// ======================================================================
+
+/**
+ * 一次「跳到第 [page] 页」的请求。
+ *
+ * [seq] 是序号：`LaunchedEffect` 的 key 只按值比较，"先手动滚开、又拖回原来那一页"
+ * 没有序号就不会重新触发。阅读区消费掉请求后由 `onJumpHandled` 清空（见 [ReaderScreen]）。
+ */
+private data class PageJump(val page: Int, val seq: Int)
+
+/**
+ * 拖动位置 → 页码：`0f` 是轨道顶（第一页），`1f` 是轨道底（最后一页）。
+ *
+ * 按 `page / (total - 1)` 分配而不是 `(page + 1) / total`：这样**第一页正好贴着顶端、
+ * 最后一页正好贴着底端**，两端都拖得到，不会出现"已经拖到底了却还差一截"。
+ */
+internal fun scrubPageAt(fraction: Float, totalPages: Int): Int {
+    if (totalPages <= 1) return 0
+    return (fraction.coerceIn(0f, 1f) * (totalPages - 1)).roundToInt()
+}
+
+/** [scrubPageAt] 的逆运算：某一页在轨道上的位置（`0f` 在顶、`1f` 在底）。 */
+internal fun scrubFractionOf(page: Int, totalPages: Int): Float {
+    if (totalPages <= 1) return 0f
+    return page.coerceIn(0, totalPages - 1).toFloat() / (totalPages - 1).toFloat()
+}
+
+/**
+ * 手指按在 [y] 处对应的位置（`0f` 在顶、`1f` 在底）。
+ *
+ * 换算的是**拇指中心**：拇指中心落在手指下面，所以按在拇指上不会跳页。
+ * 如果直接按 `y / trackHeight` 算，按在拇指正中会被算成"偏上小半颗拇指"，
+ * 页就莫名其妙往前跳几页。
+ */
+internal fun scrubFractionAtY(y: Float, trackHeightPx: Float, thumbHeightPx: Float): Float {
+    val travel = (trackHeightPx - thumbHeightPx).coerceAtLeast(1f)
+    return ((y - thumbHeightPx / 2f) / travel).coerceIn(0f, 1f)
+}
+
+/**
+ * 右侧「上下拖动跳页」控件（用户要求）。
+ *
+ * 两种阅读方式共用同一个控件：它只负责**上报目标页**（[onScrub]），
+ * 怎么滚过去由 `VerticalReader`（`scrollToItem`）/ `HorizontalReader`（`scrollToPage`）决定。
+ *
+ * 交互：
+ * - **按住即跳**：手指落在哪一页的区间就跳到哪一页，不用先对准拇指；
+ *   之后手指上下移动，拇指与页码标签跟手走，阅读区一页页跳过去；
+ * - 落在"当前这一页"的区间里不动（否则纵向模式会把正在看的长图弹回页首）；
+ * - 松手（含手势被系统取消）一定回调 [onScrubEnd]，外层靠它恢复"可以取图"。
+ *
+ * 为什么拖动期间要"不取图"（[ReaderScreen] 里的 `holdRequests`）：拖动一次会经过
+ * 很多页，每页都联网的话，一次拖动就能把整话下完、还把下载名额占满，
+ * 松手后真正停留的那一页反而要排队。
+ */
+@Composable
+private fun ReaderPageScrubber(
+    currentPage: Int,
+    totalPages: Int,
+    contentColor: Color,
+    onScrubStart: () -> Unit,
+    onScrub: (Int) -> Unit,
+    onScrubEnd: () -> Unit,
+) {
+    // 拖动中的目标页：拇指跟着手指走；松手后交还给 currentPage
+    // （这时阅读区已经跳到这一页，currentPage 会跟着更新，两边不会脱节）。
+    var draggingPage by remember { mutableStateOf<Int?>(null) }
+    val dragging = draggingPage != null
+    val page = (draggingPage ?: currentPage).coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+    val fraction = scrubFractionOf(page, totalPages)
+
+    // 手势闭包会一直活到手指抬起，期间外面可能已经重组过：currentPage / 回调都取最新的
+    val latestCurrentPage by rememberUpdatedState(currentPage)
+    val latestOnScrubStart by rememberUpdatedState(onScrubStart)
+    val latestOnScrub by rememberUpdatedState(onScrub)
+    val latestOnScrubEnd by rememberUpdatedState(onScrubEnd)
+
+    val thumbAlpha by animateFloatAsState(
+        targetValue = if (dragging) 0.95f else 0.5f,
+        animationSpec = tween(durationMillis = 150),
+        label = "readerScrubberThumbAlpha",
+    )
+    val density = LocalDensity.current
+
+    BoxWithConstraints(
+        // 子项一律从**物理左上角**摆：页码标签用绝对像素定位，Rtl 布局下
+        // 默认的 `TopStart` 会跑到屏幕右侧，标签就飘出轨道了
+        contentAlignment = AbsoluteAlignment.TopLeft,
+        modifier = Modifier
+            .width(ReaderScrubberWidth)
+            .fillMaxHeight()
+            // 上下让开顶栏 / 底栏：拖动的手指不会落在「返回」「下一话」上
+            .padding(top = ReaderScrubberTopInset, bottom = ReaderScrubberBottomInset)
+            .pointerInput(totalPages) {
+                if (totalPages <= 0) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // 消费按下事件：否则这次触摸会穿透到下面的手势层，变成"单击显隐控件"
+                    down.consume()
+                    val trackHeight = size.height.toFloat()
+                    val thumbHeight = ReaderScrubberThumbHeight.toPx().coerceAtMost(trackHeight)
+
+                    fun pageAt(y: Float): Int = scrubPageAt(
+                        fraction = scrubFractionAtY(y, trackHeight, thumbHeight),
+                        totalPages = totalPages,
+                    )
+
+                    try {
+                        // 按下即跳（不用先对准拇指）
+                        var target = pageAt(down.position.y)
+                        draggingPage = target
+                        latestOnScrubStart()
+                        // 按在当前页的区间里不动：不跳。纵向模式下 `scrollToItem` 会把
+                        // 正在看的长图弹回页首，只是点了一下不该有这种副作用。
+                        if (target != latestCurrentPage) latestOnScrub(target)
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            change.consume()
+                            val moved = pageAt(change.position.y)
+                            if (moved != target) {
+                                target = moved
+                                draggingPage = moved
+                                latestOnScrub(moved)
+                            }
+                        }
+                    } finally {
+                        // 手势被系统取消（返回手势、来电…）也要收尾：
+                        // 否则外层会一直以为"还在拖"，一直不取图。
+                        draggingPage = null
+                        latestOnScrubEnd()
+                    }
+                }
+            }
+            .semantics {
+                contentDescription = "阅读进度滑块"
+                stateDescription = "${page + 1}/${totalPages.coerceAtLeast(1)} 页"
+            },
+    ) {
+        // 拇指与页码标签共用这套像素几何：标签贴在拇指左边、跟着它上下走
+        val trackHeight = constraints.maxHeight.toFloat()
+        val thumbHeight = with(density) { ReaderScrubberThumbHeight.toPx() }.coerceAtMost(trackHeight)
+        val thumbTop = (trackHeight - thumbHeight).coerceAtLeast(0f) * fraction
+        val trackWidthPx = with(density) { ReaderScrubberTrackWidth.toPx() }
+        val thumbWidthPx = with(density) { ReaderScrubberThumbWidth.toPx() }
+        val trackCenterX = constraints.maxWidth - with(density) {
+            ReaderScrubberRightInset.toPx() + trackWidthPx / 2f
+        }
+        val labelWidthPx = with(density) { ReaderScrubberLabelWidth.roundToPx() }
+        val labelHeightPx = with(density) { ReaderScrubberLabelHeight.roundToPx() }
+        val labelX = with(density) {
+            trackCenterX - thumbWidthPx / 2f - ReaderScrubberLabelGap.toPx() - labelWidthPx
+        }.roundToInt()
+        val labelY = (thumbTop + thumbHeight / 2f - labelHeightPx / 2f)
+            .coerceIn(0f, (trackHeight - labelHeightPx).coerceAtLeast(0f))
+            .roundToInt()
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val trackWidth = ReaderScrubberTrackWidth.toPx()
+            val thumbWidth = ReaderScrubberThumbWidth.toPx()
+            val height = size.height
+            val thumb = ReaderScrubberThumbHeight.toPx().coerceAtMost(height)
+            val travel = (height - thumb).coerceAtLeast(0f)
+            val centerX = size.width - ReaderScrubberRightInset.toPx() - trackWidth / 2f
+
+            // 轨道：一根细胶囊。静止时很淡（不抢画面），拖动时加深表示"正在拖"
+            drawRoundRect(
+                color = contentColor.copy(alpha = if (dragging) 0.32f else 0.16f),
+                topLeft = Offset(centerX - trackWidth / 2f, 0f),
+                size = Size(trackWidth, height),
+                cornerRadius = CornerRadius(trackWidth / 2f, trackWidth / 2f),
+            )
+            // 拇指：位置按页分配，第一页贴顶、最后一页贴底
+            drawRoundRect(
+                color = contentColor.copy(alpha = thumbAlpha),
+                topLeft = Offset(centerX - thumbWidth / 2f, travel * fraction),
+                size = Size(thumbWidth, thumb),
+                cornerRadius = CornerRadius(thumbWidth / 2f, thumbWidth / 2f),
+            )
+        }
+
+        if (dragging) {
+            Box(
+                modifier = Modifier
+                    // 绝对像素摆位（见 [placeAt]）：不用 `Alignment.TopStart` / `Modifier.offset`，
+                    // 那两个在 Rtl 布局（左右翻页选"从右到左"）下会把标签摆到轨道右边去
+                    .placeAt(labelX, labelY)
+                    .width(ReaderScrubberLabelWidth)
+                    .height(ReaderScrubberLabelHeight)
+                    .background(
+                        color = MaterialTheme.colorScheme.inverseSurface,
+                        shape = RoundedCornerShape(percent = 50),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "${page + 1}/${totalPages.coerceAtLeast(1)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 把内容摆到父容器里的 ([x], [y]) 处（**绝对像素，不跟布局方向镜像**）。
+ *
+ * `Modifier.offset` / `Alignment.TopStart` 都是"方向相关"的：左右翻页选「从右到左」时
+ * 整个阅读器是 Rtl 布局，标签会被摆到轨道的右边（屏幕外）。这里用 `place` 而不是
+ * `placeRelative`，Rtl 下位置不变。
+ *
+ * 量尺寸用**不受限约束**：标签要摆在父容器（轨道只占 32dp 宽）左边，
+ * 沿用父约束的话 `width(64.dp)` 会被夹成 32dp，页码就被压扁了。
+ */
+private fun Modifier.placeAt(x: Int, y: Int): Modifier = this.layout { measurable, _ ->
+    val placeable = measurable.measure(Constraints())
+    layout(placeable.width, placeable.height) {
+        placeable.place(x, y)
+    }
+}
+
+/** 控件的**可触摸**宽度：拇指只有 7dp 宽，触摸区必须比它宽得多才按得住。 */
+private val ReaderScrubberWidth = 32.dp
+
+/** 轨道粗细 / 轨道离屏幕右边缘的距离。 */
+private val ReaderScrubberTrackWidth = 3.dp
+private val ReaderScrubberRightInset = 9.dp
+
+/** 拇指（滑块）的粗细与长度。 */
+private val ReaderScrubberThumbWidth = 7.dp
+private val ReaderScrubberThumbHeight = 44.dp
+
+/** 上下留白：控件不要压在顶栏（约 60dp）/ 底栏（约 90dp）上。 */
+private val ReaderScrubberTopInset = 60.dp
+private val ReaderScrubberBottomInset = 92.dp
+
+/** 拖动时跟在拇指左边的页码标签。 */
+private val ReaderScrubberLabelWidth = 64.dp
+private val ReaderScrubberLabelHeight = 26.dp
+private val ReaderScrubberLabelGap = 8.dp
 
 // ======================================================================
 // 控件栏
