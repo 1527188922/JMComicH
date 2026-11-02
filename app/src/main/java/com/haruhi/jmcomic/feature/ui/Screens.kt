@@ -390,8 +390,8 @@ fun LibraryScreen(
     if (confirmRemove) {
         ConfirmDialog(
             title = "从书库移出这 ${selection.size} 本？",
-            text = "移出书库后会删除书库记录、章节清单、收藏关联、阅读进度和本地图片。" +
-                "（不会删除已导出的 zip/pdf、官方 ZIP 和封面缓存）",
+            text = "移出书库后会删除书库记录、章节清单、阅读进度和本地图片。" +
+                "（不会删除已导出的zip/pdf和官方ZIP）",
             confirmText = "移出并删除",
             onConfirm = {
                 confirmRemove = false
