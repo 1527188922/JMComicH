@@ -1933,6 +1933,7 @@ private fun AboutDestination(
             }
         },
         onDeleteUsage = vm::deleteUsage,
+        onDeleteUsages = vm::deleteUsages,
         onClearCovers = vm::clearCovers,
     )
 }

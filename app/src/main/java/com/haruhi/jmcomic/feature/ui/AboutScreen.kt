@@ -1,8 +1,11 @@
 package com.haruhi.jmcomic.feature.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,8 +27,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,9 +41,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -76,9 +84,11 @@ import com.haruhi.jmcomic.ui.theme.StorageReaderCache
  *    状态机见 [UpdateState]；debug 包点击检查无反应）；
  * 2. **存储统计卡**——六类本地占用的分段条（**每一类都画引线 + 名字 + 大小**，
  *    含只占百分之几的 zip / pdf），点段看按本明细（大小降序，明细是一张带分隔线的
- *    白卡，操作按钮在每一行里）；封面缓存只有总量不钻取
- *    （Coil 磁盘缓存按 URL 哈希命名，无法按本归属），因此单独给一个「删除」按钮整段清除，
- *    这也是全应用唯一会删除封面缓存的入口。
+ *    白卡，操作按钮在每一行里）。明细行**长按进入多选**，多选模式下点行即勾选，
+ *    底部出现「全选 + 删除已选」操作条，可一次删掉同一类里的多项；
+ *    封面缓存只有总量不钻取（Coil 磁盘缓存按 URL 哈希命名，无法按本归属），
+ *    因此单独给一个「删除」按钮整段清除，这也是全应用唯一会删除封面缓存的入口。
+ *    **封面缓存不参与多选删除**，因为它没有明细行。
  *
  * 布局上整页是**一个 LazyColumn**：明细行可能有几百条，交给 Lazy 复用，
  * 也避免 LazyColumn 嵌 verticalScroll 的滚动冲突。
@@ -103,16 +113,47 @@ fun AboutScreen(
     onSendOutput: (String) -> Unit,
     /** 明细行操作：删除某一行的内容（界面已弹过确认框）。 */
     onDeleteUsage: (StorageKind, AlbumUsage) -> Unit,
+    /** 明细行操作：批量删除选中的多行（长按多选后确认，界面已弹过确认框）。 */
+    onDeleteUsages: (StorageKind, List<AlbumUsage>) -> Unit,
     /** 封面缓存段的「删除」：清空整段（界面已弹过确认框）。 */
     onClearCovers: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 待确认的删除目标（弹框是整页一份；确认后才调 ViewModel）
     var pendingDelete by remember { mutableStateOf<Pair<StorageKind, AlbumUsage>?>(null) }
+    var pendingBatchDelete by remember { mutableStateOf(false) }
     var pendingClearCovers by remember { mutableStateOf(false) }
 
+    // 多选状态是纯界面状态：长按进入、退出即清空，不需要活过页面重建。
+    // 选中项用「段 + 身份」拼出的稳定 key，避免重扫后下标变化导致误选别的行。
+    var selection by remember { mutableStateOf(emptySet<String>()) }
+    val currentKind = state.selected
+    val currentUsages = currentKind
+        ?.let { state.storage?.segment(it)?.items }
+        .orEmpty()
+    val selectedUsages = if (currentKind == null) {
+        emptyList()
+    } else {
+        currentUsages.filter { usageKey(currentKind, it) in selection }
+    }
+    val selecting = selection.isNotEmpty() && currentUsages.isNotEmpty()
+
+    // 换一段（或收起明细）时退出多选；重扫后把已经不存在的行从勾选集合里摘掉
+    LaunchedEffect(currentKind, currentUsages) {
+        if (selection.isEmpty()) return@LaunchedEffect
+        val kind = currentKind
+        if (kind == null) {
+            selection = emptySet()
+        } else {
+            val valid = currentUsages.map { usageKey(kind, it) }.toSet()
+            selection = selection.intersect(valid)
+        }
+    }
+    // 返回键先退出多选，而不是直接退出页面
+    PageBackHandler(enabled = selecting) { selection = emptySet() }
+
     Column(modifier = modifier.fillMaxSize()) {
-        // 二级页标题行（与最近浏览页同一套）
+        // 二级页标题行（与最近浏览页同一套）；多选时变成「退出多选 + 已选数量」
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -120,10 +161,21 @@ fun AboutScreen(
                 .defaultMinSize(minHeight = ButtonDefaults.MinHeight),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            if (selecting) {
+                IconButton(onClick = { selection = emptySet() }) {
+                    Icon(Icons.Default.Close, contentDescription = "退出多选")
+                }
+                Text(
+                    text = "已选 ${selection.size} 项",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                }
+                Text("关于", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             }
-            Text("关于", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
         }
 
         Box(
@@ -156,12 +208,15 @@ fun AboutScreen(
                                 kind = kind,
                                 segment = segment,
                                 loading = state.storage == null,
+                                // 多选时不再提示，避免和"已选 N 项"抢注意力
+                                showLongPressHint = !selecting && !usages.isNullOrEmpty(),
                             )
                         }
                     }
 
                     when {
-                        // 封面缓存：不按本钻取（用户拍板），只给一个整段清除按钮
+                        // 封面缓存：不按本钻取（用户拍板），只给一个整段清除按钮；
+                        // 它没有明细行，因此也不参与长按多选
                         usages == null -> item(key = "usage-covers") {
                             UsageCardItem(bottom = true) {
                                 CoversNote(
@@ -182,15 +237,29 @@ fun AboutScreen(
                             }
                         }
 
-                        else -> itemsIndexed(usages) { index, usage ->
+                        else -> itemsIndexed(
+                            items = usages,
+                            key = { _, usage -> usageKey(kind, usage) },
+                        ) { index, usage ->
                             val last = index == usages.lastIndex
+                            val key = usageKey(kind, usage)
                             UsageCardItem(bottom = last, divider = !last) {
                                 UsageRow(
                                     usage = usage,
                                     kind = kind,
+                                    selecting = selecting,
+                                    selected = key in selection,
                                     onOpenAlbum = onOpenAlbum,
                                     onOpenOutput = onOpenOutput,
                                     onSendOutput = onSendOutput,
+                                    onToggleSelect = {
+                                        selection = if (key in selection) {
+                                            selection - key
+                                        } else {
+                                            selection + key
+                                        }
+                                    },
+                                    onLongPress = { selection = selection + key },
                                     onRequestDelete = { pendingDelete = kind to usage },
                                 )
                             }
@@ -198,6 +267,18 @@ fun AboutScreen(
                     }
                 }
             }
+        }
+
+        // 多选操作条：与书库多选同款，吸在屏幕底部，拇指够得着
+        if (selecting && currentKind != null) {
+            StorageSelectionBar(
+                selectedCount = selection.size,
+                totalCount = currentUsages.size,
+                onSelectAll = {
+                    selection = currentUsages.map { usageKey(currentKind, it) }.toSet()
+                },
+                onDelete = { pendingBatchDelete = true },
+            )
         }
     }
 
@@ -246,6 +327,39 @@ fun AboutScreen(
                 onDeleteUsage(kind, usage)
             },
             onDismiss = { pendingDelete = null },
+        )
+    }
+
+    // 批量删除确认（长按多选 → 底部「删除已选」）
+    if (pendingBatchDelete && currentKind != null && selectedUsages.isNotEmpty()) {
+        val kind = currentKind
+        val count = selectedUsages.size
+        val bytes = selectedUsages.sumOf { it.sizeBytes }
+        ConfirmDialog(
+            title = "删除已选的 $count 项？",
+            text = when (kind) {
+                StorageKind.LIBRARY ->
+                    "会删除这 $count 本已下载的本地图片（约 ${formatBytes(bytes)}）。" +
+                        "导出的 zip / pdf、官方 ZIP 与阅读缓存不受影响。"
+                StorageKind.READER_CACHE ->
+                    "会删除这 $count 本的阅读器缓存（约 ${formatBytes(bytes)}）。" +
+                        "下次阅读时重新联网获取。"
+                StorageKind.OFFICIAL_ZIP ->
+                    "会删除这 $count 本在官方zip目录里的 zip 包（约 ${formatBytes(bytes)}）。" +
+                        "解压出来的文件夹不受影响。"
+                else ->
+                    "会删除这 $count 个导出文件（约 ${formatBytes(bytes)}）。此操作不可撤销。"
+            },
+            confirmText = "删除",
+            confirmButtonColors = ButtonDefaults.textButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+            onConfirm = {
+                pendingBatchDelete = false
+                onDeleteUsages(kind, selectedUsages)
+                selection = emptySet()
+            },
+            onDismiss = { pendingBatchDelete = false },
         )
     }
 
@@ -738,7 +852,12 @@ private fun UsageCardItem(
 
 /** 明细卡片表头：类型色点 + 类型名 + 总量（排版与「存储占用」卡的标题行一致）。 */
 @Composable
-private fun UsageSectionHeader(kind: StorageKind, segment: SegmentStats?, loading: Boolean) {
+private fun UsageSectionHeader(
+    kind: StorageKind,
+    segment: SegmentStats?,
+    loading: Boolean,
+    showLongPressHint: Boolean,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -754,11 +873,20 @@ private fun UsageSectionHeader(kind: StorageKind, segment: SegmentStats?, loadin
         )
         Spacer(Modifier.width(8.dp))
         Text(kind.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        Text(
-            text = if (loading) "统计中…" else "共 ${formatBytes(segment?.totalBytes ?: 0L)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = if (loading) "统计中…" else "共 ${formatBytes(segment?.totalBytes ?: 0L)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (showLongPressHint) {
+                Text(
+                    text = "长按可多选",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -825,15 +953,22 @@ private fun CoversNote(
  *   （以前是内容行 + 行下面另起一排按钮，按钮看着像挂在别的行上）；
  * - 大小挪到标题同一行的右端，跟标题基线对齐，不再单独占一块；
  * - 操作按段给（与详情页「导出文件」区块同一款按钮）：zip / pdf 是打开至 / 发送至 / 删除；
- *   漫画图片 / 阅读缓存只有删除（每行只删它代表的那一块，删除前弹确认框）。
+ *   漫画图片 / 阅读缓存只有删除（每行只删它代表的那一块，删除前弹确认框）；
+ * - **长按进入多选**：多选模式下点击是勾选 / 取消（不再进详情），行尾出现圆形勾选
+ *   指示，选中行铺一层淡淡的主色底；此时收起行内操作按钮，避免和批量操作打架。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UsageRow(
     usage: AlbumUsage,
     kind: StorageKind,
+    selecting: Boolean,
+    selected: Boolean,
     onOpenAlbum: (Long) -> Unit,
     onOpenOutput: (String) -> Unit,
     onSendOutput: (String) -> Unit,
+    onToggleSelect: () -> Unit,
+    onLongPress: () -> Unit,
     onRequestDelete: () -> Unit,
 ) {
     val navigable = usage.albumId != null
@@ -845,12 +980,23 @@ private fun UsageRow(
     }
     val detail = usage.detail?.let { privacyExportName(it, usage.albumId) }
     val exportRow = kind == StorageKind.EXPORT_ZIP || kind == StorageKind.EXPORT_PDF
+    val rowBackground = if (selected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+    } else {
+        Color.Transparent
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // enabled 已经挡掉了不可点的行，`?.let` 只是把 Long? 收成 Long
-            .clickable(enabled = navigable) { usage.albumId?.let(onOpenAlbum) }
+            .background(rowBackground)
+            // 多选时整行可点（包括无法归属的"其他"行）；非多选时只有能跳详情的行有反应
+            .combinedClickable(
+                onClick = {
+                    if (selecting) onToggleSelect() else usage.albumId?.let(onOpenAlbum)
+                },
+                onLongClick = onLongPress,
+            )
             .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 2.dp),
         verticalAlignment = Alignment.Top,
     ) {
@@ -888,10 +1034,15 @@ private fun UsageRow(
                     text = formatBytes(usage.sizeBytes),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    // TextButton 自带 12dp 内容左/右内边距：补上这 12dp，大小才和下面
-                    // 按钮的文字右边缘对齐（否则会往外多出 12dp，看着像没对齐）
-                    modifier = Modifier.padding(end = 12.dp),
+                    // 非多选时 TextButton 自带 12dp 内容左/右内边距：补上这 12dp，大小才和
+                    // 下面按钮的文字右边缘对齐（否则会往外多出 12dp，看着像没对齐）。
+                    // 多选时没有按钮，勾选指示贴边即可。
+                    modifier = Modifier.padding(end = if (selecting) 0.dp else 12.dp),
                 )
+                if (selecting) {
+                    Spacer(Modifier.width(8.dp))
+                    SelectionDot(selected)
+                }
             }
             if (detail != null) {
                 Text(
@@ -902,30 +1053,142 @@ private fun UsageRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // 操作按钮：右对齐、就在这一行里，样式与详情页「导出文件」区块一致
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
-            ) {
-                if (exportRow) {
-                    // 打开/发送要传**真实文件名**（privacyExportName 只换显示，不动操作）
-                    usage.detail?.let { fileName ->
-                        TextButton(onClick = { onOpenOutput(fileName) }) { Text("打开至") }
-                        TextButton(onClick = { onSendOutput(fileName) }) { Text("发送至") }
+            // 操作按钮：右对齐、就在这一行里，样式与详情页「导出文件」区块一致。
+            // 多选时收起，整行只负责勾选，避免误触单个删除。
+            if (!selecting) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                ) {
+                    if (exportRow) {
+                        // 打开/发送要传**真实文件名**（privacyExportName 只换显示，不动操作）
+                        usage.detail?.let { fileName ->
+                            TextButton(onClick = { onOpenOutput(fileName) }) { Text("打开至") }
+                            TextButton(onClick = { onSendOutput(fileName) }) { Text("发送至") }
+                        }
+                    }
+                    TextButton(
+                        onClick = onRequestDelete,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                        )
+                        Text("删除")
                     }
                 }
-                TextButton(
-                    onClick = onRequestDelete,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
+            }
+        }
+    }
+}
+
+/**
+ * 行尾的圆形勾选指示：选中 = 主色实心圆 + 白勾，未选中 = 空心圈。
+ *
+ * 明细行比较密集，20dp 的圆点比 Material Checkbox 更贴合这一行的排版；
+ * 点击由整行承担，圆点只做状态指示。
+ */
+@Composable
+private fun SelectionDot(selected: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent)
+            .border(
+                width = 1.5.dp,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.outline
+                },
+                shape = CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 明细行的稳定身份（多选勾选集合的 key）。
+ *
+ * 用「段 + 身份」而不是列表下标：删掉一行后重扫会让后面的行整体前移，
+ * 按下标记勾选会把"原来选中的"变成别的行。导出成品用文件名（[AlbumUsage.detail]），
+ * 其余用删除键（[AlbumUsage.folderName]），同一行在重扫前后保持不变。
+ */
+private fun usageKey(kind: StorageKind, usage: AlbumUsage): String {
+    val identity = when (kind) {
+        StorageKind.EXPORT_ZIP, StorageKind.EXPORT_PDF -> usage.detail ?: usage.title
+        else -> usage.folderName ?: usage.albumId?.toString() ?: usage.title
+    }
+    return "${kind.name}:$identity"
+}
+
+/**
+ * 存储明细的多选操作条（**吸在屏幕底部**，与书库多选同一套视觉）。
+ *
+ * 明细页的批量动作只有删除，所以只有一颗「删除已选」：
+ * 「全选」在左、删除占满剩余宽度，两者都至少 48dp 高，拇指扫过去就能按到；
+ * 退出多选由顶部标题栏的关闭按钮负责。
+ */
+@Composable
+private fun StorageSelectionBar(
+    selectedCount: Int,
+    totalCount: Int,
+    onSelectAll: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        // 抬起来一点，和上面的列表分开；顶部再压一条分隔线更清楚
+        tonalElevation = 3.dp,
+        shadowElevation = 8.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (selectedCount < totalCount) {
+                    TextButton(
+                        onClick = onSelectAll,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("全选") }
+                }
+                Button(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
                     ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Default.Delete,
                         contentDescription = null,
                         modifier = Modifier.size(ButtonDefaults.IconSize),
                     )
-                    Text("删除")
+                    Spacer(Modifier.width(8.dp))
+                    Text("删除已选（$selectedCount）")
                 }
             }
         }

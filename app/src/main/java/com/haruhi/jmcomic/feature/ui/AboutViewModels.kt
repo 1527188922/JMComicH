@@ -140,61 +140,134 @@ class AboutViewModel(
     // ------------------------------------------------------------------
 
     /**
-     * 删除明细里某一行的内容。**按段语义**：每行只删它所代表的那一块——
+     * 删除明细里某一行的内容：单行删除就是 [deleteUsages] 的特例。
+     *
+     * 确认弹窗由界面负责，这里收到调用就是用户已确认。
+     */
+    fun deleteUsage(kind: StorageKind, usage: AlbumUsage) {
+        deleteUsages(kind, listOf(usage))
+    }
+
+    /**
+     * 批量删除明细里的多行（长按多选后确认）。**按段语义**：每行只删它所代表的那一块——
      * 图片库行只删图片（`deleteAlbumFiles`，保留库记录、导出成品与官方 ZIP），
      * 阅读缓存行只删 `reader-cache` 目录，zip / pdf 行只删那一个成品文件，
      * 官方 ZIP 行只删直接放置的 `.zip`（解压出来的文件夹不动）。
-     * 确认弹窗由界面负责，这里收到调用就是用户已确认。
      *
+     * 全部删完只重扫一次、只提示一次；有失败的行会在提示里带上数量。
      * 封面缓存没有按本明细，不走这里；它的整段清除见 [clearCovers]。
      */
-    fun deleteUsage(kind: StorageKind, usage: AlbumUsage) {
-        when (kind) {
-            StorageKind.LIBRARY -> usage.folderName?.let { folder ->
-                viewModelScope.launch {
-                    val freed = repo.deleteAlbumFiles(folder)
-                    rescan()
-                    _state.update { it.copy(message = "已删除本地图片（${formatBytes(freed)}）") }
-                }
-            }
-
-            StorageKind.READER_CACHE -> usage.folderName?.let { folder ->
-                viewModelScope.launch {
-                    val freed = repo.deleteReaderCacheFiles(folder)
-                    rescan()
-                    _state.update { it.copy(message = "已删除阅读缓存（${formatBytes(freed)}）") }
-                }
-            }
-
-            StorageKind.EXPORT_ZIP, StorageKind.EXPORT_PDF -> usage.detail?.let { fileName ->
-                viewModelScope.launch {
-                    val deleted = exports.deleteOutput(fileName)
-                    rescan()
-                    _state.update {
-                        it.copy(
-                            message = if (deleted) {
-                                "已删除导出文件"
-                            } else {
-                                "删除失败，文件可能已经不在了"
-                            },
-                        )
+    fun deleteUsages(kind: StorageKind, usages: List<AlbumUsage>) {
+        if (kind == StorageKind.COVERS || usages.isEmpty()) return
+        viewModelScope.launch {
+            val (freed, removed, failed) = withContext(Dispatchers.IO) {
+                var freed = 0L
+                var removed = 0
+                var failed = 0
+                when (kind) {
+                    StorageKind.LIBRARY -> usages.forEach { usage ->
+                        val folder = usage.folderName
+                        if (folder == null) {
+                            failed++
+                        } else {
+                            runCatching { repo.deleteAlbumFiles(folder) }
+                                .onSuccess { freed += it; removed++ }
+                                .onFailure { failed++ }
+                        }
                     }
-                }
-            }
 
-            // 只删 `官方zip/<本子>/` 下的 .zip；解压出来的目录不动
-            StorageKind.OFFICIAL_ZIP -> usage.folderName?.let { folder ->
-                viewModelScope.launch {
-                    val freed = officialZips.deleteAlbum(folder)
-                    rescan()
-                    _state.update {
-                        it.copy(message = "已删除官方 ZIP（${formatBytes(freed)}）")
+                    StorageKind.READER_CACHE -> usages.forEach { usage ->
+                        val folder = usage.folderName
+                        if (folder == null) {
+                            failed++
+                        } else {
+                            runCatching { repo.deleteReaderCacheFiles(folder) }
+                                .onSuccess { freed += it; removed++ }
+                                .onFailure { failed++ }
+                        }
                     }
+
+                    StorageKind.EXPORT_ZIP, StorageKind.EXPORT_PDF -> usages.forEach { usage ->
+                        val fileName = usage.detail
+                        if (fileName == null) {
+                            failed++
+                        } else {
+                            runCatching { exports.deleteOutput(fileName) }
+                                .onSuccess { deleted ->
+                                    if (deleted) {
+                                        freed += usage.sizeBytes
+                                        removed++
+                                    } else {
+                                        failed++
+                                    }
+                                }
+                                .onFailure { failed++ }
+                        }
+                    }
+
+                    // 只删 `官方zip/<本子>/` 下的 .zip；解压出来的目录不动
+                    StorageKind.OFFICIAL_ZIP -> usages.forEach { usage ->
+                        val folder = usage.folderName
+                        if (folder == null) {
+                            failed++
+                        } else {
+                            runCatching { officialZips.deleteAlbum(folder) }
+                                .onSuccess { freed += it; removed++ }
+                                .onFailure { failed++ }
+                        }
+                    }
+
+                    // 封面缓存不支持按本钻取，按行删除不会走到这；整段清除走 clearCovers()
+                    StorageKind.COVERS -> Unit
                 }
+                Triple(freed, removed, failed)
+            }
+            rescan()
+            _state.update {
+                it.copy(message = deletedMessage(kind, usages.size, freed, removed, failed))
+            }
+        }
+    }
+
+    /** 批量删除后的一句提示：单行沿用原来的文案，多行带上数量和失败项。 */
+    private fun deletedMessage(
+        kind: StorageKind,
+        requested: Int,
+        freed: Long,
+        removed: Int,
+        failed: Int,
+    ): String {
+        val head = when (kind) {
+            StorageKind.LIBRARY -> if (requested == 1) {
+                "已删除本地图片（${formatBytes(freed)}）"
+            } else {
+                "已删除 $requested 本的本地图片（${formatBytes(freed)}）"
             }
 
-            // 封面缓存不支持按本钻取，按行删除不会走到这；整段清除走 clearCovers()
-            StorageKind.COVERS -> Unit
+            StorageKind.READER_CACHE -> if (requested == 1) {
+                "已删除阅读缓存（${formatBytes(freed)}）"
+            } else {
+                "已删除 $requested 本的阅读缓存（${formatBytes(freed)}）"
+            }
+
+            StorageKind.EXPORT_ZIP, StorageKind.EXPORT_PDF -> if (requested == 1) {
+                "已删除导出文件"
+            } else {
+                "已删除 $requested 个导出文件"
+            }
+
+            StorageKind.OFFICIAL_ZIP -> if (requested == 1) {
+                "已删除官方 ZIP（${formatBytes(freed)}）"
+            } else {
+                "已删除 $requested 本的官方 ZIP（${formatBytes(freed)}）"
+            }
+
+            StorageKind.COVERS -> ""
+        }
+        return when {
+            removed == 0 -> "删除失败，文件可能已经不在了"
+            failed > 0 -> "$head，$failed 项失败"
+            else -> head
         }
     }
 
