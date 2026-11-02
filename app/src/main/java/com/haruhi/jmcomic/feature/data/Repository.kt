@@ -345,14 +345,6 @@ class Repository(
     /** 最近预览记录本身（只有 id 与浏览时间）。 */
     suspend fun findRecent(aid: Long): RecentAlbumEntity? = recentDao.findById(aid)
 
-    /**
-     * 最近预览里的全部 id。
-     *
-     * 清空之前先取一份：清完就查不到"刚才有哪几本"了，
-     * 而这几本的封面要不要一起清，正是靠这份名单判断的（见 `AlbumCleaner`）。
-     */
-    suspend fun recentAlbumIds(): List<Long> = recentDao.allIds()
-
     suspend fun removeRecent(aid: Long) = recentDao.delete(aid)
 
     suspend fun clearRecent(): Int = recentDao.clear()
@@ -1021,8 +1013,9 @@ class Repository(
      * 移出书库后再进详情页/阅读器仍然有完整数据可看；
      * `collected` 在成员行里，随 [deleteLibraryRows] 一起消失（与旧实现"整行删掉"的效果一致）。
      *
-     * **本地文件不在这里删**：图片在本子目录、成品在系统下载目录、封面在 Coil 缓存，
-     * 三处都要清，由调用方（详情页 / 书库多选）统一编排。
+     * **本地文件不在这里删**：图片在本子目录、成品在系统下载目录、官方 ZIP 在下载目录，
+     * 三处都由调用方（详情页 / 书库多选）统一编排；封面缓存不在删除范围内，
+     * 只在「关于 → 存储占用 → 封面缓存」里整体清除。
      *
      * **「继续阅读」指针**（kind = `JM_CONTINUE`，独立一行）只在它正指向被移出的本子时
      * 一并清掉（用户方案 B）：卡片宁可消失，也不回退到一本更早读过的旧书。

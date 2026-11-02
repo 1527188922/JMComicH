@@ -399,7 +399,7 @@ class AppContainer(private val appContext: Context) {
     /** PDF 生成器（pdfbox-android；超长图按高度切片）。 */
     val pdfWriter: com.haruhi.jmcomic.core.codec.PdfWriter by lazy {
         // scratchDir 指向 libraryDirs.tmp：PDFBox 的临时文件（PDFBox*.tmp）落在既有的
-        // "可随时整体清理"临时目录里，能被 clearCache() 等半成品清理逻辑一并覆盖。
+        // "可随时整体清理"临时目录里，和下载/导出的半成品集中在一处。
         // 图片流写磁盘而不是攒在堆内存里，避免"图片太多 → OOM 闪退"。见 PdfWriter.memoryUsage()。
         com.haruhi.jmcomic.core.codec.PdfWriter(scratchDir = libraryDirs.tmp)
     }
@@ -454,13 +454,27 @@ class AppContainer(private val appContext: Context) {
         )
     }
 
-    /** 「关于」页的本地存储统计：六类占用（图片库 / 封面 / 导出 zip/pdf / 官方 ZIP / 阅读缓存）。 */
+    /**
+     * 「关于」页的本地存储统计：六类占用（图片库 / 封面 / 导出 zip/pdf / 官方 ZIP / 阅读缓存）。
+     *
+     * 封面段没有按本明细，只提供整段清除（[StorageStatsCollector.clearCovers]）。
+     */
     val storageStatsCollector: com.haruhi.jmcomic.feature.data.StorageStatsCollector by lazy {
         com.haruhi.jmcomic.feature.data.StorageStatsCollector(
             repo = jmRepository,
             dirs = libraryDirs,
             exports = exportPublisher,
             officialZips = officialZipPublisher,
+            clearCoverCache = {
+                val freed = libraryDirs.sizeOf(libraryDirs.covers)
+                runCatching {
+                    imageLoader.memoryCache?.clear()
+                    imageLoader.diskCache?.clear()
+                }.onFailure { Timber.tag("jm").w(it, "清空封面缓存失败") }
+                    .isSuccess
+                    // -1 表示清除失败（正常空缓存是 0），界面据此区分"已经是空的"与"清除失败"
+                    .let { ok -> if (ok) freed else -1L }
+            },
         )
     }
 
@@ -583,42 +597,32 @@ class AppContainer(private val appContext: Context) {
     }
 
     /**
-     * 封面缓存的逐条失效。
+     * "删除本地文件 / 从书库移除"的统一编排
+     * （图片 + 旧版阅读缓存 + 任务行 + 半成品/中转文件；导出成品与官方 ZIP 成品只在
+     * 「删除本地文件」里删，两入口的具体差别见 [com.haruhi.jmcomic.feature.data.AlbumCleaner]）。
      *
-     * 封面走 Coil 的磁盘缓存（`files/covers` 里是按 URL 哈希命名的文件），
-     * 所以"删掉某一本的封面"只能按 key 失效，不能删文件名。
-     * 内存缓存也一并清掉，否则刚删完还会从内存里显示出来。
+     * 封面缓存**不在这里删**：全应用只在「关于 → 存储占用 → 封面缓存」里整体清除。
      */
-    private val coverCache: com.haruhi.jmcomic.feature.data.CoverCache =
-        object : com.haruhi.jmcomic.feature.data.CoverCache {
-            override fun evict(albumId: Long) {
-                // 与 `Cover` 用同一条图片线路拼 URL，否则磁盘缓存里的那份删不到
-                val url = Defaults.buildCoverUrl(albumId, imageDomain.value)
-                runCatching {
-                    imageLoader.diskCache?.remove(url)
-                    imageLoader.memoryCache?.remove(coil3.memory.MemoryCache.Key(url))
-                }.onFailure { Timber.tag("jm").w(it, "清理封面缓存失败：%d", albumId) }
-            }
-        }
-
-    /** "删除本地文件 / 从书库移除"的统一编排（记录 + 图片 + 成品 + 封面 + 旧版阅读缓存）。 */
     val jmAlbumCleaner: com.haruhi.jmcomic.feature.data.AlbumCleaner by lazy {
         com.haruhi.jmcomic.feature.data.AlbumCleaner(
             repo = jmRepository,
             exports = jmExports,
             tasks = downloadTasks,
-            coverCache = coverCache,
             // 旧版阅读缓存（reader-cache/<aid>）跟着这本一起删：删本地文件就是"别占我空间了"
             dirs = libraryDirs,
+            officialZips = officialZipPublisher,
+            // 官方 ZIP 正在下载时先等执行协程退出，再删 tmp 里的中转文件
+            stopOfficialZipTask = { taskId -> jmDownloads.cancelAndWait(taskId) },
         )
     }
 
     /**
      * 封面图加载器。
      *
-     * **磁盘缓存显式指向 [LibraryDirs.covers]（`files/covers`）**：
+     * **磁盘缓存显式指向 [LibraryDirs.covers]（`files/library/covers`）**：
      * "加载过的封面优先读本地、没有才请求网络"就是 Coil 磁盘缓存的默认行为，
-     * 不需要自己写一套文件缓存。缓存文件可被设置里的"清理缓存"整体清空。
+     * 不需要自己写一套文件缓存。整份缓存只由「关于 → 存储占用 → 封面缓存 → 删除」
+     * 通过 [storageStatsCollector] 清除，其余删除操作都不动它。
      *
      * 网络层复用 JM 的 OkHttp（带正确的 UA 与代理设置）——
      * JM 的封面域名对 UA 有校验，用 Coil 默认的 OkHttp 会被拒。

@@ -453,7 +453,7 @@ fun ModeRoot(
     val taskViewModel: TaskViewModel = viewModel(factory = factory)
     val taskState by taskViewModel.state.collectAsStateWithLifecycle()
 
-    // 封面统一走应用级 ImageLoader：正确的 UA/代理 + files/covers 磁盘缓存
+    // 封面统一走应用级 ImageLoader：正确的 UA/代理 + files/library/covers 磁盘缓存
     // （用户要求第 8 点：加载过的封面优先读本地）
     // 图片线路同时下发：封面 URL 跟着设置页选中的那条走，切线路后已显示的封面立即换源。
     val imageDomain by container.imageDomain.collectAsStateWithLifecycle()
@@ -1933,6 +1933,7 @@ private fun AboutDestination(
             }
         },
         onDeleteUsage = vm::deleteUsage,
+        onClearCovers = vm::clearCovers,
     )
 }
 

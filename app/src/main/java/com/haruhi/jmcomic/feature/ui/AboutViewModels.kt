@@ -141,9 +141,12 @@ class AboutViewModel(
 
     /**
      * 删除明细里某一行的内容。**按段语义**：每行只删它所代表的那一块——
-     * 图片库行只删图片（`deleteAlbumFiles`，保留库记录与导出成品），
-     * 阅读缓存行只删 `reader-cache` 目录，zip / pdf 行只删那一个成品文件。
+     * 图片库行只删图片（`deleteAlbumFiles`，保留库记录、导出成品与官方 ZIP），
+     * 阅读缓存行只删 `reader-cache` 目录，zip / pdf 行只删那一个成品文件，
+     * 官方 ZIP 行只删直接放置的 `.zip`（解压出来的文件夹不动）。
      * 确认弹窗由界面负责，这里收到调用就是用户已确认。
+     *
+     * 封面缓存没有按本明细，不走这里；它的整段清除见 [clearCovers]。
      */
     fun deleteUsage(kind: StorageKind, usage: AlbumUsage) {
         when (kind) {
@@ -190,8 +193,30 @@ class AboutViewModel(
                 }
             }
 
-            // 封面缓存不支持按本钻取，不会走到这
+            // 封面缓存不支持按本钻取，按行删除不会走到这；整段清除走 clearCovers()
             StorageKind.COVERS -> Unit
+        }
+    }
+
+    /**
+     * 清空全部封面缓存（含头像等走 Coil 的图片）。
+     *
+     * 这是全应用唯一会删除封面的入口：不删漫画图片、导出成品、官方 ZIP 与书库记录，
+     * 之后列表里的封面会重新联网加载。
+     */
+    fun clearCovers() {
+        viewModelScope.launch {
+            val freed = collector.clearCovers()
+            rescan()
+            _state.update {
+                it.copy(
+                    message = when {
+                        freed > 0 -> "已清除封面缓存（${formatBytes(freed)}）"
+                        freed < 0 -> "清除失败，请稍后重试"
+                        else -> "封面缓存已经是空的"
+                    },
+                )
+            }
         }
     }
 

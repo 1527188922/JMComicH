@@ -18,14 +18,14 @@ import java.io.File
  *   covers/                    封面缓存（Coil 磁盘缓存）
  *   reader-cache/               **旧版**阅读缓存（升级用户可能还有；新版本不再写入）
  *     <aid>/<cid>/00001.webp
- *   tmp/                       下载中转（.tmp / .part）＋ PDF 生成临时文件（PDFBox*.tmp），可随时整体清理
+ *   tmp/                       下载中转（.tmp / .part、官方 zip 的 .zip）＋ PDF 生成临时文件（PDFBox*.tmp），可随时整体清理
  *   export/                    导出中转（打包完成后交给 SAF/MediaStore，随后删除）
  *   crash/                     崩溃日志
  * ```
  *
  * 2026-10 起 `library/` 本身就是**站点原始字节**（阅读/导出时现场解扰），所以新版本
  * **不再产生 `reader-cache`**：这个目录只作为旧安装的遗留缓存保留——统计页还能看到、
- * 「清理缓存」还能一键清掉，但新代码一行都不往里写。
+ * 也能按本删掉，但新代码一行都不往里写。
  *
  * `tmp` 与 `export` 是"可以随便删"的目录；`library` / `covers` 是用户资产，
  * 只有用户显式删除才会动它们（见计划 §9.1「清理缓存不删除漫画及导出成品」）。
@@ -44,12 +44,12 @@ class LibraryDirs(root: File) {
      * **旧版**阅读器缓存根目录：`reader-cache/<aid>/<cid>/<文件名>`。
      *
      * 2026-10 起新版本不再写入：`library/` 直接存站点原始字节，阅读时现场解扰。
-     * 这里保留属性只为两件事：给升级用户一个**清理入口**（统计页 / `clearCache`），
-     * 以及下载时把旧缓存当作本地种子复用一次。
+     * 这里保留属性只为两件事：给升级用户一个**清理入口**（统计页按本删除），
+     * 以及阅读/下载时把旧缓存当作本地种子复用一次。
      */
     val readerCache: File = File(root, "reader-cache")
 
-    /** 临时目录：下载中转（`.tmp` / `.part`）与 PDF 生成临时文件（`PDFBox*.tmp`），可整体清理。 */
+    /** 临时目录：下载中转（`.tmp` / `.part`、官方 zip 的 `.zip`）与 PDF 生成临时文件（`PDFBox*.tmp`），可整体清理。 */
     val tmp: File = File(root, "tmp")
 
     /** 导出中转目录（zip/pdf 生成中），可整体清理。 */
@@ -89,7 +89,7 @@ class LibraryDirs(root: File) {
         return this
     }
 
-    /** 临时文件目录（每次启动清一次），下载中转都放这里。 */
+    /** 临时文件目录：下载中转（`official_zip_<aid>_<cid>.zip` 等）与 PDF 生成临时文件都放这里。 */
     fun newTempFile(prefix: String, suffix: String = ".tmp"): File = File.createTempFile(prefix, suffix, tmp.also { it.mkdirs() })
 
     /**

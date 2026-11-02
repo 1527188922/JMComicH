@@ -740,7 +740,9 @@ fun AlbumDetailScreen(
     if (showDeleteFilesDialog) {
         ConfirmDialog(
             title = "删除本地文件？",
-            text = "会删除这本漫画所有下载的图片（约 ${formatBytes(state.localSizeBytes)}）和导出的 zip/pdf。",
+            text = "会删除这本漫画所有下载的图片（约 ${formatBytes(state.localSizeBytes)}）、" +
+                "导出的 zip/pdf，以及官方zip目录里这本的 ZIP。" +
+                "解压出来的官方 ZIP 文件夹、书库记录和封面缓存不受影响。",
             confirmText = "删除文件",
             onConfirm = { showDeleteFilesDialog = false; onDeleteAlbumFiles() },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
@@ -750,7 +752,8 @@ fun AlbumDetailScreen(
     if (showDeleteRecordDialog) {
         ConfirmDialog(
             title = "从书库移出？",
-            text = "移出书库后会删除本地图片、收藏夹、阅读进度。（不会删除已导出的 zip/pdf）。",
+            text = "移出书库后会删除书库记录、章节清单、收藏关联、阅读进度和本地图片。" +
+                "（不会删除已导出的 zip/pdf、官方 ZIP 和封面缓存）",
             confirmText = "移出",
             onConfirm = { showDeleteRecordDialog = false; onDeleteAlbumRecord() },
             confirmButtonColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),

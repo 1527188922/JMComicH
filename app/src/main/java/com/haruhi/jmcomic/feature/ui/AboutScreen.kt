@@ -74,10 +74,11 @@ import com.haruhi.jmcomic.ui.theme.StorageReaderCache
  * 两块内容：
  * 1. **应用信息卡**——当前版本 + 检查更新（Gitee 最新发行版 → 应用内下载 → 唤起安装，
  *    状态机见 [UpdateState]；debug 包点击检查无反应）；
- * 2. **存储统计卡**——五类本地占用的分段条（**每一类都画引线 + 名字 + 大小**，
+ * 2. **存储统计卡**——六类本地占用的分段条（**每一类都画引线 + 名字 + 大小**，
  *    含只占百分之几的 zip / pdf），点段看按本明细（大小降序，明细是一张带分隔线的
  *    白卡，操作按钮在每一行里）；封面缓存只有总量不钻取
- *    （Coil 磁盘缓存按 URL 哈希命名，无法按本归属）。
+ *    （Coil 磁盘缓存按 URL 哈希命名，无法按本归属），因此单独给一个「删除」按钮整段清除，
+ *    这也是全应用唯一会删除封面缓存的入口。
  *
  * 布局上整页是**一个 LazyColumn**：明细行可能有几百条，交给 Lazy 复用，
  * 也避免 LazyColumn 嵌 verticalScroll 的滚动冲突。
@@ -102,10 +103,13 @@ fun AboutScreen(
     onSendOutput: (String) -> Unit,
     /** 明细行操作：删除某一行的内容（界面已弹过确认框）。 */
     onDeleteUsage: (StorageKind, AlbumUsage) -> Unit,
+    /** 封面缓存段的「删除」：清空整段（界面已弹过确认框）。 */
+    onClearCovers: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 待确认的删除目标（弹框是整页一份；确认后才调 ViewModel）
     var pendingDelete by remember { mutableStateOf<Pair<StorageKind, AlbumUsage>?>(null) }
+    var pendingClearCovers by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         // 二级页标题行（与最近浏览页同一套）
@@ -157,15 +161,17 @@ fun AboutScreen(
                     }
 
                     when {
-                        // 封面缓存：不按本钻取（用户拍板）
+                        // 封面缓存：不按本钻取（用户拍板），只给一个整段清除按钮
                         usages == null -> item(key = "usage-covers") {
                             UsageCardItem(bottom = true) {
-                                UsageNote(
+                                CoversNote(
                                     text = if (segment == null) {
                                         "统计中…"
                                     } else {
                                         "封面缓存共 ${formatBytes(segment.totalBytes)}（含头像等图片）"
                                     },
+                                    canClear = (segment?.totalBytes ?: 0L) > 0L,
+                                    onRequestClear = { pendingClearCovers = true },
                                 )
                             }
                         }
@@ -221,13 +227,13 @@ fun AboutScreen(
             text = when (kind) {
                 StorageKind.LIBRARY ->
                     "会删除《$title》的本地图片（约 ${formatBytes(usage.sizeBytes)}）。" +
-                        "导出的 zip / pdf 与阅读缓存不受影响。"
+                        "导出的 zip / pdf、官方 ZIP 与阅读缓存不受影响。"
                 StorageKind.READER_CACHE ->
                     "会删除《$title》的阅读器缓存（约 ${formatBytes(usage.sizeBytes)}）。" +
                         "下次阅读时重新联网获取。"
                 StorageKind.OFFICIAL_ZIP ->
-                    "会删除《$title》在官方zip目录里的 ${usage.detail ?: "zip 包"}" +
-                        "（约 ${formatBytes(usage.sizeBytes)}）。解压出来的文件夹不受影响。"
+                    "会删除《$title》在官方zip目录里的 zip 包（${usage.detail ?: "1 个"}，" +
+                        "约 ${formatBytes(usage.sizeBytes)}）。解压出来的文件夹不受影响。"
                 else ->
                     "会删除 ${fileName ?: usage.title}（约 ${formatBytes(usage.sizeBytes)}）。此操作不可撤销。"
             },
@@ -240,6 +246,24 @@ fun AboutScreen(
                 onDeleteUsage(kind, usage)
             },
             onDismiss = { pendingDelete = null },
+        )
+    }
+
+    if (pendingClearCovers) {
+        val coversBytes = state.storage?.segment(StorageKind.COVERS)?.totalBytes ?: 0L
+        ConfirmDialog(
+            title = "清除封面缓存？",
+            text = "会清空全部封面与头像等图片缓存（约 ${formatBytes(coversBytes)}），" +
+                "之后列表里的封面会重新联网加载。不会删除漫画图片、导出文件、官方 ZIP 或书库记录。",
+            confirmText = "清除",
+            onConfirm = {
+                pendingClearCovers = false
+                onClearCovers()
+            },
+            confirmButtonColors = ButtonDefaults.textButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+            onDismiss = { pendingClearCovers = false },
         )
     }
 }
@@ -738,7 +762,7 @@ private fun UsageSectionHeader(kind: StorageKind, segment: SegmentStats?, loadin
     }
 }
 
-/** 明细卡里的一行纯文字（封面缓存的说明、空态）：不再单独划一个区域出来。 */
+/** 明细卡里的一行纯文字（空态等）：不再单独划一个区域出来。 */
 @Composable
 private fun UsageNote(text: String) {
     Text(
@@ -749,6 +773,47 @@ private fun UsageNote(text: String) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 14.dp),
     )
+}
+
+/**
+ * 封面缓存段的说明行 + 整段「删除」按钮。
+ *
+ * 封面缓存无法按本归属，没有明细行可点，所以删除入口只能放在这里：
+ * 文案说清"只清封面/头像"，避免用户误以为会删漫画图片或书库记录。
+ */
+@Composable
+private fun CoversNote(
+    text: String,
+    canClear: Boolean,
+    onRequestClear: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            onClick = onRequestClear,
+            enabled = canClear,
+            colors = ButtonDefaults.textButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Delete,
+                contentDescription = null,
+                modifier = Modifier.size(ButtonDefaults.IconSize),
+            )
+            Text("删除")
+        }
+    }
 }
 
 /**

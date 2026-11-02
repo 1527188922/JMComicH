@@ -546,10 +546,6 @@ interface RecentAlbumDao {
     @Query("SELECT COUNT(*) FROM t_jm_recent_album")
     fun observeCount(): Flow<Int>
 
-    /** 全部 id；"清空最近预览"前先取一份，用来判断哪些封面还能删。 */
-    @Query("SELECT id FROM t_jm_recent_album")
-    suspend fun allIds(): List<Long>
-
     /** 只更新浏览时间（进入详情页/阅读页时调用）。 */
     @Query("UPDATE t_jm_recent_album SET viewed_time = :viewedTime WHERE id = :id")
     suspend fun touch(id: Long, viewedTime: Long)

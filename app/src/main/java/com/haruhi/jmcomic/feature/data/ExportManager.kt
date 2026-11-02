@@ -345,15 +345,15 @@ class ExportManager(
     /**
      * 删除该本子的导出成品（zip + pdf）。
      *
-     * "删除本地文件"与"从书库移除"都要连导出成品一起清掉（用户要求第 6、7 点）——
-     * 成品在系统下载目录里，不在本子目录下，所以必须单独删。
+     * 只有「删除本地文件」会调用它；「从书库移除」保留已导出的成品
+     * （成品在系统下载目录里，不在本子目录下，所以必须单独删）。
      *
      * @return 删掉的文件个数
      */
     suspend fun deleteOutputs(album: AlbumEntity): Int = withContext(Dispatchers.IO) {
-        val folder = album.albumFolderName ?: return@withContext 0
+        val folder = album.albumFolderName?.takeIf { it.isNotBlank() } ?: "JM${album.id}"
         // 一次列全再按"忽略系统重名序号"的名字过滤：带 ` (1)` 的成品也要一起删，
-        // 否则"删除本地文件 / 移出书库"会留下一份同内容的大文件。
+        // 否则"删除本地文件"会留下一份同内容的大文件。
         publisher.listAll()
             .filter { file ->
                 ExportFormat.entries.any { format ->
@@ -369,12 +369,12 @@ class ExportManager(
      *
      * 与 [deleteOutputs] 的区别：那边删的是交给系统目录的**成品**（只有用户显式
      * "删除本地文件"才动），这边删的是没发布成功、或导出被中断后残留在应用私有目录的
-     * **中间产物**。「从书库移除」只清半成品，**成品保留**（用户拍板）。
+     * **中间产物**。「删除本地文件」与「从书库移除」都会清半成品；成品是否保留由调用方决定。
      *
      * @return 删掉的文件个数
      */
     suspend fun deleteTemps(album: AlbumEntity): Int = withContext(Dispatchers.IO) {
-        val folder = album.albumFolderName ?: return@withContext 0
+        val folder = album.albumFolderName?.takeIf { it.isNotBlank() } ?: "JM${album.id}"
         ExportFormat.entries.count { format ->
             File(dirs.export, "$folder.${format.extension}").delete()
         }

@@ -6,7 +6,6 @@ import com.google.common.truth.Truth.assertThat
 import com.haruhi.jmcomic.core.codec.ArchiveWriter
 import com.haruhi.jmcomic.core.codec.PdfWriter
 import com.haruhi.jmcomic.core.database.JmComicDatabase
-import com.haruhi.jmcomic.core.database.entity.DownloadStatus
 import com.haruhi.jmcomic.core.database.entity.DownloadType
 import com.haruhi.jmcomic.core.database.entity.AlbumBaseEntity
 import com.haruhi.jmcomic.core.database.entity.AlbumEntity
@@ -36,13 +35,16 @@ import java.io.File
 /**
  * "删除一本漫画"的验收（用户要求第 6、7 点）。
  *
- * 两个入口的差别只有**删不删数据库记录**，所以这里把各处痕迹（图片 / 导出成品 / 封面缓存 /
- * 数据库表）分开断言，任何一处漏删都会挂。
+ * 两个入口的差别是**删不删数据库记录**、以及**系统下载目录里的成品保不保留**，
+ * 所以这里把各处痕迹（图片 / 导出成品 / 官方 ZIP 中转文件 / 数据库表）分开断言，
+ * 任何一处漏删都会挂。
+ *
+ * 封面缓存**不在这两个入口里删**：全应用只在「关于 → 存储占用 → 封面缓存」整体清除。
  *
  * **"从书库移除"不删最近浏览**（用户要求第 5 点）：移出书库影响的是书库与本地文件，
  * "刚看过什么"是另一件事，保留后最近列表里还能看到这本。
  *
- * 另外验证"从书库移除"会先取消还在跑的任务——否则下载会把文件又写回刚删掉的目录。
+ * 另外验证删除前会先停掉还在跑的任务——否则下载会把文件又写回刚删掉的目录。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -57,9 +59,9 @@ class AlbumCleanerTest {
     private lateinit var reading: ReadingRepository
     private lateinit var tasks: DownloadTaskRepository
     private lateinit var publisher: FakeExportPublisher
-    private lateinit var covers: RecordingCoverCache
     private lateinit var cleaner: AlbumCleaner
     private lateinit var scope: CoroutineScope
+    private val stoppedOfficialZipTasks = mutableListOf<Long>()
 
     private val albumId = 480854L
     private val folderName = "测试本子_JM480854"
@@ -87,7 +89,6 @@ class AlbumCleanerTest {
             chapterDao = db.chapterDao(),
         )
         publisher = FakeExportPublisher(temp.newFolder("downloads"))
-        covers = RecordingCoverCache()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         cleaner = AlbumCleaner(
             repo = repo,
@@ -101,8 +102,8 @@ class AlbumCleanerTest {
                 scope = scope,
             ),
             tasks = tasks,
-            coverCache = covers,
             dirs = dirs,
+            stopOfficialZipTask = { taskId -> stoppedOfficialZipTasks += taskId },
         )
     }
 
@@ -129,12 +130,44 @@ class AlbumCleanerTest {
         assertThat(runBlocking { repo.findAlbum(albumId) }).isNotNull()
         assertThat(runBlocking { repo.chaptersOf(album()) }).hasSize(1)
         assertThat(runBlocking { repo.localAlbumDetail(albumId) }!!.fromLibrary).isTrue()
-        // 封面**不删**：只删文件时列表里还要显示封面
-        assertThat(covers.evicted).isEmpty()
     }
 
     @Test
-    fun `removing from library wipes records favorites progress but keeps recent and therefore the cover`() {
+    fun `deleting files removes official zip temp files but not extracted folders`() {
+        seedAlbum()
+        seedChapter()
+        val zip = File(dirs.tmp, "official_zip_${albumId}_1.zip").apply { writeBytes(ByteArray(8)) }
+        val part = File(dirs.tmp, "official_zip_${albumId}_1.zip.part").apply { writeBytes(ByteArray(8)) }
+        // 解压出来的文件夹在公共下载目录，不在 tmp，删除不应波及（这里只验证 tmp 被清）
+        val otherAlbumTemp = File(dirs.tmp, "official_zip_999999_1.zip").apply { writeBytes(ByteArray(8)) }
+
+        runBlocking { cleaner.deleteFiles(listOf(album())) }
+
+        assertThat(zip.exists()).isFalse()
+        assertThat(part.exists()).isFalse()
+        assertThat(otherAlbumTemp.exists()).isTrue()
+    }
+
+    @Test
+    fun `deleting files stops the running official zip task`() {
+        seedAlbum()
+        seedChapter()
+        val taskId = runBlocking {
+            val id = (tasks.submit(DownloadType.JM_OFFICIAL_ZIP, albumId.toString(), "测试本子", null)
+                as DownloadTaskRepository.SubmitResult.Created).taskId
+            tasks.markRunning(id)
+            id
+        }
+
+        runBlocking { cleaner.deleteFiles(listOf(album())) }
+
+        // 先同步停任务（生产环境等执行协程退出），再删任务行与中转文件
+        assertThat(stoppedOfficialZipTasks).containsExactly(taskId)
+        assertThat(runBlocking { tasks.findById(taskId) }).isNull()
+    }
+
+    @Test
+    fun `removing from library wipes records favorites progress but keeps recent`() {
         seedAlbum()
         seedChapter()
         publish("$folderName.zip")
@@ -157,10 +190,11 @@ class AlbumCleanerTest {
         val result = runBlocking { cleaner.removeFromLibrary(listOf(album())) }
 
         assertThat(result.removedRecords).isTrue()
-        assertThat(result.removedExports).isEqualTo(2)
+        // 导出成品保留（用户拍板：已落到系统下载目录的包不该被顺手删）
+        assertThat(result.removedExports).isEqualTo(0)
         assertThat(dirs.albumDir(folderName).exists()).isFalse()
-        assertThat(File(publisher.dir, "$folderName.zip").exists()).isFalse()
-        assertThat(File(publisher.dir, "$folderName.pdf").exists()).isFalse()
+        assertThat(File(publisher.dir, "$folderName.zip").exists()).isTrue()
+        assertThat(File(publisher.dir, "$folderName.pdf").exists()).isTrue()
 
         // 书库、章节清单、收藏关联、阅读位置都不能留痕
         assertThat(runBlocking { repo.findAlbum(albumId) }).isNull()
@@ -179,24 +213,10 @@ class AlbumCleanerTest {
         // 基础数据缓存也**必须保留**（本次要求：缓存表不因任何操作删除），离线仍能看详情
         assertThat(runBlocking { db.albumDao().findById(albumId) }).isNotNull()
         assertThat(runBlocking { repo.localAlbumDetail(albumId) }!!.fromLibrary).isFalse()
-        // 既然它还在最近页上露面，封面就不能删（用户第九轮要求第 3 点）
-        assertThat(covers.evicted).isEmpty()
     }
 
     @Test
-    fun `removing from library clears the cover when the album is not in recent anymore`() {
-        seedAlbum()
-        seedChapter()
-
-        runBlocking { cleaner.removeFromLibrary(listOf(album())) }
-
-        // 书库与最近浏览里都没有这本了 -> 封面缓存没人用，清掉
-        assertThat(runBlocking { repo.findRecent(albumId) }).isNull()
-        assertThat(covers.evicted).containsExactly(albumId)
-    }
-
-    @Test
-    fun `clearing recent keeps the cover of albums that are still in the library`() {
+    fun `clearing recent only removes records and leaves files alone`() {
         seedAlbum()
         seedChapter()
         runBlocking { repo.touchRecent(albumId) }
@@ -205,25 +225,13 @@ class AlbumCleanerTest {
 
         assertThat(removed).isEqualTo(1)
         assertThat(runBlocking { repo.findRecent(albumId) }).isNull()
-        // 书库里还有这本，书库页还要显示它的封面
+        // 书库与图片都不受影响（封面缓存只在「关于」页整段清除，这两个入口一概不动）
         assertThat(runBlocking { repo.findAlbum(albumId) }).isNotNull()
-        assertThat(covers.evicted).isEmpty()
+        assertThat(dirs.albumDir(folderName).exists()).isTrue()
     }
 
     @Test
-    fun `clearing recent drops covers that the library no longer needs`() {
-        // 只在最近浏览里、不在书库里：正是"移出书库之后"的那种状态
-        runBlocking { repo.touchRecent(albumId) }
-
-        runBlocking { cleaner.clearRecent() }
-
-        assertThat(runBlocking { repo.findRecent(albumId) }).isNull()
-        assertThat(runBlocking { repo.findAlbum(albumId) }).isNull()
-        assertThat(covers.evicted).containsExactly(albumId)
-    }
-
-    @Test
-    fun `removing one recent entry only drops its cover when the library does not have it`() {
+    fun `removing one recent entry only removes the record`() {
         seedAlbum()
         seedChapter()
         runBlocking { repo.touchRecent(albumId) }
@@ -231,11 +239,11 @@ class AlbumCleanerTest {
         runBlocking { cleaner.removeRecent(albumId) }
 
         assertThat(runBlocking { repo.findRecent(albumId) }).isNull()
-        assertThat(covers.evicted).isEmpty()
+        assertThat(dirs.albumDir(folderName).exists()).isTrue()
     }
 
     @Test
-    fun `removing from library cancels the running download task first`() {
+    fun `removing from library stops and deletes the running download task`() {
         seedAlbum()
         seedChapter()
         val taskId = runBlocking {
@@ -247,12 +255,12 @@ class AlbumCleanerTest {
 
         runBlocking { cleaner.removeFromLibrary(listOf(album())) }
 
-        // 任务被打成已取消（不是删掉记录：任务页还要能说明"为什么停了"）
-        assertThat(runBlocking { tasks.findById(taskId) }!!.status).isEqualTo(DownloadStatus.CANCELLED)
+        // 先落 PAUSED 停掉执行器，再删任务行
+        assertThat(runBlocking { tasks.findById(taskId) }).isNull()
     }
 
     @Test
-    fun `deleting files leaves a running task alone`() {
+    fun `deleting files stops and deletes the running download task`() {
         seedAlbum()
         seedChapter()
         val taskId = runBlocking {
@@ -264,8 +272,7 @@ class AlbumCleanerTest {
 
         runBlocking { cleaner.deleteFiles(listOf(album())) }
 
-        // "删除本地文件"不删记录：任务照跑，用户可能是想重下这一本
-        assertThat(runBlocking { tasks.findById(taskId) }!!.status).isEqualTo(DownloadStatus.RUNNING)
+        assertThat(runBlocking { tasks.findById(taskId) }).isNull()
     }
 
     // ------------------------------------------------------------------
@@ -313,12 +320,5 @@ class AlbumCleanerTest {
     /** 直接在"下载目录"里造一个成品，等价于"之前导出过"。 */
     private fun publish(name: String) {
         publisher.seed(name)
-    }
-
-    private class RecordingCoverCache : CoverCache {
-        val evicted = mutableListOf<Long>()
-        override fun evict(albumId: Long) {
-            evicted += albumId
-        }
     }
 }

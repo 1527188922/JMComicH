@@ -372,17 +372,25 @@ class DownloadManager(
     /**
      * 取消：**不自动复活**（§D.3）。已下载的图片/ZIP 保留。
      *
-     * 官方 ZIP 取消时额外清掉 `files/tmp/` 里这一任务所有章节的 `.part` 与中止文件；
+     * 官方 ZIP 取消时额外清掉 `files/library/tmp/` 里这一任务所有章节的 `.part` 与中止文件；
      * **暂停不清**（暂停后还要续传）。
      */
     fun cancel(taskId: Long) {
-        scope.launch {
-            val task = tasks.findById(taskId)
-            runCatching { tasks.markCancelled(taskId) }
-            jobs[taskId]?.cancelAndJoin()
-            if (task?.type == DownloadType.JM_OFFICIAL_ZIP) {
-                cleanupOfficialZipTemp(task)
-            }
+        scope.launch { cancelAndWait(taskId) }
+    }
+
+    /**
+     * 取消并**等待执行协程退出**。
+     *
+     * 「删除本地文件 / 移出书库」会先调它再删 `files/library/tmp/` 里的官方 ZIP 中转文件；
+     * 只落库不等待的话，正在写 `.part` 的那一轮会在删除之后又把文件建回来。
+     */
+    suspend fun cancelAndWait(taskId: Long) {
+        val task = tasks.findById(taskId)
+        runCatching { tasks.markCancelled(taskId) }
+        jobs[taskId]?.cancelAndJoin()
+        if (task?.type == DownloadType.JM_OFFICIAL_ZIP) {
+            cleanupOfficialZipTemp(task)
         }
     }
 

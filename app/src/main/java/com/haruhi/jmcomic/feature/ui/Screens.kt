@@ -181,9 +181,9 @@ fun LibraryScreen(
     onContinueReading: ((Long) -> Unit)? = null,
     /** 「继续阅读」卡片右上角 ✕ 被点击：清掉独立指针（卡片消失，不动逐本记录）。 */
     onDismissContinueReading: (() -> Unit)? = null,
-    /** 批量删除本地文件（图片 + zip/pdf，不动封面与记录）。 */
+    /** 批量删除本地文件（图片、导出的 zip/pdf、官方 ZIP、中转文件；不动记录与封面）。 */
     onDeleteFiles: ((List<Long>) -> Unit)? = null,
-    /** 批量从书库移除（记录 + 文件 + 成品 + 封面）。 */
+    /** 批量从书库移除（记录 + 图片 + 中转文件；导出成品、官方 ZIP、封面保留）。 */
     onRemoveFromLibrary: ((List<Long>) -> Unit)? = null,
     /**
      * 批量"修改收藏夹"：勾选集合就是这些漫画**最终所在的收藏夹**（可多选，
@@ -373,7 +373,9 @@ fun LibraryScreen(
     if (confirmDeleteFiles) {
         ConfirmDialog(
             title = "删除这 ${selection.size} 本的本地文件？",
-            text = "会删除已下载的图片、导出的 zip/pdf（约 ${formatBytes(selectedAlbums.sumOf { it.localSizeBytes })}）。",
+            text = "会删除已下载的图片、导出的 zip/pdf，以及官方zip目录里这本的 ZIP" +
+                "（图片约 ${formatBytes(selectedAlbums.sumOf { it.localSizeBytes })}）。" +
+                "解压出来的官方 ZIP 文件夹、书库记录和封面缓存不受影响。",
             confirmText = "删除文件",
             onConfirm = {
                 confirmDeleteFiles = false
@@ -388,7 +390,8 @@ fun LibraryScreen(
     if (confirmRemove) {
         ConfirmDialog(
             title = "从书库移出这 ${selection.size} 本？",
-            text = "移出书库后会删除本地图片、收藏夹、阅读进度。（不会删除已导出的 zip/pdf）",
+            text = "移出书库后会删除书库记录、章节清单、收藏关联、阅读进度和本地图片。" +
+                "（不会删除已导出的 zip/pdf、官方 ZIP 和封面缓存）",
             confirmText = "移出并删除",
             onConfirm = {
                 confirmRemove = false
@@ -727,7 +730,7 @@ fun RecentScreen(
     onBack: () -> Unit,
     onOpenAlbum: (Long) -> Unit,
     onClearAll: () -> Unit,
-    /** 长按单条"从最近浏览移除"（用户第九轮要求第 3 点：删记录时按书库情况处理封面）。 */
+    /** 长按单条"从最近浏览移除"：只删记录，不动图片与封面缓存。 */
     onRemoveAlbum: (Long) -> Unit,
     columns: Int = 3,
     modifier: Modifier = Modifier,
@@ -1067,7 +1070,7 @@ private fun AlbumGridCard(
  * 规范见 `docs/CONVENTIONS.md`。
  *
  * 用户要求第 8 点（封面本地缓存）由 Coil 的**磁盘缓存**实现：
- * `AppContainer.imageLoader` 把缓存目录指到 `files/covers`，
+ * `AppContainer.imageLoader` 把缓存目录指到 `files/library/covers`，
  * Coil 的默认策略就是"先查磁盘缓存，没有再请求网络"。
  *
  * 走应用级 ImageLoader 的关键原因是网络层：JM 的封面域名对 UA 有校验，
@@ -1483,8 +1486,8 @@ fun SearchResultsScreen(
         ConfirmDialog(
             title = "从书库移除这本？",
             text = "《${privacyAlbumTitle(target.id, target.name)}》会删除书库记录、章节清单、" +
-                "收藏关联、阅读位置，以及本地图片与导出的 zip/pdf。" +
-                "最近浏览记录会保留（封面也还在）。此操作不可撤销。",
+                "收藏关联、阅读位置，以及本地图片。已导出的 zip/pdf、官方 ZIP、最近浏览记录" +
+                "和封面缓存都会保留。此操作不可撤销。",
             confirmText = "移除并删除",
             onConfirm = {
                 removeTarget = null
@@ -2249,7 +2252,7 @@ private fun FavoriteCover(row: FavoritesUiState.FavoriteRow) {
  * 收藏页。
  *
  * 每个收藏夹左侧是**夹内最近加入的那本漫画的封面**（用户要求第 1 点）：
- * 走的还是 `Cover` 那一条路——应用级 Coil 加载器 + `files/covers` 磁盘缓存，
+ * 走的还是 `Cover` 那一条路——应用级 Coil 加载器 + `files/library/covers` 磁盘缓存，
  * 所以看过的封面优先读本地、没有才联网，且下次不再请求。
  * 空夹在同一个位置给一个占位方块，保证列表高度一致、不会因为有没有封面而跳动。
  *

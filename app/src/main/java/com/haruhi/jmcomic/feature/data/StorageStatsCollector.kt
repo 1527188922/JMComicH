@@ -12,7 +12,7 @@ import timber.log.Timber
 /** 「关于」页存储分段条的一段。声明顺序 = 条上从左到右的段序。 */
 enum class StorageKind(val label: String) {
     /** 已下载的漫画图片（`library/<本子目录>/`）。 */
-    LIBRARY("图片缓存"),//现在不分下载的图片和阅读缓存了，下载的图片其实就是阅读缓存，都是原始图片字节
+    LIBRARY("图片缓存"), // 现在不分下载的图片和阅读缓存，两者都是原始图片字节
 
     /** 封面磁盘缓存（Coil 管理，含头像等，不按本归属）。 */
     COVERS("封面缓存"),
@@ -37,7 +37,8 @@ data class AlbumUsage(
     /** 附加说明行（zip / pdf 行放文件名）。 */
     val detail: String? = null,
     /**
-     * 删除键：图片库行 = 本子目录名；阅读缓存行 = `reader-cache/` 下的目录名。
+     * 删除键：图片库行 = 本子目录名；阅读缓存行 = `reader-cache/` 下的目录名；
+     * 官方 ZIP 行 = 公共下载目录里的本子文件夹名。
      * zip / pdf 行不需要它（[detail] 的文件名就是删除键）。
      */
     val folderName: String? = null,
@@ -76,6 +77,8 @@ data class StorageStats(val segments: List<SegmentStats>) {
  *
  * `covers/` 是 Coil 的磁盘缓存，文件按 URL 哈希命名、与头像混存，
  * 没有可靠的按本归属（用户已拍板：封面段不做钻取，`items = null`）。
+ * 因此它也不支持按行删除，只有一个**整段清除**入口（[clearCovers]）；
+ * 这也是全应用唯一会删除封面缓存的地方。
  *
  * ## 与系统状态的并发
  *
@@ -87,6 +90,13 @@ class StorageStatsCollector(
     private val dirs: LibraryDirs,
     private val exports: ExportPublisher,
     private val officialZips: OfficialZipPublisher,
+    /**
+     * 清空封面缓存（内存 + 磁盘），返回释放的字节数。
+     *
+     * 封面走 Coil 的 `ImageLoader`，直接删 `covers/` 目录会和它的磁盘缓存日志打架，
+     * 所以清理由持有 `ImageLoader` 的一侧注入；默认空实现方便单测。
+     */
+    private val clearCoverCache: suspend () -> Long = { 0L },
 ) {
 
     /** @return 统计结果；扫描失败返回 null（界面显示"读取失败 + 重试"）。 */
@@ -94,6 +104,18 @@ class StorageStatsCollector(
         runCatching { collectInternal() }
             .onFailure { Timber.tag("about").w(it, "存储统计失败") }
             .getOrNull()
+    }
+
+    /**
+     * 清空封面缓存（含头像等所有走 Coil 的图片）。
+     *
+     * @return 释放的字节数；0 = 本来就是空的；-1 = 清除失败（注入的实现无法清理时返回）。
+     * 只动 `covers/`，**不删**漫画图片、导出成品、官方 ZIP 与书库记录。
+     */
+    suspend fun clearCovers(): Long = withContext(Dispatchers.IO) {
+        runCatching { clearCoverCache() }
+            .onFailure { Timber.tag("about").w(it, "清空封面缓存失败") }
+            .getOrDefault(-1L)
     }
 
     private suspend fun collectInternal(): StorageStats {
