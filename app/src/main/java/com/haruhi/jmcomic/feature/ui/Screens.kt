@@ -373,9 +373,8 @@ fun LibraryScreen(
     if (confirmDeleteFiles) {
         ConfirmDialog(
             title = "删除这 ${selection.size} 本的本地文件？",
-            text = "会删除已下载的图片、导出的 zip/pdf，以及官方zip目录里这本的 ZIP" +
-                "（图片约 ${formatBytes(selectedAlbums.sumOf { it.localSizeBytes })}）。" +
-                "解压出来的官方 ZIP 文件夹、书库记录和封面缓存不受影响。",
+            text = "会删除已下载的图片、导出的 zip/pdf、官方zip" +
+                "（图片约 ${formatBytes(selectedAlbums.sumOf { it.localSizeBytes })}）。",
             confirmText = "删除文件",
             onConfirm = {
                 confirmDeleteFiles = false
