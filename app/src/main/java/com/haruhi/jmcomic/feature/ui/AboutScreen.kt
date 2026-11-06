@@ -879,13 +879,13 @@ private fun UsageSectionHeader(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (showLongPressHint) {
-                Text(
-                    text = "长按可多选",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+//            if (showLongPressHint) {
+//                Text(
+//                    text = "长按可多选",
+//                    style = MaterialTheme.typography.labelSmall,
+//                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+//                )
+//            }
         }
     }
 }
