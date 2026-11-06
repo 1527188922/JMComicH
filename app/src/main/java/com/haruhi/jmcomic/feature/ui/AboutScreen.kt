@@ -339,8 +339,7 @@ fun AboutScreen(
             title = "删除已选的 $count 项？",
             text = when (kind) {
                 StorageKind.LIBRARY ->
-                    "会删除这 $count 本已下载的本地图片（约 ${formatBytes(bytes)}）。" +
-                        "导出的 zip / pdf、官方 ZIP 与阅读缓存不受影响。"
+                    "会删除这 $count 本已下载的本地图片（约 ${formatBytes(bytes)}）。"
                 StorageKind.READER_CACHE ->
                     "会删除这 $count 本的阅读器缓存（约 ${formatBytes(bytes)}）。" +
                         "下次阅读时重新联网获取。"
